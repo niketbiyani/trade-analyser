@@ -21,10 +21,8 @@ logger = logging.getLogger(__name__)
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
-DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID", "")
-DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
-PORT              = int(os.getenv("PORT", "5556"))
-DB_PATH           = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
+PORT    = int(os.getenv("PORT", "5556"))
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
 
 LOT_SIZES = {
     "NIFTY": 75, "BANKNIFTY": 15, "SENSEX": 10,
@@ -81,18 +79,27 @@ def _init_db(conn: sqlite3.Connection) -> None:
         """)
 
 
-# ── Dhan Import ──────────────────────────────────────────────────────────────────
+# ── Dhan client ──────────────────────────────────────────────────────────────────
 
 
 def _dhan_client():
+    """
+    Build a fresh dhanhq client using the current .env values.
+    Reloads .env on every call so a token refresh is picked up automatically.
+    """
     from dhanhq import DhanContext, dhanhq as DhanHQ  # noqa: PLC0415
-    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+    load_dotenv(override=True)
+    client_id    = os.getenv("DHAN_CLIENT_ID", "")
+    access_token = os.getenv("DHAN_ACCESS_TOKEN", "")
+    if not client_id or not access_token:
         raise ValueError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN not set in .env")
-    return DhanHQ(DhanContext(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN))
+    return DhanHQ(DhanContext(client_id, access_token))
+
+
+# ── Dhan import ──────────────────────────────────────────────────────────────────
 
 
 def _underlying(trading_symbol: str, exchange_segment: str) -> str:
-    """Derive the underlying index name from a Dhan trading symbol."""
     if exchange_segment == "BSE_FNO":
         return "SENSEX"
     sym = (trading_symbol or "").upper().replace("-", "").replace(" ", "")
@@ -103,18 +110,13 @@ def _underlying(trading_symbol: str, exchange_segment: str) -> str:
     return prefix or "NIFTY"
 
 
-def import_from_dhan(from_date: str, to_date: str) -> dict:
-    """
-    Fetch trade history from Dhan for a date range and store option trades locally.
-    Pairs each SELL (entry) with the earliest subsequent BUY (exit) of equal quantity.
-    Dates: YYYY-MM-DD.  Returns import summary.
-    """
+def _do_import(from_date: str, to_date: str) -> dict:
+    """Inner import logic — called by import_from_dhan with retry on auth error."""
     dhan = _dhan_client()
 
     def _fmt(d: str) -> str:
         return datetime.strptime(d, "%Y-%m-%d").strftime("%d-%m-%Y")
 
-    # Paginate — Dhan returns ~50 records per page
     raw: list[dict] = []
     page = 0
     while True:
@@ -131,14 +133,12 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
             break
         page += 1
 
-    # Keep only NSE_FNO / BSE_FNO options
     opts = [
         t for t in raw
         if t.get("exchangeSegment") in ("NSE_FNO", "BSE_FNO")
         and (t.get("drvOptionType") or "") in ("CALL", "PUT", "CE", "PE")
     ]
 
-    # Group by (trade-date, securityId) to pair entries with exits
     groups: dict[tuple, list] = defaultdict(list)
     for t in opts:
         ts = t.get("createTime") or t.get("exchangeTime") or ""
@@ -148,14 +148,10 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
     db = get_db()
 
     for (trade_date, sid), group in groups.items():
-        sells = sorted(
-            [t for t in group if t.get("transactionType") == "SELL"],
-            key=lambda x: x.get("createTime") or "",
-        )
-        buys = sorted(
-            [t for t in group if t.get("transactionType") == "BUY"],
-            key=lambda x: x.get("createTime") or "",
-        )
+        sells = sorted([t for t in group if t.get("transactionType") == "SELL"],
+                       key=lambda x: x.get("createTime") or "")
+        buys  = sorted([t for t in group if t.get("transactionType") == "BUY"],
+                       key=lambda x: x.get("createTime") or "")
 
         for sell in sells:
             ts_str      = sell.get("createTime") or sell.get("exchangeTime") or ""
@@ -173,23 +169,20 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
             lots        = round(qty / lot_size, 2) if lot_size else float(qty)
             order_id    = str(sell.get("orderId") or "")
 
-            # Match earliest BUY with same qty that occurs AFTER this SELL
             exit_t = next(
-                (
-                    b for b in buys
-                    if int(b.get("tradedQuantity") or 0) == qty
-                    and (b.get("createTime") or "") > ts_str
-                ),
+                (b for b in buys
+                 if int(b.get("tradedQuantity") or 0) == qty
+                 and (b.get("createTime") or "") > ts_str),
                 None,
             )
             if exit_t:
                 buys.remove(exit_t)
 
-            exit_ts     = exit_t.get("createTime") or exit_t.get("exchangeTime") or "" if exit_t else ""
-            exit_time   = exit_ts[11:19] if len(exit_ts) >= 19 else ""
-            exit_price  = float(exit_t.get("tradedPrice") or 0) if exit_t else None
-            pnl         = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
-            status      = "CLOSED" if exit_t else "OPEN"
+            exit_ts    = exit_t.get("createTime") or exit_t.get("exchangeTime") or "" if exit_t else ""
+            exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
+            exit_price = float(exit_t.get("tradedPrice") or 0) if exit_t else None
+            pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
+            status     = "CLOSED" if exit_t else "OPEN"
 
             with _db_lock:
                 if db.execute(
@@ -226,14 +219,32 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
     }
 
 
+def import_from_dhan(from_date: str, to_date: str) -> dict:
+    """
+    Import option trades from Dhan trade history.
+    Auto-refreshes token once if an auth error is detected.
+    """
+    try:
+        return _do_import(from_date, to_date)
+    except Exception as e:
+        err = str(e).lower()
+        if any(k in err for k in ("unauthorized", "401", "invalid token",
+                                   "token expired", "authentication", "access denied")):
+            logger.info("Auth error during import — refreshing token and retrying...")
+            import token_manager  # noqa: PLC0415
+            if token_manager.refresh_token():
+                return _do_import(from_date, to_date)
+        raise
+
+
 # ── Chart data (yfinance) ───────────────────────────────────────────────────────────
 
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
     """
-    Fetch OHLCV candles for the underlying index on the given date via yfinance.
-    Auto-selects interval: 1m (<=5 days old), 5m (<=55 days), 1d (older).
-    Timestamps are naive-IST treated as UTC so TradingView shows correct IST times.
+    Fetch OHLCV candles for the underlying index on a given date via yfinance.
+    Interval: 1m (<=5 days old), 5m (<=55 days), 1d (older).
+    Timestamps: naive-IST treated as UTC so TradingView shows correct IST times.
     """
     sym  = TICKERS.get(underlying.upper(), "^NSEI")
     dt   = datetime.strptime(trade_date, "%Y-%m-%d")
@@ -260,8 +271,6 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
     if df.empty:
         return [], interval
 
-    # Strip tz → naive IST; .timestamp() on UTC server gives "IST-as-UTC" epoch
-    # TradingView then displays the correct IST time. (Same trick as risk-management.)
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
 
@@ -271,7 +280,7 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
     candles = []
     for ts, row in df.iterrows():
         o, h, l, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
-        if any(v != v for v in (o, h, l, c)):  # NaN guard
+        if any(v != v for v in (o, h, l, c)):
             continue
         candles.append({
             "time":  int(ts.timestamp()),
@@ -306,6 +315,14 @@ def api_import():
     except Exception as e:
         logger.error("import: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/refresh-token", methods=["POST"])
+def api_refresh_token():
+    import token_manager  # noqa: PLC0415
+    success = token_manager.refresh_token()
+    return jsonify({"ok": success,
+                    "message": "Token refreshed" if success else "Token refresh failed — check logs"})
 
 
 @app.route("/api/trades")
@@ -368,11 +385,9 @@ html, body { height: 100%; overflow: hidden }
 body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
        font: 13px/1.4 'SF Mono', Consolas, monospace }
 
-/* top bar */
 #bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
        background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0 }
-#bar h1 { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; margin-right: 4px;
-          color: var(--acc) }
+#bar h1 { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; margin-right: 4px; color: var(--acc) }
 .date-nav { display: flex; gap: 4px; align-items: center }
 .date-nav button { background: var(--s2); border: 1px solid var(--border); color: var(--text);
                    padding: 3px 9px; cursor: pointer; border-radius: 3px; font: inherit }
@@ -381,19 +396,18 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
       padding: 3px 8px; border-radius: 3px; font: inherit; cursor: pointer }
 .chips { display: flex; gap: 4px }
 .chip { padding: 3px 11px; border-radius: 10px; border: 1px solid var(--border);
-        color: var(--dim); cursor: pointer; font-size: 11px; user-select: none;
-        transition: border-color .15s, color .15s, background .15s }
+        color: var(--dim); cursor: pointer; font-size: 11px; user-select: none; transition: .15s }
 .chip.on { color: var(--text); border-color: var(--acc); background: rgba(124,77,255,.12) }
 .chip.ce.on { color: var(--ce); border-color: var(--ce); background: rgba(79,195,247,.1) }
 .chip.pe.on { color: var(--pe); border-color: var(--pe); background: rgba(255,183,77,.1) }
-#ivl { font-size: 10px; color: var(--dim); border: 1px solid var(--border);
-       padding: 2px 6px; border-radius: 3px }
+#ivl { font-size: 10px; color: var(--dim); border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px }
 #impBtn { margin-left: auto; background: var(--acc); border: none; color: #fff;
-          padding: 5px 14px; border-radius: 4px; cursor: pointer; font: inherit;
-          font-size: 12px; letter-spacing: .3px }
+          padding: 5px 14px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px }
 #impBtn:hover { opacity: .85 }
+#refreshBtn { background: var(--s2); border: 1px solid var(--border); color: var(--dim);
+              padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }
+#refreshBtn:hover { border-color: var(--acc); color: var(--text) }
 
-/* layout */
 #main { flex: 1; display: flex; flex-direction: column; min-height: 0 }
 #chartBox { flex: 1; min-height: 0; position: relative }
 #chartEl  { width: 100%; height: 100% }
@@ -402,7 +416,6 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
             background: var(--bg); pointer-events: none; transition: opacity .2s }
 #chartMsg.hide { opacity: 0; pointer-events: none }
 
-/* trades panel */
 #panel { height: 235px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }
 #ph { display: flex; align-items: center; gap: 12px; padding: 6px 14px;
@@ -411,24 +424,20 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 #psummary { margin-left: auto; font-size: 11px; color: var(--dim) }
 #pbody { flex: 1; overflow-y: auto }
 table { width: 100%; border-collapse: collapse; font-size: 12px }
-th { position: sticky; top: 0; background: var(--s2); color: var(--dim);
-     font-weight: 500; padding: 5px 12px; text-align: left;
-     border-bottom: 1px solid var(--border) }
+th { position: sticky; top: 0; background: var(--s2); color: var(--dim); font-weight: 500;
+     padding: 5px 12px; text-align: left; border-bottom: 1px solid var(--border) }
 td { padding: 5px 12px; border-bottom: 1px solid rgba(255,255,255,.035) }
 tr.sel td { background: rgba(124,77,255,.08) }
 tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
-.tag { display: inline-block; padding: 1px 5px; border-radius: 3px;
-       font-size: 10px; font-weight: 700 }
+.tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 700 }
 .tag.ce { background: rgba(79,195,247,.12); color: var(--ce) }
 .tag.pe { background: rgba(255,183,77,.12); color: var(--pe) }
 .pos { color: var(--green) } .neg { color: var(--red) }
-.ni { background: none; border: none; color: var(--text); font: inherit;
-      width: 100%; outline: none }
+.ni { background: none; border: none; color: var(--text); font: inherit; width: 100%; outline: none }
 .ni:focus { border-bottom: 1px solid var(--acc) }
 .ni::placeholder { color: #333 }
 #empty { text-align: center; color: var(--dim); padding: 36px; font-size: 12px }
 
-/* modal */
 #ov { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
       z-index: 99; align-items: center; justify-content: center }
 #ov.show { display: flex }
@@ -453,25 +462,22 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
 
 <div id="bar">
   <h1>TRADE ANALYSER</h1>
-
   <div class="date-nav">
     <button onclick="shiftDay(-1)">&#8592;</button>
     <input type="date" id="dp" onchange="onDate()">
     <button onclick="shiftDay(1)">&#8594;</button>
   </div>
-
   <div class="chips" id="uChips">
     <div class="chip on"  data-v="NIFTY"     onclick="setU(this)">NIFTY</div>
     <div class="chip"     data-v="SENSEX"    onclick="setU(this)">SENSEX</div>
     <div class="chip"     data-v="BANKNIFTY" onclick="setU(this)">BANKNIFTY</div>
   </div>
-
   <div class="chips" id="tChips">
     <div class="chip ce on" data-v="CE" onclick="togT(this)">CE</div>
     <div class="chip pe on" data-v="PE" onclick="togT(this)">PE</div>
   </div>
-
   <span id="ivl">—</span>
+  <button id="refreshBtn" onclick="doRefreshToken()" title="Refresh Dhan token">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">↓ Import from Dhan</button>
 </div>
 
@@ -480,7 +486,6 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
     <div id="chartEl"></div>
     <div id="chartMsg">Loading chart…</div>
   </div>
-
   <div id="panel">
     <div id="ph">
       <b>TRADES</b>
@@ -488,7 +493,7 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
       <span id="psummary"></span>
     </div>
     <div id="pbody">
-      <div id="empty">No trades for this date &mdash; import from Dhan or pick another day.</div>
+      <div id="empty">No trades for this date — import from Dhan or pick another day.</div>
       <table id="tbl" style="display:none">
         <thead><tr>
           <th>Time</th><th>Type</th><th>Strike</th>
@@ -518,14 +523,12 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
 </div>
 
 <script>
-// ─── State ────────────────────────────────────────────────────────────────────────
 let chart, series;
 let curDate = '', curU = 'NIFTY';
 let typeOn  = new Set(['CE','PE']);
 let allTrades = [], candles = [], curInterval = '1m';
 let selId = null;
 
-// ─── Boot ────────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   initChart();
   const today = new Date().toISOString().slice(0,10);
@@ -534,7 +537,6 @@ window.addEventListener('DOMContentLoaded', () => {
   loadAll();
 });
 
-// ─── Chart ───────────────────────────────────────────────────────────────────────
 function initChart() {
   const box = document.getElementById('chartBox');
   chart = LightweightCharts.createChart(document.getElementById('chartEl'), {
@@ -553,7 +555,6 @@ function initChart() {
   new ResizeObserver(() => chart.resize(box.clientWidth, box.clientHeight)).observe(box);
 }
 
-// ─── Controls ───────────────────────────────────────────────────────────────────
 function shiftDay(d) {
   const dt = new Date(curDate + 'T00:00:00');
   dt.setDate(dt.getDate() + d);
@@ -574,15 +575,11 @@ function togT(el) {
   const v = el.dataset.v;
   if (typeOn.has(v)) {
     if (typeOn.size > 1) { typeOn.delete(v); el.classList.remove('on'); }
-  } else {
-    typeOn.add(v); el.classList.add('on');
-  }
+  } else { typeOn.add(v); el.classList.add('on'); }
   const f = allTrades.filter(t => typeOn.has(t.option_type));
-  renderTrades(f);
-  putMarkers(f);
+  renderTrades(f); putMarkers(f);
 }
 
-// ─── Load ───────────────────────────────────────────────────────────────────────
 function loadAll() { loadChart(); loadTrades(); }
 
 async function loadChart() {
@@ -596,7 +593,6 @@ async function loadChart() {
     document.getElementById('ivl').textContent = d.interval || '—';
     series.setData(candles);
     if (candles.length) chart.timeScale().fitContent();
-    else { series.setData([]); }
   } catch(e) { console.error(e); }
   msg.classList.add('hide');
 }
@@ -606,69 +602,55 @@ async function loadTrades() {
     const r = await fetch('/api/trades?date=' + curDate + '&underlying=' + curU);
     allTrades = await r.json();
     const f = allTrades.filter(t => typeOn.has(t.option_type));
-    renderTrades(f);
-    putMarkers(f);
+    renderTrades(f); putMarkers(f);
   } catch(e) { console.error(e); }
 }
 
-// ─── Table ─────────────────────────────────────────────────────────────────────
 function renderTrades(trades) {
   const tbl = document.getElementById('tbl');
   const em  = document.getElementById('empty');
   const cnt = document.getElementById('pcnt');
   const sum = document.getElementById('psummary');
-
   if (!trades.length) {
     tbl.style.display = 'none'; em.style.display = '';
     cnt.textContent = ''; sum.innerHTML = ''; return;
   }
   tbl.style.display = ''; em.style.display = 'none';
-
   const closed = trades.filter(t => t.pnl != null);
-  const tot    = closed.reduce((a,t) => a + t.pnl, 0);
-  const wins   = closed.filter(t => t.pnl >= 0).length;
-  const losses = closed.filter(t => t.pnl  < 0).length;
+  const tot  = closed.reduce((a,t) => a + t.pnl, 0);
+  const wins = closed.filter(t => t.pnl >= 0).length;
+  const loss = closed.filter(t => t.pnl  < 0).length;
   cnt.textContent = trades.length + ' trade' + (trades.length > 1 ? 's' : '');
-  sum.innerHTML   = '<span class="' + (tot >= 0 ? 'pos' : 'neg') + '">' +
-                    (tot >= 0 ? '+' : '') + '₹' + tot.toFixed(0) + '</span>' +
-                    ' &nbsp; ' + wins + 'W / ' + losses + 'L';
-
+  sum.innerHTML = '<span class="' + (tot >= 0 ? 'pos' : 'neg') + '">' +
+                  (tot >= 0 ? '+' : '') + '₹' + tot.toFixed(0) + '</span>' +
+                  ' &nbsp; ' + wins + 'W / ' + loss + 'L';
   document.getElementById('tbody').innerHTML = trades.map(t => {
     const tc  = t.option_type.toLowerCase();
     const sk  = t.strike ? t.strike.toLocaleString('en-IN') : '—';
-    const ep  = t.exit_price  != null ? t.exit_price.toFixed(2)  : '—';
-    const pl  = t.pnl         != null
-                  ? '<span class="' + (t.pnl >= 0 ? 'pos' : 'neg') + '">' +
-                    (t.pnl >= 0 ? '+' : '') + '₹' + t.pnl.toFixed(0) + '</span>'
-                  : '—';
+    const ep  = t.exit_price  != null ? t.exit_price.toFixed(2) : '—';
+    const pl  = t.pnl != null
+      ? '<span class="' + (t.pnl >= 0 ? 'pos' : 'neg') + '">' +
+        (t.pnl >= 0 ? '+' : '') + '₹' + t.pnl.toFixed(0) + '</span>' : '—';
     const lts = t.lots ? t.lots + 'L' : t.quantity;
     const sel = selId === t.id ? ' sel' : '';
     const nt  = (t.notes || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-    return `<tr class="${sel}" data-id="${t.id}"
-              onclick="selTrade(${t.id}, '${t.entry_time || ''}')">
+    return `<tr class="${sel}" data-id="${t.id}" onclick="selTrade(${t.id},'${t.entry_time||''}')">
       <td>${t.entry_time ? t.entry_time.slice(0,5) : '—'}</td>
       <td><span class="tag ${tc}">${t.option_type}</span></td>
-      <td>${sk}</td>
-      <td>${t.entry_price.toFixed(2)}</td>
-      <td>${ep}</td>
-      <td>${lts}</td>
-      <td>${pl}</td>
+      <td>${sk}</td><td>${t.entry_price.toFixed(2)}</td><td>${ep}</td>
+      <td>${lts}</td><td>${pl}</td>
       <td><input class="ni" value="${nt}" placeholder="add note…"
-            onclick="event.stopPropagation()"
-            onblur="saveNote(${t.id}, this.value)"></td>
+            onclick="event.stopPropagation()" onblur="saveNote(${t.id},this.value)"></td>
     </tr>`;
   }).join('');
 }
 
-// ─── Markers ─────────────────────────────────────────────────────────────────────
 function tsFor(dateStr, timeStr) {
   if (!timeStr) return null;
-  const [y, mo, d] = dateStr.split('-').map(Number);
-  const [h, m]     = timeStr.split(':').map(Number);
-  // Date.UTC treats IST time as UTC → matches server naive-.timestamp() trick
-  return Date.UTC(y, mo - 1, d, h, m, 0) / 1000;
+  const [y,mo,d] = dateStr.split('-').map(Number);
+  const [h,m]   = timeStr.split(':').map(Number);
+  return Date.UTC(y, mo-1, d, h, m, 0) / 1000;
 }
-
 function snapTs(ts) {
   if (!ts || !candles.length) return ts;
   let best = candles[0].time, diff = Math.abs(candles[0].time - ts);
@@ -679,37 +661,30 @@ function snapTs(ts) {
   }
   return best;
 }
-
 function putMarkers(trades) {
   if (!series) return;
   const markers = [];
   for (const t of trades) {
     const col = t.option_type === 'CE' ? '#4fc3f7' : '#ffb74d';
     const lbl = t.option_type + ' ' + (t.strike ? t.strike.toLocaleString('en-IN') : '');
-
     const ets = tsFor(curDate, t.entry_time);
-    if (ets) markers.push({
-      time: snapTs(ets), position: 'aboveBar',
-      color: col, shape: 'arrowDown', text: lbl,
-      id: 'e' + t.id, size: 1.2,
-    });
-
+    if (ets) markers.push({ time:snapTs(ets), position:'aboveBar', color:col,
+                             shape:'arrowDown', text:lbl, id:'e'+t.id, size:1.2 });
     if (t.exit_time && t.exit_price != null) {
       const xts = tsFor(curDate, t.exit_time);
       if (xts) markers.push({
         time: snapTs(xts), position: 'belowBar',
         color: (t.pnl != null && t.pnl >= 0) ? '#4caf50' : '#ef5350',
         shape: 'arrowUp',
-        text: (t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl) : t.exit_price.toFixed(0)),
-        id: 'x' + t.id, size: 1.2,
+        text: t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl) : t.exit_price.toFixed(0),
+        id: 'x'+t.id, size: 1.2,
       });
     }
   }
-  markers.sort((a, b) => a.time - b.time);
+  markers.sort((a,b) => a.time - b.time);
   series.setMarkers(markers);
 }
 
-// ─── Select + notes ────────────────────────────────────────────────────────
 function selTrade(id, entryTime) {
   selId = id;
   document.querySelectorAll('#tbody tr').forEach(r =>
@@ -717,27 +692,24 @@ function selTrade(id, entryTime) {
   if (entryTime && candles.length) {
     const ts  = tsFor(curDate, entryTime);
     const sec = curInterval === '5m' ? 300 : 60;
-    if (ts) chart.timeScale().setVisibleRange({ from: ts - sec * 25, to: ts + sec * 90 });
+    if (ts) chart.timeScale().setVisibleRange({ from: ts - sec*25, to: ts + sec*90 });
   }
 }
-
 async function saveNote(id, notes) {
   try {
-    await fetch('/api/trade/' + id + '/notes', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes }),
+    await fetch('/api/trade/'+id+'/notes', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({notes}),
     });
     const t = allTrades.find(x => x.id === id);
     if (t) t.notes = notes;
   } catch(e) { console.error(e); }
 }
 
-// ─── Import modal ───────────────────────────────────────────────────────────
 function openImp() {
   const t = new Date().toISOString().slice(0,10);
-  document.getElementById('mFrom').value   = t;
-  document.getElementById('mTo').value     = t;
+  document.getElementById('mFrom').value = t;
+  document.getElementById('mTo').value   = t;
   document.getElementById('mres').textContent = '';
   document.getElementById('ov').classList.add('show');
 }
@@ -750,8 +722,7 @@ async function doImport() {
   res.style.color = ''; res.textContent = 'Fetching from Dhan…';
   try {
     const r = await fetch('/api/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         from_date: document.getElementById('mFrom').value,
         to_date:   document.getElementById('mTo').value,
@@ -760,7 +731,7 @@ async function doImport() {
     const d = await r.json();
     if (d.ok) {
       res.style.color = '#4caf50';
-      res.textContent = `✓ ${d.imported} new trades imported, ${d.skipped} already stored` +
+      res.textContent = `✓ ${d.imported} new, ${d.skipped} already stored` +
                         ` (${d.total_options} options in ${d.total_raw} total trades)`;
       loadTrades();
     } else {
@@ -773,6 +744,20 @@ async function doImport() {
   }
   btn.disabled = false; btn.textContent = 'Import';
 }
+
+async function doRefreshToken() {
+  const btn = document.getElementById('refreshBtn');
+  btn.textContent = 'Refreshing…'; btn.disabled = true;
+  try {
+    const r = await fetch('/api/refresh-token', { method:'POST' });
+    const d = await r.json();
+    btn.textContent = d.ok ? '✓ Token' : '✗ Token';
+    btn.style.color = d.ok ? '#4caf50' : '#ef5350';
+    setTimeout(() => { btn.textContent = '↻ Token'; btn.style.color = ''; btn.disabled = false; }, 3000);
+  } catch(e) {
+    btn.textContent = '↻ Token'; btn.disabled = false;
+  }
+}
 </script>
 </body>
 </html>"""
@@ -783,4 +768,8 @@ async function doImport() {
 if __name__ == "__main__":
     logger.info("Trade Analyser starting on http://0.0.0.0:%d", PORT)
     get_db()
+    import token_manager  # noqa: PLC0415
+    if token_manager.is_token_refresh_configured():
+        logger.info("Refreshing Dhan token at startup...")
+        token_manager.refresh_token()
     app.run(host="0.0.0.0", port=PORT, debug=False)
