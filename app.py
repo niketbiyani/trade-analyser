@@ -25,20 +25,20 @@ PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
 
 LOT_SIZES = {
-    "NIFTY": 75, "BANKNIFTY": 15, "SENSEX": 10,
+    "NIFTY": 75, "SENSEX": 10,
     "FINNIFTY": 40, "MIDCPNIFTY": 50,
 }
 
-# Dhan security IDs for index chart data (confirmed: NIFTY=13, BANKNIFTY=25)
+# Dhan security IDs for index chart data
 DHAN_INDEX_IDS = {
-    "NIFTY":     {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
-    "BANKNIFTY": {"security_id": "25", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
-    "SENSEX":    {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
+    "NIFTY":  {"security_id": "13", "exchange_segment": "NSE_EQ",  "instrument_type": "INDEX"},
+    "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
 }
 
-# yfinance tickers used as fallback for older historical data
+# yfinance fallback tickers
 YF_TICKERS = {
-    "NIFTY": "^NSEI", "SENSEX": "^BSESN", "BANKNIFTY": "^NSEBANK",
+    "NIFTY":  "^NSEI",
+    "SENSEX": "^BSESN",
 }
 
 # ── Database ──────────────────────────────────────────────────────────────────────
@@ -124,7 +124,7 @@ def _underlying(trading_symbol: str, exchange_segment: str) -> str:
     if "BSE" in seg:
         return "SENSEX"
     sym = (trading_symbol or "").upper().replace("-", "").replace(" ", "")
-    for name in ("BANKNIFTY", "MIDCPNIFTY", "FINNIFTY", "NIFTY", "SENSEX"):
+    for name in ("MIDCPNIFTY", "FINNIFTY", "NIFTY", "SENSEX"):
         if sym.startswith(name):
             return name
     prefix = "".join(ch for ch in sym if not ch.isdigit()).rstrip()
@@ -334,11 +334,14 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
 # ── Chart data ──────────────────────────────────────────────────────────────────────────
 
 
-def _chart_from_dhan(security_id: str, exchange_segment: str,
-                     instrument_type: str, trade_date: str) -> list[dict]:
-    """Fetch 1-min OHLCV from Dhan intraday_minute_data for a given date."""
+def _raw_dhan_chart(security_id: str, exchange_segment: str,
+                    instrument_type: str, trade_date: str) -> tuple[dict, str]:
+    """
+    Call intraday_minute_data and return (raw_response, error_string).
+    Tries with date params first; if TypeError falls back without dates.
+    """
+    dhan = _dhan_client()
     try:
-        dhan = _dhan_client()
         resp = dhan.intraday_minute_data(
             security_id=security_id,
             exchange_segment=exchange_segment,
@@ -346,40 +349,58 @@ def _chart_from_dhan(security_id: str, exchange_segment: str,
             from_date=trade_date,
             to_date=trade_date,
         )
+        return resp, ""
+    except TypeError:
+        # SDK version doesn’t accept date params — returns today only
+        try:
+            resp = dhan.intraday_minute_data(
+                security_id=security_id,
+                exchange_segment=exchange_segment,
+                instrument_type=instrument_type,
+            )
+            return resp, ""
+        except Exception as e:
+            return {}, str(e)
     except Exception as e:
-        logger.error("Dhan intraday_minute_data: %s", e)
+        return {}, str(e)
+
+
+def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
+    """Parse intraday_minute_data response into candle list."""
+    if not resp:
         return []
 
-    # Response can be {"data": {"timestamp": [...], "open": [...], ...}}
-    # or the inner dict directly, depending on SDK version
+    # Unwrap {"data": {...}} envelope if present
     data = resp
-    if isinstance(resp, dict):
-        data = resp.get("data", resp)
+    if isinstance(resp, dict) and "data" in resp:
+        data = resp["data"]
+
     if not isinstance(data, dict):
-        logger.warning("Dhan chart unexpected format: %s", str(resp)[:200])
+        logger.warning("Unexpected chart response type: %s  preview: %s",
+                       type(data).__name__, str(data)[:200])
         return []
 
-    timestamps = data.get("timestamp") or data.get("timestamps") or []
+    timestamps = (data.get("timestamp") or data.get("timestamps")
+                  or data.get("time") or [])
     opens  = data.get("open")   or data.get("openPrice")  or []
     highs  = data.get("high")   or data.get("highPrice")  or []
     lows   = data.get("low")    or data.get("lowPrice")   or []
     closes = data.get("close")  or data.get("closePrice") or []
 
     if not timestamps:
-        logger.info("Dhan chart: no timestamps in response for %s %s",
-                    exchange_segment, security_id)
+        logger.info("Chart response has no timestamps. Keys: %s", list(data.keys()))
         return []
 
     candles = []
     for i, ts_str in enumerate(timestamps):
         try:
             ts_str = str(ts_str).strip()
-            # Dhan returns "HH:MM:SS" (time only) or full "YYYY-MM-DD HH:MM:SS"
+            # Dhan returns either "HH:MM:SS" (time only) or "YYYY-MM-DD HH:MM:SS"
             if len(ts_str) <= 8:
                 ts_str = f"{trade_date} {ts_str}"
-            # Parse naively as IST; .timestamp() gives "IST-as-UTC" epoch so
-            # TradingView (which treats values as UTC) displays correct IST times
             ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+            # Parse naively as IST; .timestamp() gives “IST-as-UTC” so
+            # TradingView (UTC display) shows correct IST times
             candles.append({
                 "time":  int(ts.timestamp()),
                 "open":  round(float(opens[i]),  2),
@@ -390,18 +411,15 @@ def _chart_from_dhan(security_id: str, exchange_segment: str,
         except (IndexError, ValueError, TypeError):
             continue
 
-    logger.info("Dhan chart: %d candles for %s %s", len(candles), exchange_segment, security_id)
     return candles
 
 
 def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
-    """Fallback chart source using yfinance (may be rate-limited)."""
     dt  = datetime.strptime(trade_date, "%Y-%m-%d")
     age = (datetime.now() - dt).days
-
     interval = "1m" if age <= 5 else ("5m" if age <= 55 else "1d")
-    start    = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
-    end      = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+    start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
+    end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
 
     old_to = socket.getdefaulttimeout()
     socket.setdefaulttimeout(10)
@@ -416,7 +434,6 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
 
     if df.empty:
         return [], interval
-
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
     if interval in ("1m", "5m"):
@@ -435,29 +452,34 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
-
-    # Primary: Dhan intraday API (no rate-limit issues, works for recent dates)
     idx = DHAN_INDEX_IDS.get(u)
+
     if idx:
-        candles = _chart_from_dhan(
+        raw_resp, dhan_err = _raw_dhan_chart(
             idx["security_id"], idx["exchange_segment"],
             idx["instrument_type"], trade_date,
         )
-        if candles:
-            return candles, "1m", ""
+        if dhan_err:
+            logger.error("Dhan chart API error: %s", dhan_err)
+        else:
+            candles = _parse_dhan_candles(raw_resp, trade_date)
+            if candles:
+                return candles, "1m", ""
+            logger.info("Dhan chart returned 0 candles for %s %s. resp: %s",
+                        u, trade_date, str(raw_resp)[:300])
 
-    # Fallback: yfinance for older historical data
     sym = YF_TICKERS.get(u)
     if sym:
         candles, interval = _chart_from_yfinance(sym, trade_date)
         if candles:
             return candles, interval, ""
-        return [], interval, (
-            "No chart data — Dhan has no intraday data for this date "
-            "and Yahoo Finance is rate-limited. Try a more recent date."
-        )
 
-    return [], "1m", f"No chart source configured for {underlying}"
+    return [], "1m", (
+        f"No chart data for {u} on {trade_date}. "
+        "Dhan intraday API may not cover this date; "
+        "Yahoo Finance is rate-limited from this server. "
+        "Check /api/debug-chart for details."
+    )
 
 
 # ── Flask ──────────────────────────────────────────────────────────────────────────────
@@ -468,6 +490,38 @@ app = Flask(__name__)
 @app.route("/")
 def index():
     return _page()
+
+
+@app.route("/api/debug-chart")
+def api_debug_chart():
+    """
+    Diagnose chart data. Usage: /api/debug-chart?underlying=NIFTY&date=YYYY-MM-DD
+    Shows the raw Dhan intraday_minute_data response so field names can be verified.
+    """
+    u    = (request.args.get("underlying") or "NIFTY").upper()
+    d    = request.args.get("date") or str(date.today())
+    idx  = DHAN_INDEX_IDS.get(u)
+    if not idx:
+        return jsonify({"ok": False, "error": f"No index config for {u}"})
+    try:
+        raw_resp, dhan_err = _raw_dhan_chart(
+            idx["security_id"], idx["exchange_segment"],
+            idx["instrument_type"], d,
+        )
+        candles = _parse_dhan_candles(raw_resp, d) if not dhan_err else []
+        data_inner = raw_resp.get("data", raw_resp) if isinstance(raw_resp, dict) else raw_resp
+        return jsonify({
+            "ok":           True,
+            "dhan_error":   dhan_err,
+            "candle_count": len(candles),
+            "resp_type":    type(raw_resp).__name__,
+            "resp_keys":    list(raw_resp.keys()) if isinstance(raw_resp, dict) else None,
+            "data_keys":    list(data_inner.keys()) if isinstance(data_inner, dict) else None,
+            "raw_preview":  str(raw_resp)[:600],
+            "first_candle": candles[0] if candles else None,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "type": type(e).__name__})
 
 
 @app.route("/api/debug-dhan")
@@ -671,9 +725,8 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
     <button onclick="shiftDay(1)">&#8594;</button>
   </div>
   <div class="chips" id="uChips">
-    <div class="chip on"  data-v="NIFTY"     onclick="setU(this)">NIFTY</div>
-    <div class="chip"     data-v="SENSEX"    onclick="setU(this)">SENSEX</div>
-    <div class="chip"     data-v="BANKNIFTY" onclick="setU(this)">BANKNIFTY</div>
+    <div class="chip on" data-v="NIFTY"  onclick="setU(this)">NIFTY</div>
+    <div class="chip"    data-v="SENSEX" onclick="setU(this)">SENSEX</div>
   </div>
   <div class="chips" id="tChips">
     <div class="chip ce on" data-v="CE" onclick="togT(this)">CE</div>
@@ -793,9 +846,7 @@ async function loadChart() {
       msg.textContent = d.error || 'No chart data for this date';
     }
   } catch(e) {
-    msg.textContent = e.name === 'AbortError'
-      ? 'Chart load timed out'
-      : ('Chart error: ' + e.message);
+    msg.textContent = e.name === 'AbortError' ? 'Chart load timed out' : ('Chart error: ' + e.message);
   }
 }
 async function loadTrades() {
