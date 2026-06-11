@@ -1,9 +1,10 @@
 """Trade Analyser — post-session option trade review on the underlying index chart.
-Single-file Flask app. Port 5556 by default."""
+Single-file Flask app. Port 5556 by default.
+"""
 
-import concurrent.futures
 import logging
 import os
+import socket
 import sqlite3
 import threading
 from collections import defaultdict
@@ -96,10 +97,6 @@ def _to_dhan_date(d: str) -> str:
 
 
 def _extract_batch(resp) -> list[dict]:
-    """
-    dhanhq SDK versions differ: some return {"data": [...]}, others return the list directly.
-    Handle both, plus {"records": [...]}, and None.
-    """
     if resp is None:
         return []
     if isinstance(resp, list):
@@ -128,7 +125,6 @@ def _underlying(trading_symbol: str, exchange_segment: str) -> str:
 
 
 def _is_option(trade: dict) -> bool:
-    """Detect option trades regardless of exact field names across SDK versions."""
     seg = (trade.get("exchangeSegment") or "").upper()
     seg_ok = "FNO" in seg or "F&O" in seg or "FO" in seg
 
@@ -146,7 +142,6 @@ def _is_option(trade: dict) -> bool:
 
 
 def _tx_type(trade: dict) -> str:
-    """Normalise transactionType to 'SELL' or 'BUY' (handles S/B shorthand)."""
     t = (trade.get("transactionType") or "").upper().strip()
     if t in ("SELL", "S", "SHORT", "-1"):
         return "SELL"
@@ -161,7 +156,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
     today_str = str(date.today())
     diag: dict = {}
 
-    # — Historical pages via get_trade_history —
     if from_date < today_str or to_date < today_str:
         page = 0
         tried_p1_fallback = False
@@ -196,7 +190,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
                 break
             page += 1
 
-    # — Today's trades via get_trade_book —
     if from_date <= today_str <= to_date:
         try:
             resp_tb = dhan.get_trade_book()
@@ -209,7 +202,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
             logger.warning("get_trade_book failed: %s", e)
             diag["tradebook_error"] = str(e)
 
-    # Deduplicate by (orderId, exchangeTradeId)
     seen: set = set()
     deduped = []
     for t in raw:
@@ -352,19 +344,16 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
     start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
     end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
 
-    def _fetch():
-        return yf.Ticker(sym).history(start=start, end=end, interval=interval, auto_adjust=True)
-
+    # socket timeout makes yfinance fail fast if Yahoo Finance is unreachable
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(10)
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_fetch)
-            df = future.result(timeout=15)
-    except concurrent.futures.TimeoutError:
-        logger.error("yfinance timeout fetching %s", sym)
-        return [], interval, "Chart load timed out — Yahoo Finance unreachable from server"
+        df = yf.Ticker(sym).history(start=start, end=end, interval=interval, auto_adjust=True)
     except Exception as e:
         logger.error("yfinance %s: %s", sym, e)
         return [], interval, f"Chart error: {e}"
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
     if df.empty:
         return [], interval, "No data for this date (market closed or future date)"
@@ -721,7 +710,9 @@ async function loadChart() {
       msg.textContent = d.error || 'No chart data for this date';
     }
   } catch(e) {
-    msg.textContent = e.name === 'AbortError' ? 'Chart load timed out — server unreachable' : ('Chart error: ' + e.message);
+    msg.textContent = e.name === 'AbortError'
+      ? 'Chart load timed out — server unreachable'
+      : ('Chart error: ' + e.message);
   }
 }
 async function loadTrades() {
