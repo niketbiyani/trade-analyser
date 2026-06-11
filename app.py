@@ -1,6 +1,7 @@
 """Trade Analyser — post-session option trade review on the underlying index chart.
 Single-file Flask app. Port 5556 by default."""
 
+import concurrent.futures
 import logging
 import os
 import sqlite3
@@ -137,13 +138,10 @@ def _is_option(trade: dict) -> bool:
     inst = (trade.get("instrumentType") or trade.get("drvInstrumentType") or "").upper()
     inst_ok = inst in ("OPTIDX", "OPTSTK")
 
-    # Check trading symbol: Dhan uses e.g. "NIFTY24JAN24C24000" or custom "NIFTY 24 JAN CALL 24000.00"
     sym = (trade.get("tradingSymbol") or trade.get("customSymbol") or "").upper()
     sym_ok = (sym.endswith("CE") or sym.endswith("PE")
-              or " CALL " in sym or " PUT " in sym
-              or "CALL" == sym[-4:] or "PUT" == sym[-3:])
+              or " CALL " in sym or " PUT " in sym)
 
-    # Must be FNO segment AND have at least one option indicator
     return seg_ok and (opt_ok or inst_ok or sym_ok)
 
 
@@ -164,8 +162,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
     diag: dict = {}
 
     # — Historical pages via get_trade_history —
-    # Only call if at least one day in the range is not today
-    # (Dhan's /v2/trades history endpoint often returns empty for today)
     if from_date < today_str or to_date < today_str:
         page = 0
         tried_p1_fallback = False
@@ -180,7 +176,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
                         page, len(batch), type(resp).__name__)
             if not batch:
                 if page == 0 and not tried_p1_fallback:
-                    # Some SDK versions use 1-indexed pages
                     tried_p1_fallback = True
                     resp1 = dhan.get_trade_history(
                         from_date=_to_dhan_date(from_date),
@@ -202,7 +197,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
             page += 1
 
     # — Today's trades via get_trade_book —
-    # get_trade_history is historical-only; today requires get_trade_book()
     if from_date <= today_str <= to_date:
         try:
             resp_tb = dhan.get_trade_book()
@@ -229,18 +223,15 @@ def _do_import(from_date: str, to_date: str) -> dict:
     logger.info("Total raw=%d (after dedup)  options=%d", len(raw), len(opts))
 
     if raw and not opts:
-        # All records came back but none are options — log a sample
         logger.warning("No options detected. Sample record: %s", raw[0])
         diag["sample_non_option"] = raw[0]
     elif opts:
         logger.info("Sample option: %s", opts[0])
 
-    # Group by (date, security_id) and pair SELL(entry) → BUY(exit)
     groups: dict[tuple, list] = defaultdict(list)
     for t in opts:
         ts = t.get("createTime") or t.get("exchangeTime") or t.get("orderCreateTime") or ""
         sid = str(t.get("securityId") or t.get("security_id") or "")
-        # createTime format: "YYYY-MM-DD HH:MM:SS"
         trade_date = ts[:10] if len(ts) >= 10 else today_str
         groups[(trade_date, sid)].append(t)
 
@@ -258,24 +249,23 @@ def _do_import(from_date: str, to_date: str) -> dict:
         )
 
         for sell in sells:
-            ts_str     = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
-            entry_time = ts_str[11:19] if len(ts_str) >= 19 else ""
+            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
+            entry_time  = ts_str[11:19] if len(ts_str) >= 19 else ""
             entry_price = float(sell.get("tradedPrice") or sell.get("price") or 0)
-            qty        = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
-            opt_raw    = (sell.get("drvOptionType") or "").upper()
-            opt_type   = "CE" if opt_raw in ("CALL", "CE") else "PE"
-            # Fallback: infer from symbol if drvOptionType missing
+            qty         = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
+            opt_raw     = (sell.get("drvOptionType") or "").upper()
+            opt_type    = "CE" if opt_raw in ("CALL", "CE") else "PE"
             if opt_raw not in ("CALL", "PUT", "CE", "PE"):
                 sym_u = (sell.get("tradingSymbol") or sell.get("customSymbol") or "").upper()
                 opt_type = "CE" if (sym_u.endswith("CE") or " CALL " in sym_u) else "PE"
-            strike     = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
-            expiry     = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
-            sym        = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
-            exseg      = sell.get("exchangeSegment") or "NSE_FNO"
-            underlying = _underlying(sym, exseg)
-            lot_size   = LOT_SIZES.get(underlying, 1)
-            lots       = round(qty / lot_size, 2) if lot_size else float(qty)
-            order_id   = str(sell.get("orderId") or sell.get("order_id") or "")
+            strike      = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
+            expiry      = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
+            sym         = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
+            exseg       = sell.get("exchangeSegment") or "NSE_FNO"
+            underlying  = _underlying(sym, exseg)
+            lot_size    = LOT_SIZES.get(underlying, 1)
+            lots        = round(qty / lot_size, 2) if lot_size else float(qty)
+            order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
 
             exit_t = next(
                 (
@@ -347,7 +337,7 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
 # ── Chart data (yfinance) ────────────────────────────────────────────────────────────────
 
 
-def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
+def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     sym  = TICKERS.get(underlying.upper(), "^NSEI")
     dt   = datetime.strptime(trade_date, "%Y-%m-%d")
     age  = (datetime.now() - dt).days
@@ -362,14 +352,22 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
     start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
     end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
 
+    def _fetch():
+        return yf.Ticker(sym).history(start=start, end=end, interval=interval, auto_adjust=True)
+
     try:
-        df = yf.Ticker(sym).history(start=start, end=end, interval=interval, auto_adjust=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_fetch)
+            df = future.result(timeout=15)
+    except concurrent.futures.TimeoutError:
+        logger.error("yfinance timeout fetching %s", sym)
+        return [], interval, "Chart load timed out — Yahoo Finance unreachable from server"
     except Exception as e:
         logger.error("yfinance %s: %s", sym, e)
-        return [], interval
+        return [], interval, f"Chart error: {e}"
 
     if df.empty:
-        return [], interval
+        return [], interval, "No data for this date (market closed or future date)"
 
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
@@ -385,7 +383,9 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
         candles.append({"time": int(ts.timestamp()),
                         "open": round(o, 2), "high": round(h, 2),
                         "low":  round(l, 2), "close": round(c, 2)})
-    return candles, interval
+
+    err = "" if candles else "No candles for this date"
+    return candles, interval, err
 
 
 # ── Flask ──────────────────────────────────────────────────────────────────────────────
@@ -400,17 +400,12 @@ def index():
 
 @app.route("/api/debug-dhan")
 def api_debug_dhan():
-    """
-    Returns raw first page of Dhan trade history + trade_book for diagnosis.
-    Usage: /api/debug-dhan?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD
-    """
     from_date = request.args.get("from_date") or str(date.today())
     to_date   = request.args.get("to_date")   or str(date.today())
     today_str = str(date.today())
     out: dict = {"ok": True}
     try:
         dhan = _dhan_client()
-        # History endpoint
         resp = dhan.get_trade_history(
             from_date=_to_dhan_date(from_date),
             to_date=_to_dhan_date(to_date),
@@ -418,23 +413,22 @@ def api_debug_dhan():
         )
         batch = _extract_batch(resp)
         out["history"] = {
-            "response_type":    type(resp).__name__,
-            "response_keys":    list(resp.keys()) if isinstance(resp, dict) else None,
-            "record_count":     len(batch),
-            "first_record":     batch[0] if batch else None,
+            "response_type":     type(resp).__name__,
+            "response_keys":     list(resp.keys()) if isinstance(resp, dict) else None,
+            "record_count":      len(batch),
+            "first_record":      batch[0] if batch else None,
             "first_record_keys": list(batch[0].keys()) if batch else None,
-            "raw_preview":      str(resp)[:500],
+            "raw_preview":       str(resp)[:500],
         }
-        # Trade book (today)
         if from_date <= today_str <= to_date:
             try:
-                resp_tb = dhan.get_trade_book()
+                resp_tb  = dhan.get_trade_book()
                 tb_batch = _extract_batch(resp_tb)
                 out["trade_book"] = {
-                    "response_type":    type(resp_tb).__name__,
-                    "record_count":     len(tb_batch),
-                    "first_record":     tb_batch[0] if tb_batch else None,
-                    "raw_preview":      str(resp_tb)[:500],
+                    "response_type": type(resp_tb).__name__,
+                    "record_count":  len(tb_batch),
+                    "first_record":  tb_batch[0] if tb_batch else None,
+                    "raw_preview":   str(resp_tb)[:500],
                 }
             except Exception as e:
                 out["trade_book"] = {"error": str(e)}
@@ -493,8 +487,8 @@ def api_notes(tid: int):
 def api_chart():
     u = request.args.get("underlying") or "NIFTY"
     d = request.args.get("date")       or str(date.today())
-    candles, interval = chart_candles(u, d)
-    return jsonify({"candles": candles, "interval": interval})
+    candles, interval, err = chart_candles(u, d)
+    return jsonify({"candles": candles, "interval": interval, "error": err})
 
 
 @app.route("/api/dates")
@@ -551,8 +545,8 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 #chartEl  { width: 100%; height: 100% }
 #chartMsg { position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
-            background: var(--bg); pointer-events: none; transition: opacity .2s }
-#chartMsg.hide { opacity: 0; pointer-events: none }
+            background: var(--bg); pointer-events: none }
+#chartMsg.hide { display: none }
 #panel { height: 235px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }
 #ph { display: flex; align-items: center; gap: 12px; padding: 6px 14px;
@@ -711,14 +705,24 @@ async function loadChart() {
   const msg = document.getElementById('chartMsg');
   msg.textContent = 'Loading chart…'; msg.classList.remove('hide');
   try {
-    const r = await fetch('/api/chart?underlying=' + curU + '&date=' + curDate);
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 20000);
+    const r = await fetch('/api/chart?underlying=' + curU + '&date=' + curDate,
+                          {signal: controller.signal});
+    clearTimeout(tid);
     const d = await r.json();
     candles = d.candles || []; curInterval = d.interval || '1m';
     document.getElementById('ivl').textContent = d.interval || '—';
     series.setData(candles);
-    if (candles.length) chart.timeScale().fitContent();
-  } catch(e) { console.error(e); }
-  msg.classList.add('hide');
+    if (candles.length) {
+      chart.timeScale().fitContent();
+      msg.classList.add('hide');
+    } else {
+      msg.textContent = d.error || 'No chart data for this date';
+    }
+  } catch(e) {
+    msg.textContent = e.name === 'AbortError' ? 'Chart load timed out — server unreachable' : ('Chart error: ' + e.message);
+  }
 }
 async function loadTrades() {
   try {
@@ -797,9 +801,8 @@ async function doImport(){
     const d=await r.json();
     if(d.ok){
       res.style.color='#4caf50';
-      res.textContent=`✓ ${d.imported} new, ${d.skipped} already stored (${d.total_options} options found in ${d.total_raw} total trades)`;
+      res.textContent=`✓ ${d.imported} new, ${d.skipped} already stored (${d.total_options} options in ${d.total_raw} total trades)`;
       if(d.total_raw===0||d.total_options===0){
-        // Show diagnostic info inline so user doesn't need to check logs
         const info=[];
         if(d.total_raw===0) info.push('API returned 0 trade records for this date range.');
         else if(d.total_options===0) info.push(`Found ${d.total_raw} trades but none detected as options.`);
