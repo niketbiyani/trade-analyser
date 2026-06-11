@@ -83,10 +83,6 @@ def _init_db(conn: sqlite3.Connection) -> None:
 
 
 def _dhan_client():
-    """
-    Build a fresh dhanhq client using the current .env values.
-    Reloads .env on every call so a token refresh is picked up automatically.
-    """
     from dhanhq import DhanContext, dhanhq as DhanHQ  # noqa: PLC0415
     load_dotenv(override=True)
     client_id    = os.getenv("DHAN_CLIENT_ID", "")
@@ -96,11 +92,30 @@ def _dhan_client():
     return DhanHQ(DhanContext(client_id, access_token))
 
 
+def _to_dhan_date(d: str) -> str:
+    return datetime.strptime(d, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+
+def _extract_batch(resp) -> list[dict]:
+    """
+    dhanhq SDK versions differ: some return {"data": [...]}, others return the list directly.
+    Handle both.
+    """
+    if isinstance(resp, list):
+        return resp
+    if isinstance(resp, dict):
+        data = resp.get("data") or resp.get("records") or []
+        if isinstance(data, list):
+            return data
+    return []
+
+
 # ── Dhan import ──────────────────────────────────────────────────────────────────
 
 
 def _underlying(trading_symbol: str, exchange_segment: str) -> str:
-    if exchange_segment == "BSE_FNO":
+    seg = (exchange_segment or "").upper()
+    if "BSE" in seg:
         return "SENSEX"
     sym = (trading_symbol or "").upper().replace("-", "").replace(" ", "")
     for name in ("BANKNIFTY", "MIDCPNIFTY", "FINNIFTY", "NIFTY", "SENSEX"):
@@ -110,69 +125,88 @@ def _underlying(trading_symbol: str, exchange_segment: str) -> str:
     return prefix or "NIFTY"
 
 
+def _is_option(trade: dict) -> bool:
+    """Detect option trades regardless of exact field names across SDK versions."""
+    seg = (trade.get("exchangeSegment") or "").upper()
+    if "FNO" not in seg and "F&O" not in seg and "FO" not in seg:
+        return False
+    # drvOptionType present and non-empty means it's a derivative option
+    opt = (trade.get("drvOptionType") or "").upper()
+    if opt in ("CALL", "PUT", "CE", "PE"):
+        return True
+    # Fallback: check instrument type field
+    inst = (trade.get("instrumentType") or trade.get("drvInstrumentType") or "").upper()
+    return inst in ("OPTIDX", "OPTSTK")
+
+
 def _do_import(from_date: str, to_date: str) -> dict:
-    """Inner import logic — called by import_from_dhan with retry on auth error."""
     dhan = _dhan_client()
-
-    def _fmt(d: str) -> str:
-        return datetime.strptime(d, "%Y-%m-%d").strftime("%d-%m-%Y")
-
     raw: list[dict] = []
     page = 0
     while True:
         resp = dhan.get_trade_history(
-            from_date=_fmt(from_date), to_date=_fmt(to_date), page_number=page
+            from_date=_to_dhan_date(from_date),
+            to_date=_to_dhan_date(to_date),
+            page_number=page,
         )
-        if not isinstance(resp, dict):
+        batch = _extract_batch(resp)
+        if not batch:
+            if page == 0:
+                logger.warning("get_trade_history page 0 returned empty. Raw resp type=%s value=%s",
+                               type(resp).__name__, str(resp)[:300])
             break
-        batch = resp.get("data") or []
-        if not isinstance(batch, list) or not batch:
-            break
+        logger.info("Fetched page %d: %d records. First record keys: %s",
+                    page, len(batch), list(batch[0].keys()) if batch else [])
         raw.extend(batch)
         if len(batch) < 50:
             break
         page += 1
 
-    opts = [
-        t for t in raw
-        if t.get("exchangeSegment") in ("NSE_FNO", "BSE_FNO")
-        and (t.get("drvOptionType") or "") in ("CALL", "PUT", "CE", "PE")
-    ]
+    opts = [t for t in raw if _is_option(t)]
+    logger.info("Total raw=%d  options=%d", len(raw), len(opts))
+
+    # Log a sample record so we can verify field names
+    if opts:
+        logger.info("Sample option trade fields: %s", opts[0])
+    elif raw:
+        logger.info("Sample non-option trade fields: %s", raw[0])
 
     groups: dict[tuple, list] = defaultdict(list)
     for t in opts:
-        ts = t.get("createTime") or t.get("exchangeTime") or ""
-        groups[(ts[:10] if len(ts) >= 10 else from_date, str(t.get("securityId", "")))].append(t)
+        ts = t.get("createTime") or t.get("exchangeTime") or t.get("orderCreateTime") or ""
+        sid = str(t.get("securityId") or t.get("security_id") or "")
+        trade_date = ts[:10] if len(ts) >= 10 else from_date
+        groups[(trade_date, sid)].append(t)
 
     imported = skipped = 0
     db = get_db()
 
     for (trade_date, sid), group in groups.items():
-        sells = sorted([t for t in group if t.get("transactionType") == "SELL"],
-                       key=lambda x: x.get("createTime") or "")
-        buys  = sorted([t for t in group if t.get("transactionType") == "BUY"],
-                       key=lambda x: x.get("createTime") or "")
+        sells = sorted([t for t in group if (t.get("transactionType") or "").upper() == "SELL"],
+                       key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "")
+        buys  = sorted([t for t in group if (t.get("transactionType") or "").upper() == "BUY"],
+                       key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "")
 
         for sell in sells:
-            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or ""
+            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
             entry_time  = ts_str[11:19] if len(ts_str) >= 19 else ""
-            entry_price = float(sell.get("tradedPrice") or 0)
-            qty         = int(sell.get("tradedQuantity") or 0)
-            opt_raw     = sell.get("drvOptionType") or ""
+            entry_price = float(sell.get("tradedPrice") or sell.get("price") or 0)
+            qty         = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
+            opt_raw     = (sell.get("drvOptionType") or "").upper()
             opt_type    = "CE" if opt_raw in ("CALL", "CE") else "PE"
-            strike      = float(sell.get("drvStrikePrice") or 0)
-            expiry      = str(sell.get("drvExpiryDate") or "")
-            sym         = sell.get("tradingSymbol") or ""
+            strike      = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
+            expiry      = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
+            sym         = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
             exseg       = sell.get("exchangeSegment") or "NSE_FNO"
             underlying  = _underlying(sym, exseg)
             lot_size    = LOT_SIZES.get(underlying, 1)
             lots        = round(qty / lot_size, 2) if lot_size else float(qty)
-            order_id    = str(sell.get("orderId") or "")
+            order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
 
             exit_t = next(
                 (b for b in buys
-                 if int(b.get("tradedQuantity") or 0) == qty
-                 and (b.get("createTime") or "") > ts_str),
+                 if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
+                 and (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str),
                 None,
             )
             if exit_t:
@@ -180,7 +214,7 @@ def _do_import(from_date: str, to_date: str) -> dict:
 
             exit_ts    = exit_t.get("createTime") or exit_t.get("exchangeTime") or "" if exit_t else ""
             exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
-            exit_price = float(exit_t.get("tradedPrice") or 0) if exit_t else None
+            exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
             pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
             status     = "CLOSED" if exit_t else "OPEN"
 
@@ -220,17 +254,13 @@ def _do_import(from_date: str, to_date: str) -> dict:
 
 
 def import_from_dhan(from_date: str, to_date: str) -> dict:
-    """
-    Import option trades from Dhan trade history.
-    Auto-refreshes token once if an auth error is detected.
-    """
     try:
         return _do_import(from_date, to_date)
     except Exception as e:
         err = str(e).lower()
         if any(k in err for k in ("unauthorized", "401", "invalid token",
                                    "token expired", "authentication", "access denied")):
-            logger.info("Auth error during import — refreshing token and retrying...")
+            logger.info("Auth error — refreshing token and retrying...")
             import token_manager  # noqa: PLC0415
             if token_manager.refresh_token():
                 return _do_import(from_date, to_date)
@@ -241,11 +271,6 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
 
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
-    """
-    Fetch OHLCV candles for the underlying index on a given date via yfinance.
-    Interval: 1m (<=5 days old), 5m (<=55 days), 1d (older).
-    Timestamps: naive-IST treated as UTC so TradingView shows correct IST times.
-    """
     sym  = TICKERS.get(underlying.upper(), "^NSEI")
     dt   = datetime.strptime(trade_date, "%Y-%m-%d")
     age  = (datetime.now() - dt).days
@@ -261,9 +286,7 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
     end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
 
     try:
-        df = yf.Ticker(sym).history(
-            start=start, end=end, interval=interval, auto_adjust=True
-        )
+        df = yf.Ticker(sym).history(start=start, end=end, interval=interval, auto_adjust=True)
     except Exception as e:
         logger.error("yfinance %s: %s", sym, e)
         return [], interval
@@ -282,14 +305,9 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
         o, h, l, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
         if any(v != v for v in (o, h, l, c)):
             continue
-        candles.append({
-            "time":  int(ts.timestamp()),
-            "open":  round(o, 2),
-            "high":  round(h, 2),
-            "low":   round(l, 2),
-            "close": round(c, 2),
-        })
-
+        candles.append({"time": int(ts.timestamp()),
+                        "open": round(o, 2), "high": round(h, 2),
+                        "low":  round(l, 2), "close": round(c, 2)})
     return candles, interval
 
 
@@ -301,6 +319,36 @@ app = Flask(__name__)
 @app.route("/")
 def index():
     return _page()
+
+
+@app.route("/api/debug-dhan")
+def api_debug_dhan():
+    """
+    Returns the raw first page of Dhan trade history for diagnosis.
+    Usage: /api/debug-dhan?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD
+    Shows exactly what Dhan returns so field names can be verified.
+    """
+    from_date = request.args.get("from_date") or str(date.today())
+    to_date   = request.args.get("to_date")   or str(date.today())
+    try:
+        dhan = _dhan_client()
+        resp = dhan.get_trade_history(
+            from_date=_to_dhan_date(from_date),
+            to_date=_to_dhan_date(to_date),
+            page_number=0,
+        )
+        batch = _extract_batch(resp)
+        return jsonify({
+            "ok": True,
+            "response_type": type(resp).__name__,
+            "response_keys": list(resp.keys()) if isinstance(resp, dict) else None,
+            "record_count": len(batch),
+            "first_record": batch[0] if batch else None,
+            "first_record_keys": list(batch[0].keys()) if batch else None,
+            "raw_response_preview": str(resp)[:500],
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "error_type": type(e).__name__})
 
 
 @app.route("/api/import", methods=["POST"])
@@ -384,7 +432,6 @@ def _page() -> str:
 html, body { height: 100%; overflow: hidden }
 body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
        font: 13px/1.4 'SF Mono', Consolas, monospace }
-
 #bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
        background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0 }
 #bar h1 { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; margin-right: 4px; color: var(--acc) }
@@ -407,7 +454,6 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 #refreshBtn { background: var(--s2); border: 1px solid var(--border); color: var(--dim);
               padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }
 #refreshBtn:hover { border-color: var(--acc); color: var(--text) }
-
 #main { flex: 1; display: flex; flex-direction: column; min-height: 0 }
 #chartBox { flex: 1; min-height: 0; position: relative }
 #chartEl  { width: 100%; height: 100% }
@@ -415,7 +461,6 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
             justify-content: center; color: var(--dim); font-size: 12px;
             background: var(--bg); pointer-events: none; transition: opacity .2s }
 #chartMsg.hide { opacity: 0; pointer-events: none }
-
 #panel { height: 235px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }
 #ph { display: flex; align-items: center; gap: 12px; padding: 6px 14px;
@@ -437,7 +482,6 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
 .ni:focus { border-bottom: 1px solid var(--acc) }
 .ni::placeholder { color: #333 }
 #empty { text-align: center; color: var(--dim); padding: 36px; font-size: 12px }
-
 #ov { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
       z-index: 99; align-items: center; justify-content: center }
 #ov.show { display: flex }
@@ -453,13 +497,11 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
 .btnp { background: var(--acc); color: #fff }
 .btns { background: var(--s2); color: var(--text); border: 1px solid var(--border) }
 #mres { margin-top: 10px; font-size: 12px; min-height: 18px; word-break: break-word }
-
 ::-webkit-scrollbar { width: 5px; height: 5px }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px }
 </style>
 </head>
 <body>
-
 <div id="bar">
   <h1>TRADE ANALYSER</h1>
   <div class="date-nav">
@@ -480,7 +522,6 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
   <button id="refreshBtn" onclick="doRefreshToken()" title="Refresh Dhan token">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">↓ Import from Dhan</button>
 </div>
-
 <div id="main">
   <div id="chartBox">
     <div id="chartEl"></div>
@@ -504,7 +545,6 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
     </div>
   </div>
 </div>
-
 <div id="ov" onclick="if(event.target===this)closeImp()">
   <div id="modal">
     <h2>Import Trades from Dhan</h2>
@@ -521,14 +561,12 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
     </div>
   </div>
 </div>
-
 <script>
 let chart, series;
 let curDate = '', curU = 'NIFTY';
 let typeOn  = new Set(['CE','PE']);
 let allTrades = [], candles = [], curInterval = '1m';
 let selId = null;
-
 window.addEventListener('DOMContentLoaded', () => {
   initChart();
   const today = new Date().toISOString().slice(0,10);
@@ -536,7 +574,6 @@ window.addEventListener('DOMContentLoaded', () => {
   curDate = today;
   loadAll();
 });
-
 function initChart() {
   const box = document.getElementById('chartBox');
   chart = LightweightCharts.createChart(document.getElementById('chartEl'), {
@@ -554,7 +591,6 @@ function initChart() {
   });
   new ResizeObserver(() => chart.resize(box.clientWidth, box.clientHeight)).observe(box);
 }
-
 function shiftDay(d) {
   const dt = new Date(curDate + 'T00:00:00');
   dt.setDate(dt.getDate() + d);
@@ -563,40 +599,31 @@ function shiftDay(d) {
   loadAll();
 }
 function onDate() { curDate = document.getElementById('dp').value; loadAll(); }
-
 function setU(el) {
   document.querySelectorAll('#uChips .chip').forEach(c => c.classList.remove('on'));
-  el.classList.add('on');
-  curU = el.dataset.v;
-  loadAll();
+  el.classList.add('on'); curU = el.dataset.v; loadAll();
 }
-
 function togT(el) {
   const v = el.dataset.v;
-  if (typeOn.has(v)) {
-    if (typeOn.size > 1) { typeOn.delete(v); el.classList.remove('on'); }
-  } else { typeOn.add(v); el.classList.add('on'); }
+  if (typeOn.has(v)) { if (typeOn.size > 1) { typeOn.delete(v); el.classList.remove('on'); } }
+  else { typeOn.add(v); el.classList.add('on'); }
   const f = allTrades.filter(t => typeOn.has(t.option_type));
   renderTrades(f); putMarkers(f);
 }
-
 function loadAll() { loadChart(); loadTrades(); }
-
 async function loadChart() {
   const msg = document.getElementById('chartMsg');
   msg.textContent = 'Loading chart…'; msg.classList.remove('hide');
   try {
     const r = await fetch('/api/chart?underlying=' + curU + '&date=' + curDate);
     const d = await r.json();
-    candles = d.candles || [];
-    curInterval = d.interval || '1m';
+    candles = d.candles || []; curInterval = d.interval || '1m';
     document.getElementById('ivl').textContent = d.interval || '—';
     series.setData(candles);
     if (candles.length) chart.timeScale().fitContent();
   } catch(e) { console.error(e); }
   msg.classList.add('hide');
 }
-
 async function loadTrades() {
   try {
     const r = await fetch('/api/trades?date=' + curDate + '&underlying=' + curU);
@@ -605,158 +632,81 @@ async function loadTrades() {
     renderTrades(f); putMarkers(f);
   } catch(e) { console.error(e); }
 }
-
 function renderTrades(trades) {
-  const tbl = document.getElementById('tbl');
-  const em  = document.getElementById('empty');
-  const cnt = document.getElementById('pcnt');
-  const sum = document.getElementById('psummary');
-  if (!trades.length) {
-    tbl.style.display = 'none'; em.style.display = '';
-    cnt.textContent = ''; sum.innerHTML = ''; return;
-  }
-  tbl.style.display = ''; em.style.display = 'none';
+  const tbl = document.getElementById('tbl'), em = document.getElementById('empty');
+  const cnt = document.getElementById('pcnt'), sum = document.getElementById('psummary');
+  if (!trades.length) { tbl.style.display='none'; em.style.display=''; cnt.textContent=''; sum.innerHTML=''; return; }
+  tbl.style.display=''; em.style.display='none';
   const closed = trades.filter(t => t.pnl != null);
-  const tot  = closed.reduce((a,t) => a + t.pnl, 0);
-  const wins = closed.filter(t => t.pnl >= 0).length;
-  const loss = closed.filter(t => t.pnl  < 0).length;
-  cnt.textContent = trades.length + ' trade' + (trades.length > 1 ? 's' : '');
-  sum.innerHTML = '<span class="' + (tot >= 0 ? 'pos' : 'neg') + '">' +
-                  (tot >= 0 ? '+' : '') + '₹' + tot.toFixed(0) + '</span>' +
-                  ' &nbsp; ' + wins + 'W / ' + loss + 'L';
+  const tot = closed.reduce((a,t)=>a+t.pnl,0);
+  const wins = closed.filter(t=>t.pnl>=0).length, loss = closed.filter(t=>t.pnl<0).length;
+  cnt.textContent = trades.length + ' trade' + (trades.length>1?'s':'');
+  sum.innerHTML = '<span class="'+(tot>=0?'pos':'neg')+'">'+(tot>=0?'+':'')+'₹'+tot.toFixed(0)+'</span> &nbsp; '+wins+'W / '+loss+'L';
   document.getElementById('tbody').innerHTML = trades.map(t => {
-    const tc  = t.option_type.toLowerCase();
-    const sk  = t.strike ? t.strike.toLocaleString('en-IN') : '—';
-    const ep  = t.exit_price  != null ? t.exit_price.toFixed(2) : '—';
-    const pl  = t.pnl != null
-      ? '<span class="' + (t.pnl >= 0 ? 'pos' : 'neg') + '">' +
-        (t.pnl >= 0 ? '+' : '') + '₹' + t.pnl.toFixed(0) + '</span>' : '—';
-    const lts = t.lots ? t.lots + 'L' : t.quantity;
-    const sel = selId === t.id ? ' sel' : '';
-    const nt  = (t.notes || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const tc=t.option_type.toLowerCase(), sk=t.strike?t.strike.toLocaleString('en-IN'):'—';
+    const ep=t.exit_price!=null?t.exit_price.toFixed(2):'—';
+    const pl=t.pnl!=null?'<span class="'+(t.pnl>=0?'pos':'neg')+'">'+(t.pnl>=0?'+':'')+'₹'+t.pnl.toFixed(0)+'</span>':'—';
+    const lts=t.lots?t.lots+'L':t.quantity, sel=selId===t.id?' sel':'';
+    const nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     return `<tr class="${sel}" data-id="${t.id}" onclick="selTrade(${t.id},'${t.entry_time||''}')">
-      <td>${t.entry_time ? t.entry_time.slice(0,5) : '—'}</td>
-      <td><span class="tag ${tc}">${t.option_type}</span></td>
-      <td>${sk}</td><td>${t.entry_price.toFixed(2)}</td><td>${ep}</td>
-      <td>${lts}</td><td>${pl}</td>
-      <td><input class="ni" value="${nt}" placeholder="add note…"
-            onclick="event.stopPropagation()" onblur="saveNote(${t.id},this.value)"></td>
+      <td>${t.entry_time?t.entry_time.slice(0,5):'—'}</td><td><span class="tag ${tc}">${t.option_type}</span></td>
+      <td>${sk}</td><td>${t.entry_price.toFixed(2)}</td><td>${ep}</td><td>${lts}</td><td>${pl}</td>
+      <td><input class="ni" value="${nt}" placeholder="add note…" onclick="event.stopPropagation()" onblur="saveNote(${t.id},this.value)"></td>
     </tr>`;
   }).join('');
 }
-
-function tsFor(dateStr, timeStr) {
-  if (!timeStr) return null;
-  const [y,mo,d] = dateStr.split('-').map(Number);
-  const [h,m]   = timeStr.split(':').map(Number);
-  return Date.UTC(y, mo-1, d, h, m, 0) / 1000;
-}
-function snapTs(ts) {
-  if (!ts || !candles.length) return ts;
-  let best = candles[0].time, diff = Math.abs(candles[0].time - ts);
-  for (const c of candles) {
-    const d = Math.abs(c.time - ts);
-    if (d < diff) { diff = d; best = c.time; }
-    if (c.time > ts + 7200) break;
-  }
-  return best;
-}
-function putMarkers(trades) {
-  if (!series) return;
-  const markers = [];
-  for (const t of trades) {
-    const col = t.option_type === 'CE' ? '#4fc3f7' : '#ffb74d';
-    const lbl = t.option_type + ' ' + (t.strike ? t.strike.toLocaleString('en-IN') : '');
-    const ets = tsFor(curDate, t.entry_time);
-    if (ets) markers.push({ time:snapTs(ets), position:'aboveBar', color:col,
-                             shape:'arrowDown', text:lbl, id:'e'+t.id, size:1.2 });
-    if (t.exit_time && t.exit_price != null) {
-      const xts = tsFor(curDate, t.exit_time);
-      if (xts) markers.push({
-        time: snapTs(xts), position: 'belowBar',
-        color: (t.pnl != null && t.pnl >= 0) ? '#4caf50' : '#ef5350',
-        shape: 'arrowUp',
-        text: t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl) : t.exit_price.toFixed(0),
-        id: 'x'+t.id, size: 1.2,
-      });
+function tsFor(ds,ts){if(!ts)return null;const[y,mo,d]=ds.split('-').map(Number);const[h,m]=ts.split(':').map(Number);return Date.UTC(y,mo-1,d,h,m,0)/1000;}
+function snapTs(ts){if(!ts||!candles.length)return ts;let best=candles[0].time,diff=Math.abs(candles[0].time-ts);for(const c of candles){const d=Math.abs(c.time-ts);if(d<diff){diff=d;best=c.time;}if(c.time>ts+7200)break;}return best;}
+function putMarkers(trades){
+  if(!series)return;
+  const markers=[];
+  for(const t of trades){
+    const col=t.option_type==='CE'?'#4fc3f7':'#ffb74d';
+    const lbl=t.option_type+' '+(t.strike?t.strike.toLocaleString('en-IN'):'');
+    const ets=tsFor(curDate,t.entry_time);
+    if(ets)markers.push({time:snapTs(ets),position:'aboveBar',color:col,shape:'arrowDown',text:lbl,id:'e'+t.id,size:1.2});
+    if(t.exit_time&&t.exit_price!=null){
+      const xts=tsFor(curDate,t.exit_time);
+      if(xts)markers.push({time:snapTs(xts),position:'belowBar',color:(t.pnl!=null&&t.pnl>=0)?'#4caf50':'#ef5350',shape:'arrowUp',text:t.pnl!=null?(t.pnl>=0?'+':'')+Math.round(t.pnl):t.exit_price.toFixed(0),id:'x'+t.id,size:1.2});
     }
   }
-  markers.sort((a,b) => a.time - b.time);
+  markers.sort((a,b)=>a.time-b.time);
   series.setMarkers(markers);
 }
-
-function selTrade(id, entryTime) {
-  selId = id;
-  document.querySelectorAll('#tbody tr').forEach(r =>
-    r.classList.toggle('sel', +r.dataset.id === id));
-  if (entryTime && candles.length) {
-    const ts  = tsFor(curDate, entryTime);
-    const sec = curInterval === '5m' ? 300 : 60;
-    if (ts) chart.timeScale().setVisibleRange({ from: ts - sec*25, to: ts + sec*90 });
-  }
+function selTrade(id,entryTime){
+  selId=id;
+  document.querySelectorAll('#tbody tr').forEach(r=>r.classList.toggle('sel',+r.dataset.id===id));
+  if(entryTime&&candles.length){const ts=tsFor(curDate,entryTime);const sec=curInterval==='5m'?300:60;if(ts)chart.timeScale().setVisibleRange({from:ts-sec*25,to:ts+sec*90});}
 }
-async function saveNote(id, notes) {
-  try {
-    await fetch('/api/trade/'+id+'/notes', {
-      method:'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({notes}),
-    });
-    const t = allTrades.find(x => x.id === id);
-    if (t) t.notes = notes;
-  } catch(e) { console.error(e); }
+async function saveNote(id,notes){
+  try{await fetch('/api/trade/'+id+'/notes',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({notes})});const t=allTrades.find(x=>x.id===id);if(t)t.notes=notes;}catch(e){console.error(e);}
 }
-
-function openImp() {
-  const t = new Date().toISOString().slice(0,10);
-  document.getElementById('mFrom').value = t;
-  document.getElementById('mTo').value   = t;
-  document.getElementById('mres').textContent = '';
+function openImp(){
+  const t=new Date().toISOString().slice(0,10);
+  document.getElementById('mFrom').value=t;
+  document.getElementById('mTo').value=t;
+  document.getElementById('mres').textContent='';
   document.getElementById('ov').classList.add('show');
 }
-function closeImp() { document.getElementById('ov').classList.remove('show'); }
-
-async function doImport() {
-  const btn = document.getElementById('mBtn');
-  const res = document.getElementById('mres');
-  btn.disabled = true; btn.textContent = 'Importing…';
-  res.style.color = ''; res.textContent = 'Fetching from Dhan…';
-  try {
-    const r = await fetch('/api/import', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        from_date: document.getElementById('mFrom').value,
-        to_date:   document.getElementById('mTo').value,
-      }),
-    });
-    const d = await r.json();
-    if (d.ok) {
-      res.style.color = '#4caf50';
-      res.textContent = `✓ ${d.imported} new, ${d.skipped} already stored` +
-                        ` (${d.total_options} options in ${d.total_raw} total trades)`;
-      loadTrades();
-    } else {
-      res.style.color = '#ef5350';
-      res.textContent = 'Error: ' + d.error;
-    }
-  } catch(e) {
-    res.style.color = '#ef5350';
-    res.textContent = 'Network error: ' + e.message;
-  }
-  btn.disabled = false; btn.textContent = 'Import';
+function closeImp(){document.getElementById('ov').classList.remove('show');}
+async function doImport(){
+  const btn=document.getElementById('mBtn'),res=document.getElementById('mres');
+  btn.disabled=true;btn.textContent='Importing…';res.style.color='';res.textContent='Fetching from Dhan…';
+  try{
+    const r=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({from_date:document.getElementById('mFrom').value,to_date:document.getElementById('mTo').value})});
+    const d=await r.json();
+    if(d.ok){res.style.color='#4caf50';res.textContent=`✓ ${d.imported} new, ${d.skipped} already stored (${d.total_options} options in ${d.total_raw} total trades)`;loadTrades();}
+    else{res.style.color='#ef5350';res.textContent='Error: '+d.error;}
+  }catch(e){res.style.color='#ef5350';res.textContent='Network error: '+e.message;}
+  btn.disabled=false;btn.textContent='Import';
 }
-
-async function doRefreshToken() {
-  const btn = document.getElementById('refreshBtn');
-  btn.textContent = 'Refreshing…'; btn.disabled = true;
-  try {
-    const r = await fetch('/api/refresh-token', { method:'POST' });
-    const d = await r.json();
-    btn.textContent = d.ok ? '✓ Token' : '✗ Token';
-    btn.style.color = d.ok ? '#4caf50' : '#ef5350';
-    setTimeout(() => { btn.textContent = '↻ Token'; btn.style.color = ''; btn.disabled = false; }, 3000);
-  } catch(e) {
-    btn.textContent = '↻ Token'; btn.disabled = false;
-  }
+async function doRefreshToken(){
+  const btn=document.getElementById('refreshBtn');btn.textContent='Refreshing…';btn.disabled=true;
+  try{const r=await fetch('/api/refresh-token',{method:'POST'});const d=await r.json();
+    btn.textContent=d.ok?'✓ Token':'✗ Token';btn.style.color=d.ok?'#4caf50':'#ef5350';
+    setTimeout(()=>{btn.textContent='↻ Token';btn.style.color='';btn.disabled=false;},3000);
+  }catch(e){btn.textContent='↻ Token';btn.disabled=false;}
 }
 </script>
 </body>
