@@ -3,7 +3,9 @@ Single-file Flask app. Port 5556 by default.
 """
 
 import logging
+import math
 import os
+import random
 import socket
 import sqlite3
 import threading
@@ -19,7 +21,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# ── Config ───────────────────────────────────────────────────────────────────────
+# ── Config ──────────────────────────────────────────────────────
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -30,8 +32,8 @@ LOT_SIZES = {
 }
 
 DHAN_INDEX_IDS = {
-    "NIFTY":  {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
-    "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
+    "NIFTY":  {"security_id": "13",  "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "SENSEX": {"security_id": "51",  "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
 }
 
 YF_TICKERS = {
@@ -41,7 +43,7 @@ YF_TICKERS = {
 
 CHART_TIMEOUT = 10  # seconds for any external chart data call
 
-# ── Database ──────────────────────────────────────────────────────────────────────
+# ── Database ────────────────────────────────────────────────────────
 
 _db_lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
@@ -86,7 +88,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         """)
 
 
-# ── Dhan client ───────────────────────────────────────────────────────────────────────
+# ── Dhan client ────────────────────────────────────────────────────────────────────
 
 
 def _dhan_client():
@@ -116,7 +118,7 @@ def _extract_batch(resp) -> list[dict]:
     return []
 
 
-# ── Dhan import ──────────────────────────────────────────────────────────────────────
+# ── Dhan import ──────────────────────────────────────────────────────────────────
 
 
 def _underlying(trading_symbol: str, exchange_segment: str) -> str:
@@ -326,7 +328,7 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
         raise
 
 
-# ── Chart data ──────────────────────────────────────────────────────────────────────────
+# ── Chart data ──────────────────────────────────────────────────────────────────────
 
 
 def _with_timeout(fn, *args, **kwargs):
@@ -339,6 +341,17 @@ def _with_timeout(fn, *args, **kwargs):
         socket.setdefaulttimeout(old)
 
 
+def _is_auth_error(resp) -> bool:
+    """Detect expired-token response from Dhan API."""
+    if not isinstance(resp, dict):
+        return False
+    status = (resp.get("status") or "").lower()
+    if status not in ("failure", "error", "fail"):
+        return False
+    remarks = str(resp.get("remarks") or resp.get("message") or "").lower()
+    return any(w in remarks for w in ("unauthorized", "token", "401", "auth", "access"))
+
+
 def _raw_dhan_chart(security_id: str, exchange_segment: str,
                     instrument_type: str, trade_date: str) -> tuple[dict, str]:
     """Call intraday_minute_data; tries with date params, falls back without."""
@@ -346,30 +359,51 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
         dhan = _dhan_client()
     except Exception as e:
         return {}, str(e)
-    try:
-        resp = _with_timeout(
-            dhan.intraday_minute_data,
-            security_id=security_id,
-            exchange_segment=exchange_segment,
-            instrument_type=instrument_type,
-            from_date=trade_date,
-            to_date=trade_date,
-        )
-        return resp, ""
-    except TypeError:
-        # SDK version doesn’t accept date params — returns today only
+
+    def _call(d):
         try:
-            resp = _with_timeout(
-                dhan.intraday_minute_data,
+            return _with_timeout(
+                d.intraday_minute_data,
                 security_id=security_id,
                 exchange_segment=exchange_segment,
                 instrument_type=instrument_type,
-            )
-            return resp, ""
-        except Exception as e:
-            return {}, str(e)
+                from_date=trade_date,
+                to_date=trade_date,
+            ), ""
+        except TypeError:
+            # SDK version that doesn't accept date params
+            return _with_timeout(
+                d.intraday_minute_data,
+                security_id=security_id,
+                exchange_segment=exchange_segment,
+                instrument_type=instrument_type,
+            ), ""
+
+    try:
+        resp, err = _call(dhan)
     except Exception as e:
         return {}, str(e)
+
+    # If token expired, refresh and retry once
+    if _is_auth_error(resp):
+        logger.info("Chart API auth error — refreshing token and retrying")
+        try:
+            import token_manager  # noqa: PLC0415
+            if token_manager.refresh_token():
+                dhan = _dhan_client()
+                resp, err = _call(dhan)
+        except Exception as e:
+            logger.warning("Token refresh failed during chart load: %s", e)
+
+    logger.info(
+        "Dhan chart [%s %s %s %s]: type=%s status=%s keys=%s preview=%s",
+        security_id, exchange_segment, instrument_type, trade_date,
+        type(resp).__name__,
+        resp.get("status") if isinstance(resp, dict) else "n/a",
+        list(resp.keys()) if isinstance(resp, dict) else None,
+        str(resp)[:300],
+    )
+    return resp, ""
 
 
 def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
@@ -389,7 +423,7 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
     lows   = data.get("low")   or data.get("lowPrice")   or []
     closes = data.get("close") or data.get("closePrice") or []
     if not timestamps:
-        logger.info("Chart response has no timestamps. Keys: %s", list(data.keys()))
+        logger.info("Chart response has no timestamps. data keys: %s", list(data.keys()))
         return []
     candles = []
     for i, ts_str in enumerate(timestamps):
@@ -454,8 +488,7 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
             candles = _parse_dhan_candles(raw_resp, trade_date)
             if candles:
                 return candles, "1m", ""
-            logger.info("Dhan chart 0 candles for %s %s. resp: %s",
-                        u, trade_date, str(raw_resp)[:300])
+            logger.info("Dhan chart 0 candles for %s %s. Check analyser.log for raw response.", u, trade_date)
     sym = YF_TICKERS.get(u)
     if sym:
         candles, interval = _chart_from_yfinance(sym, trade_date)
@@ -463,11 +496,31 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
             return candles, interval, ""
     return [], "1m", (
         f"No chart data for {u} {trade_date}. "
-        "Visit /api/debug-chart for details."
+        "Check analyser.log or visit /api/debug-chart?underlying="+u+"&date="+trade_date
     )
 
 
-# ── Flask ──────────────────────────────────────────────────────────────────────────────
+def _make_test_candles(trade_date: str) -> list[dict]:
+    """Generate fake 1-minute NIFTY-like candles for testing JS chart rendering."""
+    dt = datetime.strptime(trade_date, "%Y-%m-%d")
+    base_time = datetime(dt.year, dt.month, dt.day, 9, 15, 0)
+    price = 24500.0
+    rng = random.Random(42)
+    candles = []
+    for i in range(375):  # 9:15–15:29
+        noise = rng.gauss(0, 12)
+        wave  = math.sin(i / 40.0) * 40
+        o = round(price + wave + noise, 2)
+        c = round(o + rng.gauss(0, 8), 2)
+        h = round(max(o, c) + abs(rng.gauss(0, 6)), 2)
+        l = round(min(o, c) - abs(rng.gauss(0, 6)), 2)
+        t = int(base_time.timestamp()) + i * 60
+        candles.append({"time": t, "open": o, "high": h, "low": l, "close": c})
+        price = c
+    return candles
+
+
+# ── Flask ───────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 
@@ -475,6 +528,14 @@ app = Flask(__name__)
 @app.route("/")
 def index():
     return _page()
+
+
+@app.route("/api/test-chart")
+def api_test_chart():
+    """Returns fake candle data to verify the JS chart renders correctly."""
+    d = request.args.get("date") or str(date.today())
+    candles = _make_test_candles(d)
+    return jsonify({"candles": candles, "interval": "1m", "error": ""})
 
 
 @app.route("/api/debug-chart")
@@ -499,7 +560,7 @@ def api_debug_chart():
             "resp_type":    type(raw_resp).__name__,
             "resp_keys":    list(raw_resp.keys()) if isinstance(raw_resp, dict) else None,
             "data_keys":    list(inner.keys()) if isinstance(inner, dict) else None,
-            "raw_preview":  str(raw_resp)[:600],
+            "raw_preview":  str(raw_resp)[:800],
             "first_candle": candles[0] if candles else None,
         })
     except Exception as e:
@@ -607,7 +668,7 @@ def api_dates():
     return jsonify([r["date"] for r in rows])
 
 
-# ── HTML page ─────────────────────────────────────────────────────────────────────────────
+# ── HTML page ─────────────────────────────────────────────────────────────────────────────────
 
 def _page() -> str:
     return """<!DOCTYPE html>
@@ -648,13 +709,17 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 #refreshBtn { background: var(--s2); border: 1px solid var(--border); color: var(--dim);
               padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }
 #refreshBtn:hover { border-color: var(--acc); color: var(--text) }
+#sampleBtn { background: var(--s2); border: 1px solid var(--border); color: var(--dim);
+             padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }
+#sampleBtn:hover { border-color: #4caf50; color: #4caf50 }
 #main { flex: 1; display: flex; flex-direction: column; min-height: 0 }
-#chartBox { flex: 1; min-height: 0; position: relative }
+#chartBox { flex: 1; min-height: 200px; position: relative }
 #chartEl  { width: 100%; height: 100% }
 #chartMsg { position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
-            background: var(--bg); pointer-events: none }
+            background: var(--bg); pointer-events: none; flex-direction: column; gap: 8px }
 #chartMsg.hide { display: none }
+#chartMsgSub { font-size: 10px; color: #333; max-width: 500px; text-align: center; word-break: break-all }
 #panel { height: 235px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }
 #ph { display: flex; align-items: center; gap: 12px; padding: 6px 14px;
@@ -715,13 +780,17 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
     <div class="chip pe on" data-v="PE" onclick="togT(this)">PE</div>
   </div>
   <span id="ivl">—</span>
+  <button id="sampleBtn" onclick="loadSample()" title="Load fake candles to test chart rendering">Test Chart</button>
   <button id="refreshBtn" onclick="doRefreshToken()" title="Refresh Dhan token">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&darr; Import from Dhan</button>
 </div>
 <div id="main">
   <div id="chartBox">
     <div id="chartEl"></div>
-    <div id="chartMsg">Loading chart…</div>
+    <div id="chartMsg">
+      <span id="chartMsgMain">Loading chart…</span>
+      <span id="chartMsgSub"></span>
+    </div>
   </div>
   <div id="panel">
     <div id="ph">
@@ -765,16 +834,26 @@ let typeOn  = new Set(['CE','PE']);
 let allTrades = [], candles = [], curInterval = '1m';
 let selId = null;
 window.addEventListener('DOMContentLoaded', () => {
+  if (typeof LightweightCharts === 'undefined') {
+    setChartMsg('Chart library failed to load.', 'Check internet / CDN access, then refresh.');
+    return;
+  }
   initChart();
   const today = new Date().toISOString().slice(0,10);
   document.getElementById('dp').value = today;
   curDate = today;
   loadAll();
 });
+function setChartMsg(main, sub) {
+  const el = document.getElementById('chartMsg');
+  el.classList.remove('hide');
+  document.getElementById('chartMsgMain').textContent = main || '';
+  document.getElementById('chartMsgSub').textContent  = sub  || '';
+}
+function hideChartMsg() { document.getElementById('chartMsg').classList.add('hide'); }
 function initChart() {
-  const box = document.getElementById('chartBox');
   chart = LightweightCharts.createChart(document.getElementById('chartEl'), {
-    width: box.clientWidth, height: box.clientHeight,
+    autoSize: true,
     layout: { background:{color:'#0d0d0d'}, textColor:'#555' },
     grid:   { vertLines:{color:'#181818'}, horzLines:{color:'#181818'} },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -786,7 +865,6 @@ function initChart() {
     borderUpColor:'#26a69a', borderDownColor:'#ef5350',
     wickUpColor:'#26a69a', wickDownColor:'#ef5350',
   });
-  new ResizeObserver(() => chart.resize(box.clientWidth, box.clientHeight)).observe(box);
 }
 function shiftDay(d) {
   const dt = new Date(curDate + 'T00:00:00');
@@ -809,8 +887,7 @@ function togT(el) {
 }
 function loadAll() { loadChart(); loadTrades(); }
 async function loadChart() {
-  const msg = document.getElementById('chartMsg');
-  msg.textContent = 'Loading chart…'; msg.classList.remove('hide');
+  setChartMsg('Loading chart…', '');
   try {
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), 20000);
@@ -823,13 +900,36 @@ async function loadChart() {
     series.setData(candles);
     if (candles.length) {
       chart.timeScale().fitContent();
-      msg.classList.add('hide');
+      hideChartMsg();
     } else {
-      msg.textContent = d.error || 'No chart data for this date';
+      const sub = d.error ? d.error : 'No data — try “Test Chart” to verify rendering works';
+      setChartMsg('No chart data for ' + curU + ' ' + curDate, sub);
     }
   } catch(e) {
-    msg.textContent = e.name === 'AbortError' ? 'Chart load timed out' : ('Chart error: ' + e.message);
+    const main = e.name === 'AbortError' ? 'Chart load timed out (20s)' : 'Chart error: ' + e.message;
+    setChartMsg(main, 'Try \"Test Chart\" button to check if rendering works');
   }
+}
+async function loadSample() {
+  const btn = document.getElementById('sampleBtn');
+  btn.textContent = '…'; btn.disabled = true;
+  try {
+    const r = await fetch('/api/test-chart?date=' + curDate);
+    const d = await r.json();
+    candles = d.candles || [];
+    series.setData(candles);
+    if (candles.length) {
+      chart.timeScale().fitContent();
+      setChartMsg('', '');
+      document.getElementById('chartMsg').classList.add('hide');
+      document.getElementById('ivl').textContent = 'sample';
+    } else {
+      setChartMsg('Test chart returned 0 candles', '');
+    }
+  } catch(e) {
+    setChartMsg('Test chart error: ' + e.message, '');
+  }
+  btn.textContent = 'Test Chart'; btn.disabled = false;
 }
 async function loadTrades() {
   try {
@@ -939,7 +1039,7 @@ async function doRefreshToken(){
 </html>"""
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────────────────────
+# ── Entry point ────────────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     logger.info("Trade Analyser starting on http://0.0.0.0:%d", PORT)
@@ -948,6 +1048,6 @@ if __name__ == "__main__":
     if token_manager.is_token_refresh_configured():
         logger.info("Refreshing Dhan token at startup...")
         token_manager.refresh_token()
-    # threaded=True is critical: without it Flask's dev server is single-threaded
-    # and one hanging chart request blocks all other requests (date changes, etc.)
+    # threaded=True: without it Flask's dev server is single-threaded
+    # and one slow chart request blocks all other requests
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
