@@ -1,7 +1,5 @@
-"""
-Trade Analyser — post-session option trade review on the underlying index chart.
-Single-file Flask app. Port 5556 by default.
-"""
+"""Trade Analyser — post-session option trade review on the underlying index chart.
+Single-file Flask app. Port 5556 by default."""
 
 import logging
 import os
@@ -19,7 +17,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# ── Config ───────────────────────────────────────────────────────────────────
+# ── Config ───────────────────────────────────────────────────────────────────────
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -34,7 +32,7 @@ TICKERS = {
     "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
 }
 
-# ── Database ───────────────────────────────────────────────────────────────────
+# ── Database ──────────────────────────────────────────────────────────────────────
 
 _db_lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
@@ -79,7 +77,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         """)
 
 
-# ── Dhan client ──────────────────────────────────────────────────────────────────
+# ── Dhan client ───────────────────────────────────────────────────────────────────────
 
 
 def _dhan_client():
@@ -99,18 +97,21 @@ def _to_dhan_date(d: str) -> str:
 def _extract_batch(resp) -> list[dict]:
     """
     dhanhq SDK versions differ: some return {"data": [...]}, others return the list directly.
-    Handle both.
+    Handle both, plus {"records": [...]}, and None.
     """
+    if resp is None:
+        return []
     if isinstance(resp, list):
-        return resp
+        return [r for r in resp if isinstance(r, dict)]
     if isinstance(resp, dict):
-        data = resp.get("data") or resp.get("records") or []
-        if isinstance(data, list):
-            return data
+        for key in ("data", "records", "trades", "tradeData"):
+            val = resp.get(key)
+            if isinstance(val, list) and val:
+                return [r for r in val if isinstance(r, dict)]
     return []
 
 
-# ── Dhan import ──────────────────────────────────────────────────────────────────
+# ── Dhan import ──────────────────────────────────────────────────────────────────────
 
 
 def _underlying(trading_symbol: str, exchange_segment: str) -> str:
@@ -128,91 +129,166 @@ def _underlying(trading_symbol: str, exchange_segment: str) -> str:
 def _is_option(trade: dict) -> bool:
     """Detect option trades regardless of exact field names across SDK versions."""
     seg = (trade.get("exchangeSegment") or "").upper()
-    if "FNO" not in seg and "F&O" not in seg and "FO" not in seg:
-        return False
-    # drvOptionType present and non-empty means it's a derivative option
+    seg_ok = "FNO" in seg or "F&O" in seg or "FO" in seg
+
     opt = (trade.get("drvOptionType") or "").upper()
-    if opt in ("CALL", "PUT", "CE", "PE"):
-        return True
-    # Fallback: check instrument type field
+    opt_ok = opt in ("CALL", "PUT", "CE", "PE")
+
     inst = (trade.get("instrumentType") or trade.get("drvInstrumentType") or "").upper()
-    return inst in ("OPTIDX", "OPTSTK")
+    inst_ok = inst in ("OPTIDX", "OPTSTK")
+
+    # Check trading symbol: Dhan uses e.g. "NIFTY24JAN24C24000" or custom "NIFTY 24 JAN CALL 24000.00"
+    sym = (trade.get("tradingSymbol") or trade.get("customSymbol") or "").upper()
+    sym_ok = (sym.endswith("CE") or sym.endswith("PE")
+              or " CALL " in sym or " PUT " in sym
+              or "CALL" == sym[-4:] or "PUT" == sym[-3:])
+
+    # Must be FNO segment AND have at least one option indicator
+    return seg_ok and (opt_ok or inst_ok or sym_ok)
+
+
+def _tx_type(trade: dict) -> str:
+    """Normalise transactionType to 'SELL' or 'BUY' (handles S/B shorthand)."""
+    t = (trade.get("transactionType") or "").upper().strip()
+    if t in ("SELL", "S", "SHORT", "-1"):
+        return "SELL"
+    if t in ("BUY", "B", "LONG", "1"):
+        return "BUY"
+    return t
 
 
 def _do_import(from_date: str, to_date: str) -> dict:
     dhan = _dhan_client()
     raw: list[dict] = []
-    page = 0
-    while True:
-        resp = dhan.get_trade_history(
-            from_date=_to_dhan_date(from_date),
-            to_date=_to_dhan_date(to_date),
-            page_number=page,
-        )
-        batch = _extract_batch(resp)
-        if not batch:
-            if page == 0:
-                logger.warning("get_trade_history page 0 returned empty. Raw resp type=%s value=%s",
-                               type(resp).__name__, str(resp)[:300])
-            break
-        logger.info("Fetched page %d: %d records. First record keys: %s",
-                    page, len(batch), list(batch[0].keys()) if batch else [])
-        raw.extend(batch)
-        if len(batch) < 50:
-            break
-        page += 1
+    today_str = str(date.today())
+    diag: dict = {}
+
+    # — Historical pages via get_trade_history —
+    # Only call if at least one day in the range is not today
+    # (Dhan's /v2/trades history endpoint often returns empty for today)
+    if from_date < today_str or to_date < today_str:
+        page = 0
+        tried_p1_fallback = False
+        while True:
+            resp = dhan.get_trade_history(
+                from_date=_to_dhan_date(from_date),
+                to_date=_to_dhan_date(to_date),
+                page_number=page,
+            )
+            batch = _extract_batch(resp)
+            logger.info("get_trade_history page=%d: %d records. resp type=%s",
+                        page, len(batch), type(resp).__name__)
+            if not batch:
+                if page == 0 and not tried_p1_fallback:
+                    # Some SDK versions use 1-indexed pages
+                    tried_p1_fallback = True
+                    resp1 = dhan.get_trade_history(
+                        from_date=_to_dhan_date(from_date),
+                        to_date=_to_dhan_date(to_date),
+                        page_number=1,
+                    )
+                    batch1 = _extract_batch(resp1)
+                    if batch1:
+                        logger.info("Page-1 fallback worked: %d records", len(batch1))
+                        raw.extend(batch1)
+                        page = 2
+                        continue
+                    else:
+                        diag["history_raw_p0"] = str(resp)[:400]
+                break
+            raw.extend(batch)
+            if len(batch) < 50:
+                break
+            page += 1
+
+    # — Today's trades via get_trade_book —
+    # get_trade_history is historical-only; today requires get_trade_book()
+    if from_date <= today_str <= to_date:
+        try:
+            resp_tb = dhan.get_trade_book()
+            tb_batch = _extract_batch(resp_tb)
+            logger.info("get_trade_book (today): %d records", len(tb_batch))
+            if not tb_batch:
+                diag["tradebook_raw"] = str(resp_tb)[:400]
+            raw.extend(tb_batch)
+        except Exception as e:
+            logger.warning("get_trade_book failed: %s", e)
+            diag["tradebook_error"] = str(e)
+
+    # Deduplicate by (orderId, exchangeTradeId)
+    seen: set = set()
+    deduped = []
+    for t in raw:
+        key = (t.get("orderId") or "", t.get("exchangeTradeId") or t.get("exchangeOrderId") or "")
+        if key not in seen:
+            seen.add(key)
+            deduped.append(t)
+    raw = deduped
 
     opts = [t for t in raw if _is_option(t)]
-    logger.info("Total raw=%d  options=%d", len(raw), len(opts))
+    logger.info("Total raw=%d (after dedup)  options=%d", len(raw), len(opts))
 
-    # Log a sample record so we can verify field names
-    if opts:
-        logger.info("Sample option trade fields: %s", opts[0])
-    elif raw:
-        logger.info("Sample non-option trade fields: %s", raw[0])
+    if raw and not opts:
+        # All records came back but none are options — log a sample
+        logger.warning("No options detected. Sample record: %s", raw[0])
+        diag["sample_non_option"] = raw[0]
+    elif opts:
+        logger.info("Sample option: %s", opts[0])
 
+    # Group by (date, security_id) and pair SELL(entry) → BUY(exit)
     groups: dict[tuple, list] = defaultdict(list)
     for t in opts:
         ts = t.get("createTime") or t.get("exchangeTime") or t.get("orderCreateTime") or ""
         sid = str(t.get("securityId") or t.get("security_id") or "")
-        trade_date = ts[:10] if len(ts) >= 10 else from_date
+        # createTime format: "YYYY-MM-DD HH:MM:SS"
+        trade_date = ts[:10] if len(ts) >= 10 else today_str
         groups[(trade_date, sid)].append(t)
 
     imported = skipped = 0
     db = get_db()
 
     for (trade_date, sid), group in groups.items():
-        sells = sorted([t for t in group if (t.get("transactionType") or "").upper() == "SELL"],
-                       key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "")
-        buys  = sorted([t for t in group if (t.get("transactionType") or "").upper() == "BUY"],
-                       key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "")
+        sells = sorted(
+            [t for t in group if _tx_type(t) == "SELL"],
+            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
+        )
+        buys = sorted(
+            [t for t in group if _tx_type(t) == "BUY"],
+            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
+        )
 
         for sell in sells:
-            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
-            entry_time  = ts_str[11:19] if len(ts_str) >= 19 else ""
+            ts_str     = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
+            entry_time = ts_str[11:19] if len(ts_str) >= 19 else ""
             entry_price = float(sell.get("tradedPrice") or sell.get("price") or 0)
-            qty         = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
-            opt_raw     = (sell.get("drvOptionType") or "").upper()
-            opt_type    = "CE" if opt_raw in ("CALL", "CE") else "PE"
-            strike      = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
-            expiry      = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
-            sym         = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
-            exseg       = sell.get("exchangeSegment") or "NSE_FNO"
-            underlying  = _underlying(sym, exseg)
-            lot_size    = LOT_SIZES.get(underlying, 1)
-            lots        = round(qty / lot_size, 2) if lot_size else float(qty)
-            order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
+            qty        = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
+            opt_raw    = (sell.get("drvOptionType") or "").upper()
+            opt_type   = "CE" if opt_raw in ("CALL", "CE") else "PE"
+            # Fallback: infer from symbol if drvOptionType missing
+            if opt_raw not in ("CALL", "PUT", "CE", "PE"):
+                sym_u = (sell.get("tradingSymbol") or sell.get("customSymbol") or "").upper()
+                opt_type = "CE" if (sym_u.endswith("CE") or " CALL " in sym_u) else "PE"
+            strike     = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
+            expiry     = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
+            sym        = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
+            exseg      = sell.get("exchangeSegment") or "NSE_FNO"
+            underlying = _underlying(sym, exseg)
+            lot_size   = LOT_SIZES.get(underlying, 1)
+            lots       = round(qty / lot_size, 2) if lot_size else float(qty)
+            order_id   = str(sell.get("orderId") or sell.get("order_id") or "")
 
             exit_t = next(
-                (b for b in buys
-                 if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
-                 and (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str),
+                (
+                    b for b in buys
+                    if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
+                    and (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str
+                ),
                 None,
             )
             if exit_t:
                 buys.remove(exit_t)
 
-            exit_ts    = exit_t.get("createTime") or exit_t.get("exchangeTime") or "" if exit_t else ""
+            exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
             exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
             exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
             pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
@@ -250,6 +326,7 @@ def _do_import(from_date: str, to_date: str) -> dict:
         "skipped": skipped,
         "total_raw": len(raw),
         "total_options": len(opts),
+        "diag": diag,
     }
 
 
@@ -267,7 +344,7 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
         raise
 
 
-# ── Chart data (yfinance) ───────────────────────────────────────────────────────────
+# ── Chart data (yfinance) ────────────────────────────────────────────────────────────────
 
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
@@ -311,7 +388,7 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
     return candles, interval
 
 
-# ── Flask ──────────────────────────────────────────────────────────────────────────
+# ── Flask ──────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 
@@ -324,31 +401,46 @@ def index():
 @app.route("/api/debug-dhan")
 def api_debug_dhan():
     """
-    Returns the raw first page of Dhan trade history for diagnosis.
+    Returns raw first page of Dhan trade history + trade_book for diagnosis.
     Usage: /api/debug-dhan?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD
-    Shows exactly what Dhan returns so field names can be verified.
     """
     from_date = request.args.get("from_date") or str(date.today())
     to_date   = request.args.get("to_date")   or str(date.today())
+    today_str = str(date.today())
+    out: dict = {"ok": True}
     try:
         dhan = _dhan_client()
+        # History endpoint
         resp = dhan.get_trade_history(
             from_date=_to_dhan_date(from_date),
             to_date=_to_dhan_date(to_date),
             page_number=0,
         )
         batch = _extract_batch(resp)
-        return jsonify({
-            "ok": True,
-            "response_type": type(resp).__name__,
-            "response_keys": list(resp.keys()) if isinstance(resp, dict) else None,
-            "record_count": len(batch),
-            "first_record": batch[0] if batch else None,
+        out["history"] = {
+            "response_type":    type(resp).__name__,
+            "response_keys":    list(resp.keys()) if isinstance(resp, dict) else None,
+            "record_count":     len(batch),
+            "first_record":     batch[0] if batch else None,
             "first_record_keys": list(batch[0].keys()) if batch else None,
-            "raw_response_preview": str(resp)[:500],
-        })
+            "raw_preview":      str(resp)[:500],
+        }
+        # Trade book (today)
+        if from_date <= today_str <= to_date:
+            try:
+                resp_tb = dhan.get_trade_book()
+                tb_batch = _extract_batch(resp_tb)
+                out["trade_book"] = {
+                    "response_type":    type(resp_tb).__name__,
+                    "record_count":     len(tb_batch),
+                    "first_record":     tb_batch[0] if tb_batch else None,
+                    "raw_preview":      str(resp_tb)[:500],
+                }
+            except Exception as e:
+                out["trade_book"] = {"error": str(e)}
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "error_type": type(e).__name__})
+    return jsonify(out)
 
 
 @app.route("/api/import", methods=["POST"])
@@ -413,7 +505,7 @@ def api_dates():
     return jsonify([r["date"] for r in rows])
 
 
-# ── HTML page ──────────────────────────────────────────────────────────────────────
+# ── HTML page ─────────────────────────────────────────────────────────────────────────────
 
 def _page() -> str:
     return """<!DOCTYPE html>
@@ -486,7 +578,7 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
       z-index: 99; align-items: center; justify-content: center }
 #ov.show { display: flex }
 #modal { background: var(--surface); border: 1px solid var(--border);
-         border-radius: 8px; padding: 24px; width: 340px }
+         border-radius: 8px; padding: 24px; width: 380px }
 #modal h2 { font-size: 14px; margin-bottom: 16px }
 .fr label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 3px }
 .fr input[type=date] { width: 100%; background: var(--s2); border: 1px solid var(--border);
@@ -497,6 +589,9 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
 .btnp { background: var(--acc); color: #fff }
 .btns { background: var(--s2); color: var(--text); border: 1px solid var(--border) }
 #mres { margin-top: 10px; font-size: 12px; min-height: 18px; word-break: break-word }
+#mdiag { margin-top: 8px; font-size: 10px; color: var(--dim); max-height: 120px;
+         overflow-y: auto; background: var(--s2); border-radius: 4px; padding: 6px 8px;
+         white-space: pre-wrap; display: none }
 ::-webkit-scrollbar { width: 5px; height: 5px }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px }
 </style>
@@ -520,7 +615,7 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
   </div>
   <span id="ivl">—</span>
   <button id="refreshBtn" onclick="doRefreshToken()" title="Refresh Dhan token">&#8635; Token</button>
-  <button id="impBtn" onclick="openImp()">↓ Import from Dhan</button>
+  <button id="impBtn" onclick="openImp()">&darr; Import from Dhan</button>
 </div>
 <div id="main">
   <div id="chartBox">
@@ -555,6 +650,7 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
       <input type="date" id="mTo">
     </div>
     <div id="mres"></div>
+    <div id="mdiag"></div>
     <div class="mfooter">
       <button class="btn btns" onclick="closeImp()">Cancel</button>
       <button class="btn btnp" id="mBtn" onclick="doImport()">Import</button>
@@ -641,7 +737,7 @@ function renderTrades(trades) {
   const tot = closed.reduce((a,t)=>a+t.pnl,0);
   const wins = closed.filter(t=>t.pnl>=0).length, loss = closed.filter(t=>t.pnl<0).length;
   cnt.textContent = trades.length + ' trade' + (trades.length>1?'s':'');
-  sum.innerHTML = '<span class="'+(tot>=0?'pos':'neg')+'">'+(tot>=0?'+':'')+'₹'+tot.toFixed(0)+'</span> &nbsp; '+wins+'W / '+loss+'L';
+  sum.innerHTML = '<span class="'+(tot>=0?'pos':'neg')+'">'+(tot>=0?'+':'')+'₹'+tot.toFixed(0)+'</span> &nbsp; '+wins+'W / '+loss+'L';
   document.getElementById('tbody').innerHTML = trades.map(t => {
     const tc=t.option_type.toLowerCase(), sk=t.strike?t.strike.toLocaleString('en-IN'):'—';
     const ep=t.exit_price!=null?t.exit_price.toFixed(2):'—';
@@ -686,18 +782,38 @@ function openImp(){
   document.getElementById('mFrom').value=t;
   document.getElementById('mTo').value=t;
   document.getElementById('mres').textContent='';
+  document.getElementById('mdiag').style.display='none';
+  document.getElementById('mdiag').textContent='';
   document.getElementById('ov').classList.add('show');
 }
 function closeImp(){document.getElementById('ov').classList.remove('show');}
 async function doImport(){
-  const btn=document.getElementById('mBtn'),res=document.getElementById('mres');
+  const btn=document.getElementById('mBtn'),res=document.getElementById('mres'),diag=document.getElementById('mdiag');
   btn.disabled=true;btn.textContent='Importing…';res.style.color='';res.textContent='Fetching from Dhan…';
+  diag.style.display='none';diag.textContent='';
   try{
     const r=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({from_date:document.getElementById('mFrom').value,to_date:document.getElementById('mTo').value})});
     const d=await r.json();
-    if(d.ok){res.style.color='#4caf50';res.textContent=`✓ ${d.imported} new, ${d.skipped} already stored (${d.total_options} options in ${d.total_raw} total trades)`;loadTrades();}
-    else{res.style.color='#ef5350';res.textContent='Error: '+d.error;}
+    if(d.ok){
+      res.style.color='#4caf50';
+      res.textContent=`✓ ${d.imported} new, ${d.skipped} already stored (${d.total_options} options found in ${d.total_raw} total trades)`;
+      if(d.total_raw===0||d.total_options===0){
+        // Show diagnostic info inline so user doesn't need to check logs
+        const info=[];
+        if(d.total_raw===0) info.push('API returned 0 trade records for this date range.');
+        else if(d.total_options===0) info.push(`Found ${d.total_raw} trades but none detected as options.`);
+        if(d.diag&&Object.keys(d.diag).length){
+          info.push('');
+          info.push('Debug info:');
+          info.push(JSON.stringify(d.diag,null,2));
+        }
+        if(info.length){diag.textContent=info.join('\n');diag.style.display='block';}
+      }
+      if(d.imported>0)loadTrades();
+    } else{
+      res.style.color='#ef5350';res.textContent='Error: '+d.error;
+    }
   }catch(e){res.style.color='#ef5350';res.textContent='Network error: '+e.message;}
   btn.disabled=false;btn.textContent='Import';
 }
@@ -713,7 +829,7 @@ async function doRefreshToken(){
 </html>"""
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     logger.info("Trade Analyser starting on http://0.0.0.0:%d", PORT)
