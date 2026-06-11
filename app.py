@@ -332,7 +332,6 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
 
 
 def _with_timeout(fn, *args, **kwargs):
-    """Run fn(*args, **kwargs) with a 10s socket timeout."""
     old = socket.getdefaulttimeout()
     socket.setdefaulttimeout(CHART_TIMEOUT)
     try:
@@ -342,7 +341,6 @@ def _with_timeout(fn, *args, **kwargs):
 
 
 def _is_auth_error(resp) -> bool:
-    """Detect expired-token response from Dhan API."""
     if not isinstance(resp, dict):
         return False
     status = (resp.get("status") or "").lower()
@@ -354,7 +352,6 @@ def _is_auth_error(resp) -> bool:
 
 def _raw_dhan_chart(security_id: str, exchange_segment: str,
                     instrument_type: str, trade_date: str) -> tuple[dict, str]:
-    """Call intraday_minute_data; tries with date params, falls back without."""
     try:
         dhan = _dhan_client()
     except Exception as e:
@@ -371,7 +368,6 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                 to_date=trade_date,
             ), ""
         except TypeError:
-            # SDK version that doesn't accept date params
             return _with_timeout(
                 d.intraday_minute_data,
                 security_id=security_id,
@@ -384,7 +380,6 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
     except Exception as e:
         return {}, str(e)
 
-    # If token expired, refresh and retry once
     if _is_auth_error(resp):
         logger.info("Chart API auth error — refreshing token and retrying")
         try:
@@ -496,18 +491,17 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
             return candles, interval, ""
     return [], "1m", (
         f"No chart data for {u} {trade_date}. "
-        "Check analyser.log or visit /api/debug-chart?underlying="+u+"&date="+trade_date
+        "Check analyser.log or /api/debug-chart?underlying=" + u + "&date=" + trade_date
     )
 
 
 def _make_test_candles(trade_date: str) -> list[dict]:
-    """Generate fake 1-minute NIFTY-like candles for testing JS chart rendering."""
     dt = datetime.strptime(trade_date, "%Y-%m-%d")
     base_time = datetime(dt.year, dt.month, dt.day, 9, 15, 0)
     price = 24500.0
     rng = random.Random(42)
     candles = []
-    for i in range(375):  # 9:15–15:29
+    for i in range(375):
         noise = rng.gauss(0, 12)
         wave  = math.sin(i / 40.0) * 40
         o = round(price + wave + noise, 2)
@@ -520,7 +514,7 @@ def _make_test_candles(trade_date: str) -> list[dict]:
     return candles
 
 
-# ── Flask ───────────────────────────────────────────────────────────────────────────────
+# ── Flask ──────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 
@@ -532,7 +526,6 @@ def index():
 
 @app.route("/api/test-chart")
 def api_test_chart():
-    """Returns fake candle data to verify the JS chart renders correctly."""
     d = request.args.get("date") or str(date.today())
     candles = _make_test_candles(d)
     return jsonify({"candles": candles, "interval": "1m", "error": ""})
@@ -540,7 +533,6 @@ def api_test_chart():
 
 @app.route("/api/debug-chart")
 def api_debug_chart():
-    """Diagnose chart: /api/debug-chart?underlying=NIFTY&date=YYYY-MM-DD"""
     u   = (request.args.get("underlying") or "NIFTY").upper()
     d   = request.args.get("date") or str(date.today())
     idx = DHAN_INDEX_IDS.get(u)
@@ -676,7 +668,6 @@ def _page() -> str:
 <head>
 <meta charset="UTF-8">
 <title>Trade Analyser</title>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
 :root {
@@ -688,7 +679,8 @@ html, body { height: 100%; overflow: hidden }
 body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
        font: 13px/1.4 'SF Mono', Consolas, monospace }
 #bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
-       background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0 }
+       background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0;
+       flex-wrap: wrap }
 #bar h1 { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; margin-right: 4px; color: var(--acc) }
 .date-nav { display: flex; gap: 4px; align-items: center }
 .date-nav button { background: var(--s2); border: 1px solid var(--border); color: var(--text);
@@ -706,20 +698,18 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 #impBtn { margin-left: auto; background: var(--acc); border: none; color: #fff;
           padding: 5px 14px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px }
 #impBtn:hover { opacity: .85 }
-#refreshBtn { background: var(--s2); border: 1px solid var(--border); color: var(--dim);
-              padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }
-#refreshBtn:hover { border-color: var(--acc); color: var(--text) }
-#sampleBtn { background: var(--s2); border: 1px solid var(--border); color: var(--dim);
-             padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }
-#sampleBtn:hover { border-color: #4caf50; color: #4caf50 }
+.hbtn { background: var(--s2); border: 1px solid var(--border); color: var(--dim);
+        padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }
+.hbtn:hover { border-color: var(--acc); color: var(--text) }
 #main { flex: 1; display: flex; flex-direction: column; min-height: 0 }
-#chartBox { flex: 1; min-height: 200px; position: relative }
-#chartEl  { width: 100%; height: 100% }
+#chartBox { flex: 1; min-height: 200px; position: relative; overflow: hidden }
+#chartEl { position: absolute; inset: 0 }
 #chartMsg { position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
             background: var(--bg); pointer-events: none; flex-direction: column; gap: 8px }
 #chartMsg.hide { display: none }
-#chartMsgSub { font-size: 10px; color: #333; max-width: 500px; text-align: center; word-break: break-all }
+#chartMsgSub { font-size: 10px; color: #333; max-width: 600px; text-align: center;
+               word-break: break-word; padding: 0 16px }
 #panel { height: 235px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }
 #ph { display: flex; align-items: center; gap: 12px; padding: 6px 14px;
@@ -780,15 +770,15 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
     <div class="chip pe on" data-v="PE" onclick="togT(this)">PE</div>
   </div>
   <span id="ivl">—</span>
-  <button id="sampleBtn" onclick="loadSample()" title="Load fake candles to test chart rendering">Test Chart</button>
-  <button id="refreshBtn" onclick="doRefreshToken()" title="Refresh Dhan token">&#8635; Token</button>
+  <button class="hbtn" onclick="loadSample()" title="Load fake candles to verify chart rendering">Test Chart</button>
+  <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&darr; Import from Dhan</button>
 </div>
 <div id="main">
   <div id="chartBox">
     <div id="chartEl"></div>
     <div id="chartMsg">
-      <span id="chartMsgMain">Loading chart…</span>
+      <span id="chartMsgMain">Initialising chart…</span>
       <span id="chartMsgSub"></span>
     </div>
   </div>
@@ -828,44 +818,168 @@ tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
   </div>
 </div>
 <script>
-let chart, series;
+// ============================================================
+// Self-contained Canvas Chart (no external library)
+// ============================================================
+class CandleChart {
+  constructor(container) {
+    const cv = document.createElement('canvas');
+    cv.style.cssText = 'position:absolute;inset:0;display:block;cursor:crosshair;';
+    container.appendChild(cv);
+    this.cv = cv;
+    this.ctx = cv.getContext('2d');
+    this.candles = [];
+    this.markers = [];
+    this.vs = 0;   // visible start
+    this.ve = 0;   // visible end (0 = all)
+    this.mx = -1;  // hovered candle index
+    new ResizeObserver(() => this._fit()).observe(container);
+    cv.addEventListener('mousemove', e => this._hover(e));
+    cv.addEventListener('mouseleave', () => { this.mx = -1; this._draw(); });
+    this._fit();
+  }
+  _fit() {
+    const cv = this.cv, p = cv.parentElement;
+    const w = p.clientWidth, h = p.clientHeight;
+    if (w > 0 && h > 0) { cv.width = w; cv.height = h; this._draw(); }
+  }
+  setData(d) {
+    this.candles = d.slice().sort((a,b) => a.time - b.time);
+    this.vs = 0; this.ve = 0; this._draw();
+  }
+  setMarkers(m) {
+    this.markers = m.slice().sort((a,b) => a.time - b.time); this._draw();
+  }
+  timeScale() {
+    const me = this;
+    return {
+      fitContent() { me.vs = 0; me.ve = 0; me._draw(); },
+      setVisibleRange(r) {
+        const c = me.candles;
+        let s = 0; while (s < c.length && c[s].time < r.from - 300) s++;
+        let e = c.length; for (let i = s; i < c.length; i++) { if (c[i].time > r.to + 5400) { e = i; break; } }
+        me.vs = Math.max(0, s);
+        me.ve = e < c.length ? e : 0;
+        me._draw();
+      }
+    };
+  }
+  _vis() { return this.ve > 0 ? this.candles.slice(this.vs, this.ve) : this.candles.slice(this.vs); }
+  _hover(e) {
+    const r = this.cv.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * this.cv.width / r.width;
+    const vis = this._vis();
+    if (!vis.length) return;
+    const bw = (this.cv.width - 68) / vis.length;
+    this.mx = Math.max(0, Math.min(vis.length - 1, Math.floor((mx - 10) / bw)));
+    this._draw();
+  }
+  _draw() {
+    const {cv, ctx} = this;
+    const W = cv.width, H = cv.height;
+    if (!W || !H) return;
+    ctx.fillStyle = '#0d0d0d'; ctx.fillRect(0,0,W,H);
+    const vis = this._vis();
+    if (!vis.length) return;
+    const PL=10, PR=58, PT=12, PB=24;
+    const CW=W-PL-PR, CH=H-PT-PB, n=vis.length;
+    const bw = CW / n;
+    const lo = Math.min(...vis.map(c=>c.low)), hi = Math.max(...vis.map(c=>c.high));
+    const pad = (hi-lo)*0.06 || 5;
+    const mn = lo-pad, mx = hi+pad;
+    const xOf = i => PL + (i+0.5)*bw;
+    const yOf = p => PT + (1-(p-mn)/(mx-mn))*CH;
+    // Grid
+    ctx.strokeStyle='#181818'; ctx.lineWidth=1;
+    for (let i=0;i<=5;i++) { const yp=PT+CH*i/5; ctx.beginPath();ctx.moveTo(PL,yp);ctx.lineTo(PL+CW,yp);ctx.stroke(); }
+    // Candles
+    const bdy = Math.max(1, bw-1);
+    vis.forEach((c,i) => {
+      const up=c.close>=c.open, col=up?'#26a69a':'#ef5350', xc=xOf(i);
+      ctx.strokeStyle=col; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(xc,yOf(c.high)); ctx.lineTo(xc,yOf(c.low)); ctx.stroke();
+      ctx.fillStyle=col;
+      const y1=yOf(Math.max(c.open,c.close)), y2=yOf(Math.min(c.open,c.close));
+      ctx.fillRect(xc-bdy/2, y1, bdy, Math.max(1,y2-y1));
+    });
+    // Markers
+    ctx.font='9px monospace';
+    this.markers.forEach(m => {
+      let idx=vis.findIndex(c=>c.time>=m.time);
+      if (idx<0) idx=vis.length-1;
+      const xm=xOf(idx), c=vis[idx];
+      const above=m.position==='aboveBar';
+      const ya=above?yOf(c.high)-16:yOf(c.low)+16;
+      ctx.fillStyle=m.color||'#fff';
+      ctx.beginPath();
+      if (above){ctx.moveTo(xm,ya+8);ctx.lineTo(xm-4,ya+2);ctx.lineTo(xm+4,ya+2);}
+      else      {ctx.moveTo(xm,ya-8);ctx.lineTo(xm-4,ya-2);ctx.lineTo(xm+4,ya-2);}
+      ctx.fill();
+      if (m.text) {
+        ctx.textAlign='center';
+        ctx.fillText(String(m.text).slice(0,14), xm, above?ya-1:ya+13);
+      }
+    });
+    // Price axis
+    ctx.font='10px monospace'; ctx.fillStyle='#555'; ctx.textAlign='left';
+    for (let i=0;i<=5;i++) {
+      const p=mn+(mx-mn)*(1-i/5);
+      ctx.fillText(Math.round(p), PL+CW+4, PT+CH*i/5+4);
+    }
+    // Time axis
+    ctx.textAlign='center'; ctx.fillStyle='#444';
+    const step=Math.max(1,Math.floor(n/8));
+    vis.forEach((c,i) => {
+      if (i%step!==0) return;
+      const d=new Date(c.time*1000);
+      const lbl=d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+      ctx.fillText(lbl, xOf(i), H-6);
+    });
+    // Crosshair
+    if (this.mx>=0 && this.mx<n) {
+      const xc=xOf(this.mx), c=vis[this.mx];
+      ctx.strokeStyle='#2a2a2a'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(xc,PT); ctx.lineTo(xc,PT+CH); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#1a1a1a'; ctx.fillRect(PL+CW+2,yOf(c.close)-8,54,16);
+      ctx.fillStyle=c.close>=c.open?'#26a69a':'#ef5350';
+      ctx.font='bold 10px monospace'; ctx.textAlign='left';
+      ctx.fillText(c.close.toFixed(1), PL+CW+5, yOf(c.close)+4);
+    }
+  }
+}
+// ============================================================
+let _chartInst = null, chart = null, series = null;
 let curDate = '', curU = 'NIFTY';
 let typeOn  = new Set(['CE','PE']);
 let allTrades = [], candles = [], curInterval = '1m';
 let selId = null;
-window.addEventListener('DOMContentLoaded', () => {
-  if (typeof LightweightCharts === 'undefined') {
-    setChartMsg('Chart library failed to load.', 'Check internet / CDN access, then refresh.');
-    return;
+function setChartMsg(main,sub) {
+  document.getElementById('chartMsg').classList.remove('hide');
+  document.getElementById('chartMsgMain').textContent = main||'';
+  document.getElementById('chartMsgSub').textContent  = sub||'';
+}
+function hideChartMsg() { document.getElementById('chartMsg').classList.add('hide'); }
+function initChart() {
+  try {
+    _chartInst = new CandleChart(document.getElementById('chartEl'));
+    chart  = { timeScale: () => _chartInst.timeScale() };
+    series = {
+      setData:    d => _chartInst.setData(d),
+      setMarkers: m => _chartInst.setMarkers(m),
+    };
+    setChartMsg('Select a date to load chart data', '');
+  } catch(e) {
+    setChartMsg('Chart init error: ' + e.message, e.stack||'');
   }
+}
+window.addEventListener('DOMContentLoaded', () => {
   initChart();
   const today = new Date().toISOString().slice(0,10);
   document.getElementById('dp').value = today;
   curDate = today;
   loadAll();
 });
-function setChartMsg(main, sub) {
-  const el = document.getElementById('chartMsg');
-  el.classList.remove('hide');
-  document.getElementById('chartMsgMain').textContent = main || '';
-  document.getElementById('chartMsgSub').textContent  = sub  || '';
-}
-function hideChartMsg() { document.getElementById('chartMsg').classList.add('hide'); }
-function initChart() {
-  chart = LightweightCharts.createChart(document.getElementById('chartEl'), {
-    autoSize: true,
-    layout: { background:{color:'#0d0d0d'}, textColor:'#555' },
-    grid:   { vertLines:{color:'#181818'}, horzLines:{color:'#181818'} },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor:'#2a2a2a' },
-    timeScale: { borderColor:'#2a2a2a', timeVisible:true, secondsVisible:false },
-  });
-  series = chart.addCandlestickSeries({
-    upColor:'#26a69a', downColor:'#ef5350',
-    borderUpColor:'#26a69a', borderDownColor:'#ef5350',
-    wickUpColor:'#26a69a', wickDownColor:'#ef5350',
-  });
-}
 function shiftDay(d) {
   const dt = new Date(curDate + 'T00:00:00');
   dt.setDate(dt.getDate() + d);
@@ -875,85 +989,69 @@ function shiftDay(d) {
 }
 function onDate() { curDate = document.getElementById('dp').value; loadAll(); }
 function setU(el) {
-  document.querySelectorAll('#uChips .chip').forEach(c => c.classList.remove('on'));
+  document.querySelectorAll('#uChips .chip').forEach(c=>c.classList.remove('on'));
   el.classList.add('on'); curU = el.dataset.v; loadAll();
 }
 function togT(el) {
-  const v = el.dataset.v;
-  if (typeOn.has(v)) { if (typeOn.size > 1) { typeOn.delete(v); el.classList.remove('on'); } }
+  const v=el.dataset.v;
+  if (typeOn.has(v)) { if (typeOn.size>1){typeOn.delete(v);el.classList.remove('on');} }
   else { typeOn.add(v); el.classList.add('on'); }
-  const f = allTrades.filter(t => typeOn.has(t.option_type));
+  const f=allTrades.filter(t=>typeOn.has(t.option_type));
   renderTrades(f); putMarkers(f);
 }
 function loadAll() { loadChart(); loadTrades(); }
 async function loadChart() {
-  setChartMsg('Loading chart…', '');
+  if (!series) { setChartMsg('Chart not ready','initChart() failed — check browser console'); return; }
+  setChartMsg('Loading chart…','');
   try {
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 20000);
-    const r = await fetch('/api/chart?underlying=' + curU + '&date=' + curDate,
-                          {signal: controller.signal});
+    const ctl=new AbortController(), tid=setTimeout(()=>ctl.abort(),20000);
+    const r=await fetch('/api/chart?underlying='+curU+'&date='+curDate,{signal:ctl.signal});
     clearTimeout(tid);
-    const d = await r.json();
-    candles = d.candles || []; curInterval = d.interval || '1m';
-    document.getElementById('ivl').textContent = d.interval || '—';
+    const d=await r.json();
+    candles=d.candles||[]; curInterval=d.interval||'1m';
+    document.getElementById('ivl').textContent=d.interval||'—';
     series.setData(candles);
-    if (candles.length) {
-      chart.timeScale().fitContent();
-      hideChartMsg();
-    } else {
-      const sub = d.error ? d.error : 'No data — try “Test Chart” to verify rendering works';
-      setChartMsg('No chart data for ' + curU + ' ' + curDate, sub);
-    }
+    if (candles.length) { chart.timeScale().fitContent(); hideChartMsg(); }
+    else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   } catch(e) {
-    const main = e.name === 'AbortError' ? 'Chart load timed out (20s)' : 'Chart error: ' + e.message;
-    setChartMsg(main, 'Try \"Test Chart\" button to check if rendering works');
+    setChartMsg(e.name==='AbortError'?'Chart load timed out (20s)':'Chart fetch error: '+e.message,'');
   }
 }
 async function loadSample() {
-  const btn = document.getElementById('sampleBtn');
-  btn.textContent = '…'; btn.disabled = true;
+  if (!series) { setChartMsg('Chart not initialised',''); return; }
+  setChartMsg('Loading sample…','');
   try {
-    const r = await fetch('/api/test-chart?date=' + curDate);
-    const d = await r.json();
-    candles = d.candles || [];
+    const r=await fetch('/api/test-chart?date='+curDate);
+    const d=await r.json();
+    candles=d.candles||[];
     series.setData(candles);
-    if (candles.length) {
-      chart.timeScale().fitContent();
-      setChartMsg('', '');
-      document.getElementById('chartMsg').classList.add('hide');
-      document.getElementById('ivl').textContent = 'sample';
-    } else {
-      setChartMsg('Test chart returned 0 candles', '');
-    }
-  } catch(e) {
-    setChartMsg('Test chart error: ' + e.message, '');
-  }
-  btn.textContent = 'Test Chart'; btn.disabled = false;
+    if (candles.length) { chart.timeScale().fitContent(); hideChartMsg(); document.getElementById('ivl').textContent='sample'; }
+    else setChartMsg('Test chart returned 0 candles','');
+  } catch(e) { setChartMsg('Test chart error: '+e.message,''); }
 }
 async function loadTrades() {
   try {
-    const r = await fetch('/api/trades?date=' + curDate + '&underlying=' + curU);
-    allTrades = await r.json();
-    const f = allTrades.filter(t => typeOn.has(t.option_type));
+    const r=await fetch('/api/trades?date='+curDate+'&underlying='+curU);
+    allTrades=await r.json();
+    const f=allTrades.filter(t=>typeOn.has(t.option_type));
     renderTrades(f); putMarkers(f);
   } catch(e) { console.error(e); }
 }
 function renderTrades(trades) {
-  const tbl = document.getElementById('tbl'), em = document.getElementById('empty');
-  const cnt = document.getElementById('pcnt'), sum = document.getElementById('psummary');
-  if (!trades.length) { tbl.style.display='none'; em.style.display=''; cnt.textContent=''; sum.innerHTML=''; return; }
-  tbl.style.display=''; em.style.display='none';
-  const closed = trades.filter(t => t.pnl != null);
-  const tot = closed.reduce((a,t)=>a+t.pnl,0);
-  const wins = closed.filter(t=>t.pnl>=0).length, loss = closed.filter(t=>t.pnl<0).length;
-  cnt.textContent = trades.length + ' trade' + (trades.length>1?'s':'');
-  sum.innerHTML = '<span class="'+(tot>=0?'pos':'neg')+'">'+(tot>=0?'+':'')+'₹'+tot.toFixed(0)+'</span> &nbsp; '+wins+'W / '+loss+'L';
-  document.getElementById('tbody').innerHTML = trades.map(t => {
-    const tc=t.option_type.toLowerCase(), sk=t.strike?t.strike.toLocaleString('en-IN'):'—';
+  const tbl=document.getElementById('tbl'),em=document.getElementById('empty');
+  const cnt=document.getElementById('pcnt'),sum=document.getElementById('psummary');
+  if (!trades.length){tbl.style.display='none';em.style.display='';cnt.textContent='';sum.innerHTML='';return;}
+  tbl.style.display='';em.style.display='none';
+  const closed=trades.filter(t=>t.pnl!=null);
+  const tot=closed.reduce((a,t)=>a+t.pnl,0);
+  const wins=closed.filter(t=>t.pnl>=0).length,loss=closed.filter(t=>t.pnl<0).length;
+  cnt.textContent=trades.length+' trade'+(trades.length>1?'s':'');
+  sum.innerHTML='<span class="'+(tot>=0?'pos':'neg')+'">'+(tot>=0?'+':'')+'₹'+tot.toFixed(0)+'</span> &nbsp; '+wins+'W / '+loss+'L';
+  document.getElementById('tbody').innerHTML=trades.map(t=>{
+    const tc=t.option_type.toLowerCase(),sk=t.strike?t.strike.toLocaleString('en-IN'):'—';
     const ep=t.exit_price!=null?t.exit_price.toFixed(2):'—';
     const pl=t.pnl!=null?'<span class="'+(t.pnl>=0?'pos':'neg')+'">'+(t.pnl>=0?'+':'')+'₹'+t.pnl.toFixed(0)+'</span>':'—';
-    const lts=t.lots?t.lots+'L':t.quantity, sel=selId===t.id?' sel':'';
+    const lts=t.lots?t.lots+'L':t.quantity,sel=selId===t.id?' sel':'';
     const nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     return `<tr class="${sel}" data-id="${t.id}" onclick="selTrade(${t.id},'${t.entry_time||''}')">
       <td>${t.entry_time?t.entry_time.slice(0,5):'—'}</td><td><span class="tag ${tc}">${t.option_type}</span></td>
@@ -963,7 +1061,12 @@ function renderTrades(trades) {
   }).join('');
 }
 function tsFor(ds,ts){if(!ts)return null;const[y,mo,d]=ds.split('-').map(Number);const[h,m]=ts.split(':').map(Number);return Date.UTC(y,mo-1,d,h,m,0)/1000;}
-function snapTs(ts){if(!ts||!candles.length)return ts;let best=candles[0].time,diff=Math.abs(candles[0].time-ts);for(const c of candles){const d=Math.abs(c.time-ts);if(d<diff){diff=d;best=c.time;}if(c.time>ts+7200)break;}return best;}
+function snapTs(ts){
+  if(!ts||!candles.length)return ts;
+  let best=candles[0].time,diff=Math.abs(candles[0].time-ts);
+  for(const c of candles){const d=Math.abs(c.time-ts);if(d<diff){diff=d;best=c.time;}if(c.time>ts+7200)break;}
+  return best;
+}
 function putMarkers(trades){
   if(!series)return;
   const markers=[];
@@ -971,10 +1074,10 @@ function putMarkers(trades){
     const col=t.option_type==='CE'?'#4fc3f7':'#ffb74d';
     const lbl=t.option_type+' '+(t.strike?t.strike.toLocaleString('en-IN'):'');
     const ets=tsFor(curDate,t.entry_time);
-    if(ets)markers.push({time:snapTs(ets),position:'aboveBar',color:col,shape:'arrowDown',text:lbl,id:'e'+t.id,size:1.2});
+    if(ets)markers.push({time:snapTs(ets),position:'aboveBar',color:col,shape:'arrowDown',text:lbl,id:'e'+t.id});
     if(t.exit_time&&t.exit_price!=null){
       const xts=tsFor(curDate,t.exit_time);
-      if(xts)markers.push({time:snapTs(xts),position:'belowBar',color:(t.pnl!=null&&t.pnl>=0)?'#4caf50':'#ef5350',shape:'arrowUp',text:t.pnl!=null?(t.pnl>=0?'+':'')+Math.round(t.pnl):t.exit_price.toFixed(0),id:'x'+t.id,size:1.2});
+      if(xts)markers.push({time:snapTs(xts),position:'belowBar',color:(t.pnl!=null&&t.pnl>=0)?'#4caf50':'#ef5350',shape:'arrowUp',text:t.pnl!=null?(t.pnl>=0?'+':'')+Math.round(t.pnl):t.exit_price.toFixed(0),id:'x'+t.id});
     }
   }
   markers.sort((a,b)=>a.time-b.time);
@@ -983,7 +1086,11 @@ function putMarkers(trades){
 function selTrade(id,entryTime){
   selId=id;
   document.querySelectorAll('#tbody tr').forEach(r=>r.classList.toggle('sel',+r.dataset.id===id));
-  if(entryTime&&candles.length){const ts=tsFor(curDate,entryTime);const sec=curInterval==='5m'?300:60;if(ts)chart.timeScale().setVisibleRange({from:ts-sec*25,to:ts+sec*90});}
+  if(entryTime&&candles.length){
+    const ts=tsFor(curDate,entryTime);
+    const sec=curInterval==='5m'?300:60;
+    if(ts)chart.timeScale().setVisibleRange({from:ts-sec*25,to:ts+sec*90});
+  }
 }
 async function saveNote(id,notes){
   try{await fetch('/api/trade/'+id+'/notes',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({notes})});const t=allTrades.find(x=>x.id===id);if(t)t.notes=notes;}catch(e){console.error(e);}
@@ -1011,28 +1118,30 @@ async function doImport(){
       res.textContent=`✓ ${d.imported} new, ${d.skipped} already stored (${d.total_options} options in ${d.total_raw} total trades)`;
       if(d.total_raw===0||d.total_options===0){
         const info=[];
-        if(d.total_raw===0) info.push('API returned 0 trade records for this date range.');
-        else if(d.total_options===0) info.push(`Found ${d.total_raw} trades but none detected as options.`);
+        if(d.total_raw===0) info.push('API returned 0 trade records.');
+        else info.push('Found '+d.total_raw+' trades but none were options.');
         if(d.diag&&Object.keys(d.diag).length){
           info.push('');
-          info.push('Debug info:');
+          info.push('Debug:');
           info.push(JSON.stringify(d.diag,null,2));
         }
         if(info.length){diag.textContent=info.join('\n');diag.style.display='block';}
       }
       if(d.imported>0)loadTrades();
-    } else{
-      res.style.color='#ef5350';res.textContent='Error: '+d.error;
-    }
+    } else{res.style.color='#ef5350';res.textContent='Error: '+d.error;}
   }catch(e){res.style.color='#ef5350';res.textContent='Network error: '+e.message;}
   btn.disabled=false;btn.textContent='Import';
 }
 async function doRefreshToken(){
-  const btn=document.getElementById('refreshBtn');btn.textContent='Refreshing…';btn.disabled=true;
-  try{const r=await fetch('/api/refresh-token',{method:'POST'});const d=await r.json();
-    btn.textContent=d.ok?'✓ Token':'✗ Token';btn.style.color=d.ok?'#4caf50':'#ef5350';
-    setTimeout(()=>{btn.textContent='↻ Token';btn.style.color='';btn.disabled=false;},3000);
-  }catch(e){btn.textContent='↻ Token';btn.disabled=false;}
+  const btns=document.querySelectorAll('.hbtn');
+  const btn=Array.from(btns).find(b=>b.textContent.includes('Token'));
+  if(btn){btn.textContent='Refreshing…';btn.disabled=true;}
+  try{
+    const r=await fetch('/api/refresh-token',{method:'POST'});
+    const d=await r.json();
+    if(btn){btn.textContent=d.ok?'✓ Token':'✗ Token';btn.style.color=d.ok?'#4caf50':'#ef5350';}
+    setTimeout(()=>{if(btn){btn.textContent='↻ Token';btn.style.color='';btn.disabled=false;}},3000);
+  }catch(e){if(btn){btn.textContent='↻ Token';btn.disabled=false;}}
 }
 </script>
 </body>
@@ -1048,6 +1157,4 @@ if __name__ == "__main__":
     if token_manager.is_token_refresh_configured():
         logger.info("Refreshing Dhan token at startup...")
         token_manager.refresh_token()
-    # threaded=True: without it Flask's dev server is single-threaded
-    # and one slow chart request blocks all other requests
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
