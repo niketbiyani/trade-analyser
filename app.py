@@ -29,9 +29,16 @@ LOT_SIZES = {
     "FINNIFTY": 40, "MIDCPNIFTY": 50,
 }
 
-TICKERS = {
-    "NIFTY": "^NSEI", "SENSEX": "^BSESN",
-    "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+# Dhan security IDs for index chart data (confirmed: NIFTY=13, BANKNIFTY=25)
+DHAN_INDEX_IDS = {
+    "NIFTY":     {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "BANKNIFTY": {"security_id": "25", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "SENSEX":    {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
+}
+
+# yfinance tickers used as fallback for older historical data
+YF_TICKERS = {
+    "NIFTY": "^NSEI", "SENSEX": "^BSESN", "BANKNIFTY": "^NSEBANK",
 }
 
 # ── Database ──────────────────────────────────────────────────────────────────────
@@ -166,8 +173,7 @@ def _do_import(from_date: str, to_date: str) -> dict:
                 page_number=page,
             )
             batch = _extract_batch(resp)
-            logger.info("get_trade_history page=%d: %d records. resp type=%s",
-                        page, len(batch), type(resp).__name__)
+            logger.info("get_trade_history page=%d: %d records", page, len(batch))
             if not batch:
                 if page == 0 and not tried_p1_fallback:
                     tried_p1_fallback = True
@@ -178,7 +184,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
                     )
                     batch1 = _extract_batch(resp1)
                     if batch1:
-                        logger.info("Page-1 fallback worked: %d records", len(batch1))
                         raw.extend(batch1)
                         page = 2
                         continue
@@ -326,41 +331,94 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
         raise
 
 
-# ── Chart data (yfinance) ────────────────────────────────────────────────────────────────
+# ── Chart data ──────────────────────────────────────────────────────────────────────────
 
 
-def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
-    sym  = TICKERS.get(underlying.upper(), "^NSEI")
-    dt   = datetime.strptime(trade_date, "%Y-%m-%d")
-    age  = (datetime.now() - dt).days
+def _chart_from_dhan(security_id: str, exchange_segment: str,
+                     instrument_type: str, trade_date: str) -> list[dict]:
+    """Fetch 1-min OHLCV from Dhan intraday_minute_data for a given date."""
+    try:
+        dhan = _dhan_client()
+        resp = dhan.intraday_minute_data(
+            security_id=security_id,
+            exchange_segment=exchange_segment,
+            instrument_type=instrument_type,
+            from_date=trade_date,
+            to_date=trade_date,
+        )
+    except Exception as e:
+        logger.error("Dhan intraday_minute_data: %s", e)
+        return []
 
-    if age <= 5:
-        interval = "1m"
-    elif age <= 55:
-        interval = "5m"
-    else:
-        interval = "1d"
+    # Response can be {"data": {"timestamp": [...], "open": [...], ...}}
+    # or the inner dict directly, depending on SDK version
+    data = resp
+    if isinstance(resp, dict):
+        data = resp.get("data", resp)
+    if not isinstance(data, dict):
+        logger.warning("Dhan chart unexpected format: %s", str(resp)[:200])
+        return []
 
-    start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
-    end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+    timestamps = data.get("timestamp") or data.get("timestamps") or []
+    opens  = data.get("open")   or data.get("openPrice")  or []
+    highs  = data.get("high")   or data.get("highPrice")  or []
+    lows   = data.get("low")    or data.get("lowPrice")   or []
+    closes = data.get("close")  or data.get("closePrice") or []
 
-    # socket timeout makes yfinance fail fast if Yahoo Finance is unreachable
-    old_timeout = socket.getdefaulttimeout()
+    if not timestamps:
+        logger.info("Dhan chart: no timestamps in response for %s %s",
+                    exchange_segment, security_id)
+        return []
+
+    candles = []
+    for i, ts_str in enumerate(timestamps):
+        try:
+            ts_str = str(ts_str).strip()
+            # Dhan returns "HH:MM:SS" (time only) or full "YYYY-MM-DD HH:MM:SS"
+            if len(ts_str) <= 8:
+                ts_str = f"{trade_date} {ts_str}"
+            # Parse naively as IST; .timestamp() gives "IST-as-UTC" epoch so
+            # TradingView (which treats values as UTC) displays correct IST times
+            ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+            candles.append({
+                "time":  int(ts.timestamp()),
+                "open":  round(float(opens[i]),  2),
+                "high":  round(float(highs[i]),  2),
+                "low":   round(float(lows[i]),   2),
+                "close": round(float(closes[i]), 2),
+            })
+        except (IndexError, ValueError, TypeError):
+            continue
+
+    logger.info("Dhan chart: %d candles for %s %s", len(candles), exchange_segment, security_id)
+    return candles
+
+
+def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
+    """Fallback chart source using yfinance (may be rate-limited)."""
+    dt  = datetime.strptime(trade_date, "%Y-%m-%d")
+    age = (datetime.now() - dt).days
+
+    interval = "1m" if age <= 5 else ("5m" if age <= 55 else "1d")
+    start    = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
+    end      = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+
+    old_to = socket.getdefaulttimeout()
     socket.setdefaulttimeout(10)
     try:
-        df = yf.Ticker(sym).history(start=start, end=end, interval=interval, auto_adjust=True)
+        df = yf.Ticker(sym).history(start=start, end=end,
+                                    interval=interval, auto_adjust=True)
     except Exception as e:
         logger.error("yfinance %s: %s", sym, e)
-        return [], interval, f"Chart error: {e}"
+        return [], interval
     finally:
-        socket.setdefaulttimeout(old_timeout)
+        socket.setdefaulttimeout(old_to)
 
     if df.empty:
-        return [], interval, "No data for this date (market closed or future date)"
+        return [], interval
 
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
-
     if interval in ("1m", "5m"):
         df = df[df.index.date == dt.date()]
 
@@ -371,10 +429,35 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
             continue
         candles.append({"time": int(ts.timestamp()),
                         "open": round(o, 2), "high": round(h, 2),
-                        "low":  round(l, 2), "close": round(c, 2)})
+                        "low": round(l, 2), "close": round(c, 2)})
+    return candles, interval
 
-    err = "" if candles else "No candles for this date"
-    return candles, interval, err
+
+def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
+    u = underlying.upper()
+
+    # Primary: Dhan intraday API (no rate-limit issues, works for recent dates)
+    idx = DHAN_INDEX_IDS.get(u)
+    if idx:
+        candles = _chart_from_dhan(
+            idx["security_id"], idx["exchange_segment"],
+            idx["instrument_type"], trade_date,
+        )
+        if candles:
+            return candles, "1m", ""
+
+    # Fallback: yfinance for older historical data
+    sym = YF_TICKERS.get(u)
+    if sym:
+        candles, interval = _chart_from_yfinance(sym, trade_date)
+        if candles:
+            return candles, interval, ""
+        return [], interval, (
+            "No chart data — Dhan has no intraday data for this date "
+            "and Yahoo Finance is rate-limited. Try a more recent date."
+        )
+
+    return [], "1m", f"No chart source configured for {underlying}"
 
 
 # ── Flask ──────────────────────────────────────────────────────────────────────────────
@@ -711,7 +794,7 @@ async function loadChart() {
     }
   } catch(e) {
     msg.textContent = e.name === 'AbortError'
-      ? 'Chart load timed out — server unreachable'
+      ? 'Chart load timed out'
       : ('Chart error: ' + e.message);
   }
 }
