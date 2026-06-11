@@ -29,17 +29,17 @@ LOT_SIZES = {
     "FINNIFTY": 40, "MIDCPNIFTY": 50,
 }
 
-# Dhan security IDs for index chart data
 DHAN_INDEX_IDS = {
-    "NIFTY":  {"security_id": "13", "exchange_segment": "NSE_EQ",  "instrument_type": "INDEX"},
-    "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
+    "NIFTY":  {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
 }
 
-# yfinance fallback tickers
 YF_TICKERS = {
     "NIFTY":  "^NSEI",
     "SENSEX": "^BSESN",
 }
+
+CHART_TIMEOUT = 10  # seconds for any external chart data call
 
 # ── Database ──────────────────────────────────────────────────────────────────────
 
@@ -134,17 +134,12 @@ def _underlying(trading_symbol: str, exchange_segment: str) -> str:
 def _is_option(trade: dict) -> bool:
     seg = (trade.get("exchangeSegment") or "").upper()
     seg_ok = "FNO" in seg or "F&O" in seg or "FO" in seg
-
     opt = (trade.get("drvOptionType") or "").upper()
     opt_ok = opt in ("CALL", "PUT", "CE", "PE")
-
     inst = (trade.get("instrumentType") or trade.get("drvInstrumentType") or "").upper()
     inst_ok = inst in ("OPTIDX", "OPTSTK")
-
     sym = (trade.get("tradingSymbol") or trade.get("customSymbol") or "").upper()
-    sym_ok = (sym.endswith("CE") or sym.endswith("PE")
-              or " CALL " in sym or " PUT " in sym)
-
+    sym_ok = sym.endswith("CE") or sym.endswith("PE") or " CALL " in sym or " PUT " in sym
     return seg_ok and (opt_ok or inst_ok or sym_ok)
 
 
@@ -334,15 +329,26 @@ def import_from_dhan(from_date: str, to_date: str) -> dict:
 # ── Chart data ──────────────────────────────────────────────────────────────────────────
 
 
+def _with_timeout(fn, *args, **kwargs):
+    """Run fn(*args, **kwargs) with a 10s socket timeout."""
+    old = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(CHART_TIMEOUT)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        socket.setdefaulttimeout(old)
+
+
 def _raw_dhan_chart(security_id: str, exchange_segment: str,
                     instrument_type: str, trade_date: str) -> tuple[dict, str]:
-    """
-    Call intraday_minute_data and return (raw_response, error_string).
-    Tries with date params first; if TypeError falls back without dates.
-    """
-    dhan = _dhan_client()
+    """Call intraday_minute_data; tries with date params, falls back without."""
     try:
-        resp = dhan.intraday_minute_data(
+        dhan = _dhan_client()
+    except Exception as e:
+        return {}, str(e)
+    try:
+        resp = _with_timeout(
+            dhan.intraday_minute_data,
             security_id=security_id,
             exchange_segment=exchange_segment,
             instrument_type=instrument_type,
@@ -353,7 +359,8 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
     except TypeError:
         # SDK version doesn’t accept date params — returns today only
         try:
-            resp = dhan.intraday_minute_data(
+            resp = _with_timeout(
+                dhan.intraday_minute_data,
                 security_id=security_id,
                 exchange_segment=exchange_segment,
                 instrument_type=instrument_type,
@@ -366,41 +373,31 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
 
 
 def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
-    """Parse intraday_minute_data response into candle list."""
     if not resp:
         return []
-
-    # Unwrap {"data": {...}} envelope if present
     data = resp
     if isinstance(resp, dict) and "data" in resp:
         data = resp["data"]
-
     if not isinstance(data, dict):
-        logger.warning("Unexpected chart response type: %s  preview: %s",
+        logger.warning("Unexpected chart response type=%s  preview=%s",
                        type(data).__name__, str(data)[:200])
         return []
-
     timestamps = (data.get("timestamp") or data.get("timestamps")
                   or data.get("time") or [])
-    opens  = data.get("open")   or data.get("openPrice")  or []
-    highs  = data.get("high")   or data.get("highPrice")  or []
-    lows   = data.get("low")    or data.get("lowPrice")   or []
-    closes = data.get("close")  or data.get("closePrice") or []
-
+    opens  = data.get("open")  or data.get("openPrice")  or []
+    highs  = data.get("high")  or data.get("highPrice")  or []
+    lows   = data.get("low")   or data.get("lowPrice")   or []
+    closes = data.get("close") or data.get("closePrice") or []
     if not timestamps:
         logger.info("Chart response has no timestamps. Keys: %s", list(data.keys()))
         return []
-
     candles = []
     for i, ts_str in enumerate(timestamps):
         try:
             ts_str = str(ts_str).strip()
-            # Dhan returns either "HH:MM:SS" (time only) or "YYYY-MM-DD HH:MM:SS"
             if len(ts_str) <= 8:
                 ts_str = f"{trade_date} {ts_str}"
             ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
-            # Parse naively as IST; .timestamp() gives “IST-as-UTC” so
-            # TradingView (UTC display) shows correct IST times
             candles.append({
                 "time":  int(ts.timestamp()),
                 "open":  round(float(opens[i]),  2),
@@ -410,7 +407,6 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
             })
         except (IndexError, ValueError, TypeError):
             continue
-
     return candles
 
 
@@ -420,25 +416,19 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
     interval = "1m" if age <= 5 else ("5m" if age <= 55 else "1d")
     start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
     end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
-
-    old_to = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(10)
     try:
-        df = yf.Ticker(sym).history(start=start, end=end,
-                                    interval=interval, auto_adjust=True)
+        df = _with_timeout(yf.Ticker(sym).history,
+                           start=start, end=end,
+                           interval=interval, auto_adjust=True)
     except Exception as e:
         logger.error("yfinance %s: %s", sym, e)
         return [], interval
-    finally:
-        socket.setdefaulttimeout(old_to)
-
     if df.empty:
         return [], interval
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
     if interval in ("1m", "5m"):
         df = df[df.index.date == dt.date()]
-
     candles = []
     for ts, row in df.iterrows():
         o, h, l, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
@@ -453,32 +443,27 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
     idx = DHAN_INDEX_IDS.get(u)
-
     if idx:
         raw_resp, dhan_err = _raw_dhan_chart(
             idx["security_id"], idx["exchange_segment"],
             idx["instrument_type"], trade_date,
         )
         if dhan_err:
-            logger.error("Dhan chart API error: %s", dhan_err)
+            logger.error("Dhan chart error: %s", dhan_err)
         else:
             candles = _parse_dhan_candles(raw_resp, trade_date)
             if candles:
                 return candles, "1m", ""
-            logger.info("Dhan chart returned 0 candles for %s %s. resp: %s",
+            logger.info("Dhan chart 0 candles for %s %s. resp: %s",
                         u, trade_date, str(raw_resp)[:300])
-
     sym = YF_TICKERS.get(u)
     if sym:
         candles, interval = _chart_from_yfinance(sym, trade_date)
         if candles:
             return candles, interval, ""
-
     return [], "1m", (
-        f"No chart data for {u} on {trade_date}. "
-        "Dhan intraday API may not cover this date; "
-        "Yahoo Finance is rate-limited from this server. "
-        "Check /api/debug-chart for details."
+        f"No chart data for {u} {trade_date}. "
+        "Visit /api/debug-chart for details."
     )
 
 
@@ -494,13 +479,10 @@ def index():
 
 @app.route("/api/debug-chart")
 def api_debug_chart():
-    """
-    Diagnose chart data. Usage: /api/debug-chart?underlying=NIFTY&date=YYYY-MM-DD
-    Shows the raw Dhan intraday_minute_data response so field names can be verified.
-    """
-    u    = (request.args.get("underlying") or "NIFTY").upper()
-    d    = request.args.get("date") or str(date.today())
-    idx  = DHAN_INDEX_IDS.get(u)
+    """Diagnose chart: /api/debug-chart?underlying=NIFTY&date=YYYY-MM-DD"""
+    u   = (request.args.get("underlying") or "NIFTY").upper()
+    d   = request.args.get("date") or str(date.today())
+    idx = DHAN_INDEX_IDS.get(u)
     if not idx:
         return jsonify({"ok": False, "error": f"No index config for {u}"})
     try:
@@ -509,14 +491,14 @@ def api_debug_chart():
             idx["instrument_type"], d,
         )
         candles = _parse_dhan_candles(raw_resp, d) if not dhan_err else []
-        data_inner = raw_resp.get("data", raw_resp) if isinstance(raw_resp, dict) else raw_resp
+        inner   = raw_resp.get("data", raw_resp) if isinstance(raw_resp, dict) else raw_resp
         return jsonify({
             "ok":           True,
             "dhan_error":   dhan_err,
             "candle_count": len(candles),
             "resp_type":    type(raw_resp).__name__,
             "resp_keys":    list(raw_resp.keys()) if isinstance(raw_resp, dict) else None,
-            "data_keys":    list(data_inner.keys()) if isinstance(data_inner, dict) else None,
+            "data_keys":    list(inner.keys()) if isinstance(inner, dict) else None,
             "raw_preview":  str(raw_resp)[:600],
             "first_candle": candles[0] if candles else None,
         })
@@ -531,8 +513,8 @@ def api_debug_dhan():
     today_str = str(date.today())
     out: dict = {"ok": True}
     try:
-        dhan = _dhan_client()
-        resp = dhan.get_trade_history(
+        dhan  = _dhan_client()
+        resp  = dhan.get_trade_history(
             from_date=_to_dhan_date(from_date),
             to_date=_to_dhan_date(to_date),
             page_number=0,
@@ -582,7 +564,7 @@ def api_refresh_token():
     import token_manager  # noqa: PLC0415
     success = token_manager.refresh_token()
     return jsonify({"ok": success,
-                    "message": "Token refreshed" if success else "Token refresh failed — check logs"})
+                    "message": "Token refreshed" if success else "Token refresh failed"})
 
 
 @app.route("/api/trades")
@@ -966,4 +948,6 @@ if __name__ == "__main__":
     if token_manager.is_token_refresh_configured():
         logger.info("Refreshing Dhan token at startup...")
         token_manager.refresh_token()
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    # threaded=True is critical: without it Flask's dev server is single-threaded
+    # and one hanging chart request blocks all other requests (date changes, etc.)
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
