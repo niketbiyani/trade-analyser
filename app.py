@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v4"
+APP_VERSION = "v5"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -767,6 +767,7 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
 <div id="bar">
   <h1>TRADE ANALYSER</h1>
   <span class="vbadge">{ver}</span>
+  <span id="jss" class="vbadge" style="color:#555">JS?</span>
   <div class="date-nav">
     <button onclick="shiftDay(-1)">&#8592;</button>
     <input type="date" id="dp" onchange="onDate()">
@@ -847,6 +848,7 @@ window.addEventListener('unhandledrejection', function(e) {{
 
 <!-- Main app -->
 <script>
+(function(){{ var e=document.getElementById('jss'); if(e){{ e.textContent='JS OK'; e.style.color='#4caf50'; }} }})();
 class CandleChart {{
   constructor(container) {{
     var cv = document.createElement('canvas');
