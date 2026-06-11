@@ -1,0 +1,786 @@
+"""
+Trade Analyser — post-session option trade review on the underlying index chart.
+Single-file Flask app. Port 5556 by default.
+"""
+
+import logging
+import os
+import sqlite3
+import threading
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+
+import yfinance as yf
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+# ── Config ───────────────────────────────────────────────────────────────────
+
+DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID", "")
+DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
+PORT              = int(os.getenv("PORT", "5556"))
+DB_PATH           = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
+
+LOT_SIZES = {
+    "NIFTY": 75, "BANKNIFTY": 15, "SENSEX": 10,
+    "FINNIFTY": 40, "MIDCPNIFTY": 50,
+}
+
+TICKERS = {
+    "NIFTY": "^NSEI", "SENSEX": "^BSESN",
+    "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+}
+
+# ── Database ───────────────────────────────────────────────────────────────────
+
+_db_lock = threading.Lock()
+_conn: sqlite3.Connection | None = None
+
+
+def get_db() -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
+        _init_db(_conn)
+    return _conn
+
+
+def _init_db(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                date            TEXT    NOT NULL,
+                underlying      TEXT    NOT NULL,
+                option_type     TEXT    NOT NULL,
+                strike          REAL    NOT NULL,
+                expiry          TEXT    DEFAULT '',
+                entry_time      TEXT    DEFAULT '',
+                entry_price     REAL    DEFAULT 0,
+                exit_time       TEXT    DEFAULT '',
+                exit_price      REAL,
+                quantity        INTEGER DEFAULT 0,
+                lot_size        INTEGER DEFAULT 1,
+                lots            REAL    DEFAULT 0,
+                pnl             REAL,
+                status          TEXT    DEFAULT 'CLOSED',
+                notes           TEXT    DEFAULT '',
+                security_id     TEXT    DEFAULT '',
+                exchange_segment TEXT   DEFAULT 'NSE_FNO',
+                dhan_order_id   TEXT    DEFAULT '',
+                created_at      REAL    DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_date ON trades(date);
+            CREATE INDEX IF NOT EXISTS idx_underlying ON trades(underlying);
+        """)
+
+
+# ── Dhan Import ──────────────────────────────────────────────────────────────────
+
+
+def _dhan_client():
+    from dhanhq import DhanContext, dhanhq as DhanHQ  # noqa: PLC0415
+    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+        raise ValueError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN not set in .env")
+    return DhanHQ(DhanContext(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN))
+
+
+def _underlying(trading_symbol: str, exchange_segment: str) -> str:
+    """Derive the underlying index name from a Dhan trading symbol."""
+    if exchange_segment == "BSE_FNO":
+        return "SENSEX"
+    sym = (trading_symbol or "").upper().replace("-", "").replace(" ", "")
+    for name in ("BANKNIFTY", "MIDCPNIFTY", "FINNIFTY", "NIFTY", "SENSEX"):
+        if sym.startswith(name):
+            return name
+    prefix = "".join(ch for ch in sym if not ch.isdigit()).rstrip()
+    return prefix or "NIFTY"
+
+
+def import_from_dhan(from_date: str, to_date: str) -> dict:
+    """
+    Fetch trade history from Dhan for a date range and store option trades locally.
+    Pairs each SELL (entry) with the earliest subsequent BUY (exit) of equal quantity.
+    Dates: YYYY-MM-DD.  Returns import summary.
+    """
+    dhan = _dhan_client()
+
+    def _fmt(d: str) -> str:
+        return datetime.strptime(d, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+    # Paginate — Dhan returns ~50 records per page
+    raw: list[dict] = []
+    page = 0
+    while True:
+        resp = dhan.get_trade_history(
+            from_date=_fmt(from_date), to_date=_fmt(to_date), page_number=page
+        )
+        if not isinstance(resp, dict):
+            break
+        batch = resp.get("data") or []
+        if not isinstance(batch, list) or not batch:
+            break
+        raw.extend(batch)
+        if len(batch) < 50:
+            break
+        page += 1
+
+    # Keep only NSE_FNO / BSE_FNO options
+    opts = [
+        t for t in raw
+        if t.get("exchangeSegment") in ("NSE_FNO", "BSE_FNO")
+        and (t.get("drvOptionType") or "") in ("CALL", "PUT", "CE", "PE")
+    ]
+
+    # Group by (trade-date, securityId) to pair entries with exits
+    groups: dict[tuple, list] = defaultdict(list)
+    for t in opts:
+        ts = t.get("createTime") or t.get("exchangeTime") or ""
+        groups[(ts[:10] if len(ts) >= 10 else from_date, str(t.get("securityId", "")))].append(t)
+
+    imported = skipped = 0
+    db = get_db()
+
+    for (trade_date, sid), group in groups.items():
+        sells = sorted(
+            [t for t in group if t.get("transactionType") == "SELL"],
+            key=lambda x: x.get("createTime") or "",
+        )
+        buys = sorted(
+            [t for t in group if t.get("transactionType") == "BUY"],
+            key=lambda x: x.get("createTime") or "",
+        )
+
+        for sell in sells:
+            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or ""
+            entry_time  = ts_str[11:19] if len(ts_str) >= 19 else ""
+            entry_price = float(sell.get("tradedPrice") or 0)
+            qty         = int(sell.get("tradedQuantity") or 0)
+            opt_raw     = sell.get("drvOptionType") or ""
+            opt_type    = "CE" if opt_raw in ("CALL", "CE") else "PE"
+            strike      = float(sell.get("drvStrikePrice") or 0)
+            expiry      = str(sell.get("drvExpiryDate") or "")
+            sym         = sell.get("tradingSymbol") or ""
+            exseg       = sell.get("exchangeSegment") or "NSE_FNO"
+            underlying  = _underlying(sym, exseg)
+            lot_size    = LOT_SIZES.get(underlying, 1)
+            lots        = round(qty / lot_size, 2) if lot_size else float(qty)
+            order_id    = str(sell.get("orderId") or "")
+
+            # Match earliest BUY with same qty that occurs AFTER this SELL
+            exit_t = next(
+                (
+                    b for b in buys
+                    if int(b.get("tradedQuantity") or 0) == qty
+                    and (b.get("createTime") or "") > ts_str
+                ),
+                None,
+            )
+            if exit_t:
+                buys.remove(exit_t)
+
+            exit_ts     = exit_t.get("createTime") or exit_t.get("exchangeTime") or "" if exit_t else ""
+            exit_time   = exit_ts[11:19] if len(exit_ts) >= 19 else ""
+            exit_price  = float(exit_t.get("tradedPrice") or 0) if exit_t else None
+            pnl         = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
+            status      = "CLOSED" if exit_t else "OPEN"
+
+            with _db_lock:
+                if db.execute(
+                    "SELECT id FROM trades WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
+                    (trade_date, sid, entry_time, order_id),
+                ).fetchone():
+                    skipped += 1
+                    continue
+
+                db.execute(
+                    """
+                    INSERT INTO trades
+                        (date, underlying, option_type, strike, expiry,
+                         entry_time, entry_price, exit_time, exit_price,
+                         quantity, lot_size, lots, pnl, status,
+                         security_id, exchange_segment, dhan_order_id, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        trade_date, underlying, opt_type, strike, expiry,
+                        entry_time, entry_price, exit_time, exit_price,
+                        qty, lot_size, lots, pnl, status,
+                        sid, exseg, order_id, datetime.now().timestamp(),
+                    ),
+                )
+                db.commit()
+                imported += 1
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "total_raw": len(raw),
+        "total_options": len(opts),
+    }
+
+
+# ── Chart data (yfinance) ───────────────────────────────────────────────────────────
+
+
+def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str]:
+    """
+    Fetch OHLCV candles for the underlying index on the given date via yfinance.
+    Auto-selects interval: 1m (<=5 days old), 5m (<=55 days), 1d (older).
+    Timestamps are naive-IST treated as UTC so TradingView shows correct IST times.
+    """
+    sym  = TICKERS.get(underlying.upper(), "^NSEI")
+    dt   = datetime.strptime(trade_date, "%Y-%m-%d")
+    age  = (datetime.now() - dt).days
+
+    if age <= 5:
+        interval = "1m"
+    elif age <= 55:
+        interval = "5m"
+    else:
+        interval = "1d"
+
+    start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
+    end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+
+    try:
+        df = yf.Ticker(sym).history(
+            start=start, end=end, interval=interval, auto_adjust=True
+        )
+    except Exception as e:
+        logger.error("yfinance %s: %s", sym, e)
+        return [], interval
+
+    if df.empty:
+        return [], interval
+
+    # Strip tz → naive IST; .timestamp() on UTC server gives "IST-as-UTC" epoch
+    # TradingView then displays the correct IST time. (Same trick as risk-management.)
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
+
+    if interval in ("1m", "5m"):
+        df = df[df.index.date == dt.date()]
+
+    candles = []
+    for ts, row in df.iterrows():
+        o, h, l, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
+        if any(v != v for v in (o, h, l, c)):  # NaN guard
+            continue
+        candles.append({
+            "time":  int(ts.timestamp()),
+            "open":  round(o, 2),
+            "high":  round(h, 2),
+            "low":   round(l, 2),
+            "close": round(c, 2),
+        })
+
+    return candles, interval
+
+
+# ── Flask ──────────────────────────────────────────────────────────────────────────
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def index():
+    return _page()
+
+
+@app.route("/api/import", methods=["POST"])
+def api_import():
+    data = request.json or {}
+    try:
+        result = import_from_dhan(
+            data.get("from_date") or str(date.today()),
+            data.get("to_date")   or str(date.today()),
+        )
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        logger.error("import: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/trades")
+def api_trades():
+    d  = request.args.get("date") or str(date.today())
+    u  = (request.args.get("underlying") or "").upper()
+    ot = (request.args.get("option_type") or "").upper()
+    db = get_db()
+    q, p = "SELECT * FROM trades WHERE date=?", [d]
+    if u and u != "ALL":
+        q += " AND underlying=?"; p.append(u)
+    if ot and ot not in ("ALL", "BOTH", ""):
+        q += " AND option_type=?"; p.append(ot)
+    return jsonify([dict(r) for r in db.execute(q + " ORDER BY entry_time", p).fetchall()])
+
+
+@app.route("/api/trade/<int:tid>/notes", methods=["PUT"])
+def api_notes(tid: int):
+    notes = (request.json or {}).get("notes", "")
+    with _db_lock:
+        db = get_db()
+        db.execute("UPDATE trades SET notes=? WHERE id=?", (notes, tid))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/chart")
+def api_chart():
+    u = request.args.get("underlying") or "NIFTY"
+    d = request.args.get("date")       or str(date.today())
+    candles, interval = chart_candles(u, d)
+    return jsonify({"candles": candles, "interval": interval})
+
+
+@app.route("/api/dates")
+def api_dates():
+    rows = get_db().execute(
+        "SELECT DISTINCT date FROM trades ORDER BY date DESC LIMIT 90"
+    ).fetchall()
+    return jsonify([r["date"] for r in rows])
+
+
+# ── HTML page ──────────────────────────────────────────────────────────────────────
+
+def _page() -> str:
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Trade Analyser</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
+:root {
+  --bg: #0d0d0d; --surface: #141414; --s2: #1e1e1e; --border: #2a2a2a;
+  --text: #e0e0e0; --dim: #555; --ce: #4fc3f7; --pe: #ffb74d;
+  --green: #4caf50; --red: #ef5350; --acc: #7c4dff;
+}
+html, body { height: 100%; overflow: hidden }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+       font: 13px/1.4 'SF Mono', Consolas, monospace }
+
+/* top bar */
+#bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+       background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0 }
+#bar h1 { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; margin-right: 4px;
+          color: var(--acc) }
+.date-nav { display: flex; gap: 4px; align-items: center }
+.date-nav button { background: var(--s2); border: 1px solid var(--border); color: var(--text);
+                   padding: 3px 9px; cursor: pointer; border-radius: 3px; font: inherit }
+.date-nav button:hover { border-color: var(--acc) }
+#dp { background: var(--s2); border: 1px solid var(--border); color: var(--text);
+      padding: 3px 8px; border-radius: 3px; font: inherit; cursor: pointer }
+.chips { display: flex; gap: 4px }
+.chip { padding: 3px 11px; border-radius: 10px; border: 1px solid var(--border);
+        color: var(--dim); cursor: pointer; font-size: 11px; user-select: none;
+        transition: border-color .15s, color .15s, background .15s }
+.chip.on { color: var(--text); border-color: var(--acc); background: rgba(124,77,255,.12) }
+.chip.ce.on { color: var(--ce); border-color: var(--ce); background: rgba(79,195,247,.1) }
+.chip.pe.on { color: var(--pe); border-color: var(--pe); background: rgba(255,183,77,.1) }
+#ivl { font-size: 10px; color: var(--dim); border: 1px solid var(--border);
+       padding: 2px 6px; border-radius: 3px }
+#impBtn { margin-left: auto; background: var(--acc); border: none; color: #fff;
+          padding: 5px 14px; border-radius: 4px; cursor: pointer; font: inherit;
+          font-size: 12px; letter-spacing: .3px }
+#impBtn:hover { opacity: .85 }
+
+/* layout */
+#main { flex: 1; display: flex; flex-direction: column; min-height: 0 }
+#chartBox { flex: 1; min-height: 0; position: relative }
+#chartEl  { width: 100%; height: 100% }
+#chartMsg { position: absolute; inset: 0; display: flex; align-items: center;
+            justify-content: center; color: var(--dim); font-size: 12px;
+            background: var(--bg); pointer-events: none; transition: opacity .2s }
+#chartMsg.hide { opacity: 0; pointer-events: none }
+
+/* trades panel */
+#panel { height: 235px; border-top: 1px solid var(--border);
+         display: flex; flex-direction: column; background: var(--surface) }
+#ph { display: flex; align-items: center; gap: 12px; padding: 6px 14px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0 }
+#ph b { color: var(--dim); font-size: 10px; letter-spacing: 1px }
+#psummary { margin-left: auto; font-size: 11px; color: var(--dim) }
+#pbody { flex: 1; overflow-y: auto }
+table { width: 100%; border-collapse: collapse; font-size: 12px }
+th { position: sticky; top: 0; background: var(--s2); color: var(--dim);
+     font-weight: 500; padding: 5px 12px; text-align: left;
+     border-bottom: 1px solid var(--border) }
+td { padding: 5px 12px; border-bottom: 1px solid rgba(255,255,255,.035) }
+tr.sel td { background: rgba(124,77,255,.08) }
+tr:not(.sel):hover td { background: rgba(255,255,255,.02) }
+.tag { display: inline-block; padding: 1px 5px; border-radius: 3px;
+       font-size: 10px; font-weight: 700 }
+.tag.ce { background: rgba(79,195,247,.12); color: var(--ce) }
+.tag.pe { background: rgba(255,183,77,.12); color: var(--pe) }
+.pos { color: var(--green) } .neg { color: var(--red) }
+.ni { background: none; border: none; color: var(--text); font: inherit;
+      width: 100%; outline: none }
+.ni:focus { border-bottom: 1px solid var(--acc) }
+.ni::placeholder { color: #333 }
+#empty { text-align: center; color: var(--dim); padding: 36px; font-size: 12px }
+
+/* modal */
+#ov { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
+      z-index: 99; align-items: center; justify-content: center }
+#ov.show { display: flex }
+#modal { background: var(--surface); border: 1px solid var(--border);
+         border-radius: 8px; padding: 24px; width: 340px }
+#modal h2 { font-size: 14px; margin-bottom: 16px }
+.fr label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 3px }
+.fr input[type=date] { width: 100%; background: var(--s2); border: 1px solid var(--border);
+                       color: var(--text); padding: 6px 9px; border-radius: 4px;
+                       font: inherit; margin-bottom: 12px }
+.mfooter { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px }
+.btn  { padding: 6px 16px; border-radius: 4px; border: none; cursor: pointer; font: inherit; font-size: 12px }
+.btnp { background: var(--acc); color: #fff }
+.btns { background: var(--s2); color: var(--text); border: 1px solid var(--border) }
+#mres { margin-top: 10px; font-size: 12px; min-height: 18px; word-break: break-word }
+
+::-webkit-scrollbar { width: 5px; height: 5px }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px }
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <h1>TRADE ANALYSER</h1>
+
+  <div class="date-nav">
+    <button onclick="shiftDay(-1)">&#8592;</button>
+    <input type="date" id="dp" onchange="onDate()">
+    <button onclick="shiftDay(1)">&#8594;</button>
+  </div>
+
+  <div class="chips" id="uChips">
+    <div class="chip on"  data-v="NIFTY"     onclick="setU(this)">NIFTY</div>
+    <div class="chip"     data-v="SENSEX"    onclick="setU(this)">SENSEX</div>
+    <div class="chip"     data-v="BANKNIFTY" onclick="setU(this)">BANKNIFTY</div>
+  </div>
+
+  <div class="chips" id="tChips">
+    <div class="chip ce on" data-v="CE" onclick="togT(this)">CE</div>
+    <div class="chip pe on" data-v="PE" onclick="togT(this)">PE</div>
+  </div>
+
+  <span id="ivl">—</span>
+  <button id="impBtn" onclick="openImp()">↓ Import from Dhan</button>
+</div>
+
+<div id="main">
+  <div id="chartBox">
+    <div id="chartEl"></div>
+    <div id="chartMsg">Loading chart…</div>
+  </div>
+
+  <div id="panel">
+    <div id="ph">
+      <b>TRADES</b>
+      <span id="pcnt" style="font-size:11px;color:var(--dim)"></span>
+      <span id="psummary"></span>
+    </div>
+    <div id="pbody">
+      <div id="empty">No trades for this date &mdash; import from Dhan or pick another day.</div>
+      <table id="tbl" style="display:none">
+        <thead><tr>
+          <th>Time</th><th>Type</th><th>Strike</th>
+          <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Lots</th><th>P&amp;L</th><th>Notes</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="ov" onclick="if(event.target===this)closeImp()">
+  <div id="modal">
+    <h2>Import Trades from Dhan</h2>
+    <div class="fr">
+      <label>From Date</label>
+      <input type="date" id="mFrom">
+      <label>To Date</label>
+      <input type="date" id="mTo">
+    </div>
+    <div id="mres"></div>
+    <div class="mfooter">
+      <button class="btn btns" onclick="closeImp()">Cancel</button>
+      <button class="btn btnp" id="mBtn" onclick="doImport()">Import</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────────
+let chart, series;
+let curDate = '', curU = 'NIFTY';
+let typeOn  = new Set(['CE','PE']);
+let allTrades = [], candles = [], curInterval = '1m';
+let selId = null;
+
+// ─── Boot ────────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  initChart();
+  const today = new Date().toISOString().slice(0,10);
+  document.getElementById('dp').value = today;
+  curDate = today;
+  loadAll();
+});
+
+// ─── Chart ───────────────────────────────────────────────────────────────────────
+function initChart() {
+  const box = document.getElementById('chartBox');
+  chart = LightweightCharts.createChart(document.getElementById('chartEl'), {
+    width: box.clientWidth, height: box.clientHeight,
+    layout: { background:{color:'#0d0d0d'}, textColor:'#555' },
+    grid:   { vertLines:{color:'#181818'}, horzLines:{color:'#181818'} },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor:'#2a2a2a' },
+    timeScale: { borderColor:'#2a2a2a', timeVisible:true, secondsVisible:false },
+  });
+  series = chart.addCandlestickSeries({
+    upColor:'#26a69a', downColor:'#ef5350',
+    borderUpColor:'#26a69a', borderDownColor:'#ef5350',
+    wickUpColor:'#26a69a', wickDownColor:'#ef5350',
+  });
+  new ResizeObserver(() => chart.resize(box.clientWidth, box.clientHeight)).observe(box);
+}
+
+// ─── Controls ───────────────────────────────────────────────────────────────────
+function shiftDay(d) {
+  const dt = new Date(curDate + 'T00:00:00');
+  dt.setDate(dt.getDate() + d);
+  curDate = dt.toISOString().slice(0,10);
+  document.getElementById('dp').value = curDate;
+  loadAll();
+}
+function onDate() { curDate = document.getElementById('dp').value; loadAll(); }
+
+function setU(el) {
+  document.querySelectorAll('#uChips .chip').forEach(c => c.classList.remove('on'));
+  el.classList.add('on');
+  curU = el.dataset.v;
+  loadAll();
+}
+
+function togT(el) {
+  const v = el.dataset.v;
+  if (typeOn.has(v)) {
+    if (typeOn.size > 1) { typeOn.delete(v); el.classList.remove('on'); }
+  } else {
+    typeOn.add(v); el.classList.add('on');
+  }
+  const f = allTrades.filter(t => typeOn.has(t.option_type));
+  renderTrades(f);
+  putMarkers(f);
+}
+
+// ─── Load ───────────────────────────────────────────────────────────────────────
+function loadAll() { loadChart(); loadTrades(); }
+
+async function loadChart() {
+  const msg = document.getElementById('chartMsg');
+  msg.textContent = 'Loading chart…'; msg.classList.remove('hide');
+  try {
+    const r = await fetch('/api/chart?underlying=' + curU + '&date=' + curDate);
+    const d = await r.json();
+    candles = d.candles || [];
+    curInterval = d.interval || '1m';
+    document.getElementById('ivl').textContent = d.interval || '—';
+    series.setData(candles);
+    if (candles.length) chart.timeScale().fitContent();
+    else { series.setData([]); }
+  } catch(e) { console.error(e); }
+  msg.classList.add('hide');
+}
+
+async function loadTrades() {
+  try {
+    const r = await fetch('/api/trades?date=' + curDate + '&underlying=' + curU);
+    allTrades = await r.json();
+    const f = allTrades.filter(t => typeOn.has(t.option_type));
+    renderTrades(f);
+    putMarkers(f);
+  } catch(e) { console.error(e); }
+}
+
+// ─── Table ─────────────────────────────────────────────────────────────────────
+function renderTrades(trades) {
+  const tbl = document.getElementById('tbl');
+  const em  = document.getElementById('empty');
+  const cnt = document.getElementById('pcnt');
+  const sum = document.getElementById('psummary');
+
+  if (!trades.length) {
+    tbl.style.display = 'none'; em.style.display = '';
+    cnt.textContent = ''; sum.innerHTML = ''; return;
+  }
+  tbl.style.display = ''; em.style.display = 'none';
+
+  const closed = trades.filter(t => t.pnl != null);
+  const tot    = closed.reduce((a,t) => a + t.pnl, 0);
+  const wins   = closed.filter(t => t.pnl >= 0).length;
+  const losses = closed.filter(t => t.pnl  < 0).length;
+  cnt.textContent = trades.length + ' trade' + (trades.length > 1 ? 's' : '');
+  sum.innerHTML   = '<span class="' + (tot >= 0 ? 'pos' : 'neg') + '">' +
+                    (tot >= 0 ? '+' : '') + '₹' + tot.toFixed(0) + '</span>' +
+                    ' &nbsp; ' + wins + 'W / ' + losses + 'L';
+
+  document.getElementById('tbody').innerHTML = trades.map(t => {
+    const tc  = t.option_type.toLowerCase();
+    const sk  = t.strike ? t.strike.toLocaleString('en-IN') : '—';
+    const ep  = t.exit_price  != null ? t.exit_price.toFixed(2)  : '—';
+    const pl  = t.pnl         != null
+                  ? '<span class="' + (t.pnl >= 0 ? 'pos' : 'neg') + '">' +
+                    (t.pnl >= 0 ? '+' : '') + '₹' + t.pnl.toFixed(0) + '</span>'
+                  : '—';
+    const lts = t.lots ? t.lots + 'L' : t.quantity;
+    const sel = selId === t.id ? ' sel' : '';
+    const nt  = (t.notes || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    return `<tr class="${sel}" data-id="${t.id}"
+              onclick="selTrade(${t.id}, '${t.entry_time || ''}')">
+      <td>${t.entry_time ? t.entry_time.slice(0,5) : '—'}</td>
+      <td><span class="tag ${tc}">${t.option_type}</span></td>
+      <td>${sk}</td>
+      <td>${t.entry_price.toFixed(2)}</td>
+      <td>${ep}</td>
+      <td>${lts}</td>
+      <td>${pl}</td>
+      <td><input class="ni" value="${nt}" placeholder="add note…"
+            onclick="event.stopPropagation()"
+            onblur="saveNote(${t.id}, this.value)"></td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Markers ─────────────────────────────────────────────────────────────────────
+function tsFor(dateStr, timeStr) {
+  if (!timeStr) return null;
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const [h, m]     = timeStr.split(':').map(Number);
+  // Date.UTC treats IST time as UTC → matches server naive-.timestamp() trick
+  return Date.UTC(y, mo - 1, d, h, m, 0) / 1000;
+}
+
+function snapTs(ts) {
+  if (!ts || !candles.length) return ts;
+  let best = candles[0].time, diff = Math.abs(candles[0].time - ts);
+  for (const c of candles) {
+    const d = Math.abs(c.time - ts);
+    if (d < diff) { diff = d; best = c.time; }
+    if (c.time > ts + 7200) break;
+  }
+  return best;
+}
+
+function putMarkers(trades) {
+  if (!series) return;
+  const markers = [];
+  for (const t of trades) {
+    const col = t.option_type === 'CE' ? '#4fc3f7' : '#ffb74d';
+    const lbl = t.option_type + ' ' + (t.strike ? t.strike.toLocaleString('en-IN') : '');
+
+    const ets = tsFor(curDate, t.entry_time);
+    if (ets) markers.push({
+      time: snapTs(ets), position: 'aboveBar',
+      color: col, shape: 'arrowDown', text: lbl,
+      id: 'e' + t.id, size: 1.2,
+    });
+
+    if (t.exit_time && t.exit_price != null) {
+      const xts = tsFor(curDate, t.exit_time);
+      if (xts) markers.push({
+        time: snapTs(xts), position: 'belowBar',
+        color: (t.pnl != null && t.pnl >= 0) ? '#4caf50' : '#ef5350',
+        shape: 'arrowUp',
+        text: (t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl) : t.exit_price.toFixed(0)),
+        id: 'x' + t.id, size: 1.2,
+      });
+    }
+  }
+  markers.sort((a, b) => a.time - b.time);
+  series.setMarkers(markers);
+}
+
+// ─── Select + notes ────────────────────────────────────────────────────────
+function selTrade(id, entryTime) {
+  selId = id;
+  document.querySelectorAll('#tbody tr').forEach(r =>
+    r.classList.toggle('sel', +r.dataset.id === id));
+  if (entryTime && candles.length) {
+    const ts  = tsFor(curDate, entryTime);
+    const sec = curInterval === '5m' ? 300 : 60;
+    if (ts) chart.timeScale().setVisibleRange({ from: ts - sec * 25, to: ts + sec * 90 });
+  }
+}
+
+async function saveNote(id, notes) {
+  try {
+    await fetch('/api/trade/' + id + '/notes', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes }),
+    });
+    const t = allTrades.find(x => x.id === id);
+    if (t) t.notes = notes;
+  } catch(e) { console.error(e); }
+}
+
+// ─── Import modal ───────────────────────────────────────────────────────────
+function openImp() {
+  const t = new Date().toISOString().slice(0,10);
+  document.getElementById('mFrom').value   = t;
+  document.getElementById('mTo').value     = t;
+  document.getElementById('mres').textContent = '';
+  document.getElementById('ov').classList.add('show');
+}
+function closeImp() { document.getElementById('ov').classList.remove('show'); }
+
+async function doImport() {
+  const btn = document.getElementById('mBtn');
+  const res = document.getElementById('mres');
+  btn.disabled = true; btn.textContent = 'Importing…';
+  res.style.color = ''; res.textContent = 'Fetching from Dhan…';
+  try {
+    const r = await fetch('/api/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from_date: document.getElementById('mFrom').value,
+        to_date:   document.getElementById('mTo').value,
+      }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      res.style.color = '#4caf50';
+      res.textContent = `✓ ${d.imported} new trades imported, ${d.skipped} already stored` +
+                        ` (${d.total_options} options in ${d.total_raw} total trades)`;
+      loadTrades();
+    } else {
+      res.style.color = '#ef5350';
+      res.textContent = 'Error: ' + d.error;
+    }
+  } catch(e) {
+    res.style.color = '#ef5350';
+    res.textContent = 'Network error: ' + e.message;
+  }
+  btn.disabled = false; btn.textContent = 'Import';
+}
+</script>
+</body>
+</html>"""
+
+
+# ── Entry point ──────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    logger.info("Trade Analyser starting on http://0.0.0.0:%d", PORT)
+    get_db()
+    app.run(host="0.0.0.0", port=PORT, debug=False)
