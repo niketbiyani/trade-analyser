@@ -370,6 +370,16 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 ),
                 None,
             )
+            # Fallback: if no BUY after this SELL, check for unpaired BUY before it.
+            # Handles hedge legs that were bought first and sold to unwind.
+            if exit_t is None:
+                before = [
+                    b for b in buys
+                    if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
+                    and (b.get("createTime") or b.get("orderCreateTime") or "") < ts_str
+                ]
+                if before:
+                    exit_t = max(before, key=lambda b: b.get("createTime") or b.get("orderCreateTime") or "")
             if exit_t:
                 buys.remove(exit_t)
 
