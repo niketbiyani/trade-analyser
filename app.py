@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v18"
+APP_VERSION = "v19"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -697,8 +697,8 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
             security_id=security_id,
             exchange_segment=exchange_segment,
             instrument_type=instrument_type,
-            from_date=day,
-            to_date=day,
+            from_date=f"{day} 09:00:00",
+            to_date=f"{day} 15:30:00",
         )
         logger.info("Dhan intraday [%s %s %s]: %d candles", security_id, exchange_segment, day, _candle_count(resp))
         if _is_auth_error(resp):
@@ -712,8 +712,8 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                         security_id=security_id,
                         exchange_segment=exchange_segment,
                         instrument_type=instrument_type,
-                        from_date=day,
-                        to_date=day,
+                        from_date=f"{day} 09:00:00",
+                        to_date=f"{day} 15:30:00",
                     )
             except Exception as e:
                 logger.warning("Token refresh failed during chart load: %s", e)
