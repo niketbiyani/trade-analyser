@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v21"
+APP_VERSION = "v22"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -752,9 +752,11 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
     candles = []
     for i, ts_raw in enumerate(timestamps):
         try:
-            # Handle integer Unix epoch (historical API returns these)
+            # Handle integer Unix epoch (Dhan intraday returns actual UTC)
+            # Add 19800s (5.5h IST offset) to match the IST-as-UTC convention
+            # used by tsFor() in the frontend (Date.UTC treating IST times as UTC)
             if isinstance(ts_raw, (int, float)):
-                ts = datetime.fromtimestamp(ts_raw)
+                ts = datetime.fromtimestamp(int(ts_raw) + 19800)
             else:
                 ts_str = str(ts_raw).strip()
                 if len(ts_str) <= 8:
