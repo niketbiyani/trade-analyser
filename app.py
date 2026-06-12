@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v16"
+APP_VERSION = "v17"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -649,35 +649,25 @@ def _is_auth_error(resp) -> bool:
 
 
 def _raw_dhan_chart(security_id: str, exchange_segment: str,
-                    instrument_type: str, to_date: str, from_date: str = "") -> tuple[dict, str]:
+                    instrument_type: str, day: str) -> tuple[dict, str]:
+    """Fetch 1m candles for a single day. from_date == to_date == day (Dhan requirement)."""
     try:
         dhan = _dhan_client()
     except Exception as e:
         return {}, str(e)
 
-    fd = from_date or to_date
-
     def _call(d):
-        try:
-            return _with_timeout(
-                d.intraday_minute_data,
-                security_id=security_id,
-                exchange_segment=exchange_segment,
-                instrument_type=instrument_type,
-                from_date=fd,
-                to_date=to_date,
-                interval=1,
-            ), ""
-        except TypeError:
-            return _with_timeout(
-                d.intraday_minute_data,
-                security_id=security_id,
-                exchange_segment=exchange_segment,
-                instrument_type=instrument_type,
-            ), ""
+        return _with_timeout(
+            d.intraday_minute_data,
+            security_id=security_id,
+            exchange_segment=exchange_segment,
+            instrument_type=instrument_type,
+            from_date=day,
+            to_date=day,
+        )
 
     try:
-        resp, err = _call(dhan)
+        resp = _call(dhan)
     except Exception as e:
         return {}, str(e)
 
@@ -687,17 +677,15 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
             import token_manager  # noqa: PLC0415
             if token_manager.refresh_token():
                 dhan = _dhan_client()
-                resp, err = _call(dhan)
+                resp = _call(dhan)
         except Exception as e:
             logger.warning("Token refresh failed during chart load: %s", e)
 
     logger.info(
-        "Dhan chart [%s %s %s %s]: type=%s status=%s keys=%s preview=%s",
-        security_id, exchange_segment, instrument_type, to_date,
-        type(resp).__name__,
-        resp.get("status") if isinstance(resp, dict) else "n/a",
-        list(resp.keys()) if isinstance(resp, dict) else None,
-        str(resp)[:300],
+        "Dhan chart [%s %s %s %s]: status=%s candles=%s",
+        security_id, exchange_segment, instrument_type, day,
+        resp.get("status") if isinstance(resp, dict) else type(resp).__name__,
+        len((resp.get("data") or resp).get("timestamp", [])) if isinstance(resp, dict) else 0,
     )
     return resp, ""
 
@@ -741,36 +729,55 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
 
 
 
+def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
+    """Fetch candles for a single day using the given index config."""
+    raw_resp, dhan_err = _raw_dhan_chart(
+        idx["security_id"], idx["exchange_segment"], idx["instrument_type"], day
+    )
+    if dhan_err:
+        logger.error("Dhan chart error [%s %s %s]: %s",
+                     idx["security_id"], idx["exchange_segment"], day, dhan_err)
+        return []
+    return _parse_dhan_candles(raw_resp, day)
+
+
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
     prev_day = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
+    # Build candidate list: for SENSEX try multiple configs, others use primary only
     candidates = SENSEX_FALLBACKS if u == "SENSEX" else []
     primary = DHAN_INDEX_IDS.get(u)
     if primary and (not candidates or candidates[0] != primary):
         candidates = [primary] + [c for c in candidates if c != primary]
 
-    for idx in candidates:
-        raw_resp, dhan_err = _raw_dhan_chart(
-            idx["security_id"], idx["exchange_segment"],
-            idx["instrument_type"],
-            to_date=trade_date, from_date=prev_day,
-        )
-        if dhan_err:
-            logger.error("Dhan chart error [%s %s]: %s", idx["security_id"], idx["exchange_segment"], dhan_err)
-            continue
-        candles = _parse_dhan_candles(raw_resp, trade_date)
-        if candles:
-            if u == "SENSEX" and idx != DHAN_INDEX_IDS.get(u):
-                logger.info("SENSEX chart: working config is sid=%s seg=%s — update DHAN_INDEX_IDS",
-                            idx["security_id"], idx["exchange_segment"])
-                DHAN_INDEX_IDS["SENSEX"] = idx  # cache for this session
-            return candles, "1m", ""
+    if not candidates:
+        return [], "1m", f"No index config for {u}"
 
-    return [], "1m", (
-        f"No 1m chart data for {u} {trade_date} from Dhan. "
-        "Check /api/debug-chart?underlying=" + u + "&date=" + trade_date
-    )
+    # Try each candidate until we get data for trade_date
+    working_idx = None
+    trade_candles: list[dict] = []
+    for idx in candidates:
+        trade_candles = _fetch_day_candles(idx, trade_date)
+        if trade_candles:
+            working_idx = idx
+            if u == "SENSEX" and idx != DHAN_INDEX_IDS.get(u):
+                logger.info("SENSEX working config: sid=%s seg=%s — update DHAN_INDEX_IDS",
+                            idx["security_id"], idx["exchange_segment"])
+                DHAN_INDEX_IDS["SENSEX"] = idx
+            break
+
+    if not trade_candles:
+        return [], "1m", (
+            f"No 1m chart data for {u} {trade_date} from Dhan. "
+            "Check /api/debug-chart?underlying=" + u + "&date=" + trade_date
+        )
+
+    # Fetch prev_day candles separately (for EMA/RSI/MACD warmup)
+    prev_candles = _fetch_day_candles(working_idx, prev_day)
+
+    all_candles = sorted(prev_candles + trade_candles, key=lambda c: c["time"])
+    return all_candles, "1m", ""
 
 
 def _make_test_candles(trade_date: str) -> list[dict]:
@@ -823,8 +830,7 @@ def api_debug_chart():
         return jsonify({"ok": False, "error": f"No index config for {u}"})
     try:
         raw_resp, dhan_err = _raw_dhan_chart(
-            idx["security_id"], idx["exchange_segment"],
-            idx["instrument_type"], to_date=d,
+            idx["security_id"], idx["exchange_segment"], idx["instrument_type"], day=d,
         )
         candles = _parse_dhan_candles(raw_resp, d) if not dhan_err else []
         inner   = raw_resp.get("data", raw_resp) if isinstance(raw_resp, dict) else raw_resp
