@@ -1326,7 +1326,7 @@ var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _syncingRange=false, _syncingCross=false;
-var _candleMap={}, _rsiMap={}, _macdMap={};
+var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
 var dirOn=new Set(['SHORT','LONG']);
