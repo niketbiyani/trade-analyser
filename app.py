@@ -682,7 +682,7 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
 
     logger.info(
         "Dhan chart [%s %s %s %s]: type=%s status=%s keys=%s preview=%s",
-        security_id, exchange_segment, instrument_type, trade_date,
+        security_id, exchange_segment, instrument_type, to_date,
         type(resp).__name__,
         resp.get("status") if isinstance(resp, dict) else "n/a",
         list(resp.keys()) if isinstance(resp, dict) else None,
