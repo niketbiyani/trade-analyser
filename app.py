@@ -536,10 +536,14 @@ def _do_import(from_date: str, to_date: str) -> dict:
             logger.info("get_trade_book (today): %d records", len(tb_batch))
             if not tb_batch:
                 diag["tradebook_raw"] = str(resp_tb)[:400]
+                if _is_auth_error(resp_tb):
+                    raise ValueError("Trade book auth error: invalid token")
             raw.extend(tb_batch)
         except Exception as e:
             logger.warning("get_trade_book failed: %s", e)
             diag["tradebook_error"] = str(e)
+            if "auth error" in str(e).lower() or "invalid token" in str(e).lower():
+                raise
 
     return _process_raw_trades(raw, diag)
 
