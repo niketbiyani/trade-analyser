@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v20"
+APP_VERSION = "v21"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -748,6 +748,7 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
     if not timestamps:
         logger.info("Chart response has no timestamps. data keys: %s", list(data.keys()))
         return []
+    logger.info("First timestamps raw (type=%s): %s", type(timestamps[0]).__name__, timestamps[:3])
     candles = []
     for i, ts_raw in enumerate(timestamps):
         try:
@@ -1316,7 +1317,7 @@ function _chartOpts(el, timeScaleOpts) {{
     rightPriceScale: {{ borderColor: '#2a2a2a' }},
     timeScale: Object.assign({{ borderColor: '#2a2a2a', rightOffset: 5 }}, timeScaleOpts||{{}}),
     handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true }},
-    handleScale: {{ mouseWheel: false, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
+    handleScale: {{ mouseWheel: true, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
   }};
 }}
 function _watchResize(inst, el) {{
