@@ -12,7 +12,6 @@ import threading
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
-import yfinance as yf
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
@@ -38,10 +37,6 @@ DHAN_INDEX_IDS = {
     "SENSEX": {"security_id": "51",  "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
 }
 
-YF_TICKERS = {
-    "NIFTY":  "^NSEI",
-    "SENSEX": "^BSESN",
-}
 
 CHART_TIMEOUT = 10
 
@@ -734,36 +729,6 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
     return candles
 
 
-def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
-    # Always 1m — yfinance only has 1m for the last ~7 days, used only as fallback
-    dt       = datetime.strptime(trade_date, "%Y-%m-%d")
-    interval = "1m"
-    start    = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
-    end      = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
-    try:
-        df = _with_timeout(yf.Ticker(sym).history,
-                           start=start, end=end,
-                           interval=interval, auto_adjust=True)
-    except Exception as e:
-        logger.error("yfinance %s: %s", sym, e)
-        return [], interval
-    if df.empty:
-        return [], interval
-    if getattr(df.index, "tz", None) is not None:
-        df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
-    # include previous trading day for EMA warmup
-    prev = (dt - timedelta(days=1)).date()
-    df = df[df.index.date >= prev]
-    candles = []
-    for ts, row in df.iterrows():
-        o, h, l, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
-        if any(v != v for v in (o, h, l, c)):
-            continue
-        candles.append({"time": int(ts.timestamp()),
-                        "open": round(o, 2), "high": round(h, 2),
-                        "low": round(l, 2), "close": round(c, 2)})
-    return candles, interval
-
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
@@ -781,14 +746,9 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
             candles = _parse_dhan_candles(raw_resp, trade_date)
             if candles:
                 return candles, "1m", ""
-    sym = YF_TICKERS.get(u)
-    if sym:
-        candles, interval = _chart_from_yfinance(sym, trade_date)
-        if candles:
-            return candles, interval, ""
     return [], "1m", (
-        f"No chart data for {u} {trade_date}. "
-        "/api/debug-chart?underlying=" + u + "&date=" + trade_date
+        f"No 1m chart data for {u} {trade_date} from Dhan. "
+        "Check /api/debug-chart?underlying=" + u + "&date=" + trade_date
     )
 
 
