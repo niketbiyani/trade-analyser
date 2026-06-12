@@ -362,6 +362,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             lots        = round(qty / lot_size, 2) if lot_size else float(qty)
             order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
 
+            is_hedge = False
             exit_t = next(
                 (
                     b for b in buys
@@ -380,8 +381,11 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 ]
                 if before:
                     exit_t = max(before, key=lambda b: b.get("createTime") or b.get("orderCreateTime") or "")
+                    is_hedge = True
             if exit_t:
                 buys.remove(exit_t)
+            if is_hedge:
+                continue  # hedge leg — consume the BUY but don't store on chart
 
             exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
             exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
