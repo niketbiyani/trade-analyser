@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v5"
+APP_VERSION = "v6"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1082,8 +1082,7 @@ function renderTrades(trades) {{
     var lts=t.lots?t.lots+'L':t.quantity;
     var sel=selId===t.id?' sel':'';
     var nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
-    return '<tr class="'+sel+'" data-id="'+t.id+'" onclick="selTrade('+t.id+',\''+
-      (t.entry_time||'')+'\')">' +
+    return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
       '<td>'+(t.entry_time?t.entry_time.slice(0,5):'--')+'</td>' +
       '<td><span class="tag '+tc+'">'+t.option_type+'</span></td>' +
       '<td>'+sk+'</td><td>'+t.entry_price.toFixed(2)+'</td><td>'+ep+'</td>' +
