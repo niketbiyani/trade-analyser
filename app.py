@@ -1222,6 +1222,7 @@ var typeOn=new Set(['CE','PE']);
 var dirOn=new Set(['SHORT','LONG']);
 var allTrades=[], candles=[], curInterval='1m';
 var selId=null, isolateId=null;
+var _savedNotes=[];
 
 function setChartMsg(main,sub) {{
   document.getElementById('chartMsg').classList.remove('hide');
@@ -1421,8 +1422,20 @@ async function loadTrades() {{
   try {{
     var r=await fetch('/api/trades?date='+curDate+'&underlying='+curU);
     allTrades=await r.json();
+    if(_savedNotes.length) await _restoreNotes();
     var f=_filtered(); renderTrades(f); putMarkers(f);
   }} catch(e) {{ console.error(e); }}
+}}
+async function _restoreNotes(){{
+  for(var i=0;i<_savedNotes.length;i++){{
+    var s=_savedNotes[i];
+    var m=allTrades.find(function(t){{
+      return t.underlying===s.underlying&&t.option_type===s.option_type&&
+             t.strike===s.strike&&t.entry_time===s.entry_time;
+    }});
+    if(m)await saveNote(m.id,s.notes);
+  }}
+  _savedNotes=[];
 }}
 
 function renderTrades(trades) {{
@@ -1540,6 +1553,8 @@ async function delTrade(id,e){{
 async function wipeDate(){{
   if(!confirm('Delete ALL trades for '+curDate+' and reimport from Dhan?'))return;
   try{{
+    _savedNotes=allTrades.filter(function(t){{return t.notes&&t.notes.trim();}})
+      .map(function(t){{return {{underlying:t.underlying,option_type:t.option_type,strike:t.strike,entry_time:t.entry_time,notes:t.notes}};}});
     await fetch('/api/trades/date/'+curDate,{{method:'DELETE'}});
     allTrades=[]; renderTrades([]); putMarkers([]);
     var btn=document.getElementById('mBtn');
