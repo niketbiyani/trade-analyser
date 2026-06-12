@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v23"
+APP_VERSION = "v24"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1325,7 +1325,8 @@ var _chartInst=null, _rsiInst=null, _macdInst=null;
 var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
-var _syncingRange=false;
+var _syncingRange=false, _syncingCross=false;
+var _candleMap={}, _rsiMap={}, _macdMap={};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
 var dirOn=new Set(['SHORT','LONG']);
@@ -1415,6 +1416,26 @@ function initChart() {{
     _syncTo(_chartInst, [_rsiInst, _macdInst]);
     _syncTo(_rsiInst,   [_chartInst, _macdInst]);
     _syncTo(_macdInst,  [_chartInst, _rsiInst]);
+
+    // crosshair sync — vertical line extends across all three panes
+    function _setCross(inst, ser, map, t) {{
+      try {{
+        if (!t) {{ inst.clearCrossHair(); return; }}
+        var v = map[t];
+        if (v !== undefined) inst.setCrossHairPosition(v, t, ser);
+      }} catch(e) {{}}
+    }}
+    function _syncCrossFrom(srcInst, peers) {{
+      srcInst.subscribeCrosshairMove(function(param) {{
+        if (_syncingCross) return;
+        _syncingCross = true;
+        peers.forEach(function(p) {{ _setCross(p[0], p[1], p[2], param.time); }});
+        _syncingCross = false;
+      }});
+    }}
+    _syncCrossFrom(_chartInst, [[_rsiInst, _rsiSeries, _rsiMap], [_macdInst, _macdHist, _macdMap]]);
+    _syncCrossFrom(_rsiInst,   [[_chartInst, series, _candleMap], [_macdInst, _macdHist, _macdMap]]);
+    _syncCrossFrom(_macdInst,  [[_chartInst, series, _candleMap], [_rsiInst, _rsiSeries, _rsiMap]]);
   }} catch(e) {{
     console.warn('Indicator charts failed to init:', e.message);
   }}
@@ -1452,6 +1473,9 @@ function updateIndicators(){{
   _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
   if(_rsiSeries)_rsiSeries.setData(ind.rsi);
   if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
+  _candleMap={{}};candles.forEach(function(c){{_candleMap[c.time]=c.close;}});
+  _rsiMap={{}};ind.rsi.forEach(function(d){{_rsiMap[d.time]=d.value;}});
+  _macdMap={{}};ind.sigLine.forEach(function(d){{_macdMap[d.time]=d.value;}});
   // sync sub-charts to main visible range
   var r=_chartInst.timeScale().getVisibleLogicalRange();
   if(r){{_rsiInst.timeScale().setVisibleLogicalRange(r);_macdInst.timeScale().setVisibleLogicalRange(r);}}
