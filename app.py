@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v13"
+APP_VERSION = "v14"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -96,6 +96,24 @@ def _init_db(conn: sqlite3.Connection) -> None:
         conn.commit()
     except Exception:
         pass  # column already exists
+    # fix LONG trades stored with swapped entry/exit times from older pairing logic
+    try:
+        rows = conn.execute(
+            "SELECT id, entry_time, entry_price, exit_time, exit_price, quantity"
+            " FROM trades WHERE direction='LONG' AND status='CLOSED'"
+            " AND exit_time != '' AND entry_time > exit_time"
+        ).fetchall()
+        for row in rows:
+            pnl = round((row["exit_price"] - row["entry_price"]) * row["quantity"], 2)
+            conn.execute(
+                "UPDATE trades SET entry_time=?, entry_price=?, exit_time=?, exit_price=?, pnl=? WHERE id=?",
+                (row["exit_time"], row["exit_price"], row["entry_time"], row["entry_price"], pnl, row["id"]),
+            )
+        if rows:
+            conn.commit()
+            logger.info("Migrated %d LONG trades: corrected entry/exit time order", len(rows))
+    except Exception:
+        pass
 
 
 # ── Dhan client ────────────────────────────────────────────────────────────────────
@@ -423,6 +441,12 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
             pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
             status     = "CLOSED" if exit_t else "OPEN"
+            # For LONG (hedge): exit_t is the opening BUY, sell is the closing SELL.
+            # Swap so entry = opening BUY (earlier), exit = closing SELL (later).
+            if direction == "LONG" and exit_t:
+                entry_time, exit_time   = exit_time,  entry_time
+                entry_price, exit_price = exit_price, entry_price
+                pnl = round((exit_price - entry_price) * qty, 2) if exit_price is not None else None
 
             with _db_lock:
                 existing = db.execute(
@@ -619,11 +643,13 @@ def _is_auth_error(resp) -> bool:
 
 
 def _raw_dhan_chart(security_id: str, exchange_segment: str,
-                    instrument_type: str, trade_date: str) -> tuple[dict, str]:
+                    instrument_type: str, to_date: str, from_date: str = "") -> tuple[dict, str]:
     try:
         dhan = _dhan_client()
     except Exception as e:
         return {}, str(e)
+
+    fd = from_date or to_date
 
     def _call(d):
         try:
@@ -632,8 +658,8 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                 security_id=security_id,
                 exchange_segment=exchange_segment,
                 instrument_type=instrument_type,
-                from_date=trade_date,
-                to_date=trade_date,
+                from_date=fd,
+                to_date=to_date,
             ), ""
         except TypeError:
             return _with_timeout(
@@ -711,6 +737,7 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
     dt  = datetime.strptime(trade_date, "%Y-%m-%d")
     age = (datetime.now() - dt).days
     interval = "1m" if age <= 5 else ("5m" if age <= 55 else "1d")
+    # fetch from 2 days before for indicator warmup; keep prev day + trade day
     start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
     end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
     try:
@@ -725,7 +752,9 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
     if interval in ("1m", "5m"):
-        df = df[df.index.date == dt.date()]
+        # include previous trading day for EMA warmup; markers on frontend are filtered by curDate
+        prev = (dt - timedelta(days=1)).date()
+        df = df[df.index.date >= prev]
     candles = []
     for ts, row in df.iterrows():
         o, h, l, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
@@ -739,11 +768,13 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
+    prev_day = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     idx = DHAN_INDEX_IDS.get(u)
     if idx:
         raw_resp, dhan_err = _raw_dhan_chart(
             idx["security_id"], idx["exchange_segment"],
-            idx["instrument_type"], trade_date,
+            idx["instrument_type"],
+            to_date=trade_date, from_date=prev_day,
         )
         if dhan_err:
             logger.error("Dhan chart error: %s", dhan_err)
@@ -813,7 +844,7 @@ def api_debug_chart():
     try:
         raw_resp, dhan_err = _raw_dhan_chart(
             idx["security_id"], idx["exchange_segment"],
-            idx["instrument_type"], d,
+            idx["instrument_type"], to_date=d,
         )
         candles = _parse_dhan_candles(raw_resp, d) if not dhan_err else []
         inner   = raw_resp.get("data", raw_resp) if isinstance(raw_resp, dict) else raw_resp
@@ -1034,7 +1065,8 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 .vbadge {{ font-size: 9px; color: #444; border: 1px solid #2a2a2a; padding: 1px 5px;
            border-radius: 2px; letter-spacing: 1px }}
 #main {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
-#chartBox {{ flex: 1; min-height: 200px; position: relative; overflow: hidden }}
+#chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
+#chartBox {{ flex: 3; min-height: 120px; position: relative; overflow: hidden }}
 #chartEl {{ position: absolute; inset: 0 }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
@@ -1042,7 +1074,13 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #chartMsg.hide {{ display: none }}
 #chartMsgSub {{ font-size: 10px; color: #333; max-width: 600px; text-align: center;
                word-break: break-word; padding: 0 16px }}
-#panel {{ height: 235px; border-top: 1px solid var(--border);
+#rsiBox {{ flex: 1; min-height: 50px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
+#rsiEl  {{ position: absolute; inset: 0 }}
+#macdBox {{ flex: 1.3; min-height: 60px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
+#macdEl  {{ position: absolute; inset: 0 }}
+.ind-label {{ position: absolute; top: 4px; left: 8px; font-size: 9px; color: #444;
+              pointer-events: none; z-index: 1; letter-spacing: 0.5px }}
+#panel {{ height: 210px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }}
 #ph {{ display: flex; align-items: center; gap: 12px; padding: 6px 14px;
       border-bottom: 1px solid var(--border); flex-shrink: 0 }}
@@ -1121,11 +1159,22 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
 </div>
 <div id="main">
-  <div id="chartBox">
-    <div id="chartEl"></div>
-    <div id="chartMsg">
-      <span id="chartMsgMain">Initialising chart&#8230;</span>
-      <span id="chartMsgSub"></span>
+  <div id="chartsArea">
+    <div id="chartBox">
+      <div id="chartEl"></div>
+      <div id="chartMsg">
+        <span id="chartMsgMain">Initialising chart&#8230;</span>
+        <span id="chartMsgSub"></span>
+      </div>
+      <div class="ind-label">EMA <span style="color:#2196F3">20</span> &nbsp;<span style="color:#FF9800">50</span></div>
+    </div>
+    <div id="rsiBox">
+      <div id="rsiEl"></div>
+      <div class="ind-label">RSI 14</div>
+    </div>
+    <div id="macdBox">
+      <div id="macdEl"></div>
+      <div class="ind-label">MACD 12,26,9</div>
     </div>
   </div>
   <div id="panel">
@@ -1204,12 +1253,16 @@ window.addEventListener('unhandledrejection', function(e) {{
 <script>
 (function(){{ var e=document.getElementById('jss'); if(e){{ e.textContent='JS OK'; e.style.color='#4caf50'; }} }})();
 
-var _chartInst=null, chart=null, series=null;
+var _chartInst=null, _rsiInst=null, _macdInst=null;
+var chart=null, series=null;
+var _ema20s=null, _ema50s=null, _rsiSeries=null;
+var _macdHist=null, _macdLine=null, _macdSignal=null;
+var _syncingRange=false;
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
 var dirOn=new Set(['SHORT','LONG']);
 var allTrades=[], candles=[], curInterval='1m';
-var selId=null;
+var selId=null, isolateId=null;
 
 function setChartMsg(main,sub) {{
   document.getElementById('chartMsg').classList.remove('hide');
@@ -1218,57 +1271,134 @@ function setChartMsg(main,sub) {{
 }}
 function hideChartMsg() {{ document.getElementById('chartMsg').classList.add('hide'); }}
 
+function _makeChart(elId, opts) {{
+  var el=document.getElementById(elId);
+  var base={{
+    layout:{{background:{{color:'#0d0d0d'}},textColor:'#888'}},
+    grid:{{vertLines:{{color:'#181818'}},horzLines:{{color:'#181818'}}}},
+    crosshair:{{mode:LightweightCharts.CrosshairMode.Normal}},
+    rightPriceScale:{{borderColor:'#2a2a2a'}},
+    handleScroll:{{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true}},
+    handleScale:{{mouseWheel:false,pinch:true,axisPressedMouseMove:{{price:true,time:true}}}},
+  }};
+  var merged=Object.assign({{width:el.clientWidth||800,height:el.clientHeight||200}},base,opts);
+  var inst=LightweightCharts.createChart(el,merged);
+  new ResizeObserver(function(){{
+    var sz=el.getBoundingClientRect();
+    if(sz.width>0&&sz.height>0)inst.resize(sz.width,sz.height);
+  }}).observe(el);
+  return inst;
+}}
+
 function initChart() {{
   try {{
-    var el = document.getElementById('chartEl');
-    _chartInst = LightweightCharts.createChart(el, {{
-      width: el.clientWidth || 800,
-      height: el.clientHeight || 400,
-      layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#888' }},
-      grid: {{ vertLines: {{ color: '#181818' }}, horzLines: {{ color: '#181818' }} }},
-      crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
-      rightPriceScale: {{ borderColor: '#2a2a2a' }},
-      timeScale: {{ borderColor: '#2a2a2a', timeVisible: true, secondsVisible: false, rightOffset: 5 }},
-      handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true }},
-      handleScale: {{ mouseWheel: false, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
+    _chartInst=_makeChart('chartEl',{{
+      timeScale:{{borderColor:'#2a2a2a',timeVisible:false,rightOffset:5}},
     }});
-    series = _chartInst.addCandlestickSeries({{
-      upColor: '#26a69a', downColor: '#ef5350',
-      borderVisible: false,
-      wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    series=_chartInst.addCandlestickSeries({{upColor:'#26a69a',downColor:'#ef5350',borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'}});
+    _ema20s=_chartInst.addLineSeries({{color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
+    _ema50s=_chartInst.addLineSeries({{color:'#FF9800',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
+
+    _rsiInst=_makeChart('rsiEl',{{
+      timeScale:{{borderColor:'#2a2a2a',timeVisible:false,rightOffset:5}},
     }});
-    chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
-    el.addEventListener('wheel', function(e) {{
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      var r = _chartInst.timeScale().getVisibleLogicalRange();
-      if (!r) return;
-      var factor = e.deltaY > 0 ? 1.2 : 0.83;
-      var mid = (r.from + r.to) / 2;
-      var half = (r.to - r.from) * 0.5 * factor;
-      _chartInst.timeScale().setVisibleLogicalRange({{ from: mid - half, to: mid + half }});
-    }}, {{ passive: false }});
-    new ResizeObserver(function() {{
-      var sz = el.getBoundingClientRect();
-      if (sz.width > 0 && sz.height > 0) _chartInst.resize(sz.width, sz.height);
-    }}).observe(el);
-    setChartMsg('Select a date to load chart data', '');
+    _rsiSeries=_rsiInst.addLineSeries({{color:'#9c27b0',lineWidth:1,lastValueVisible:true,priceLineVisible:false}});
+    _rsiSeries.createPriceLine({{price:70,color:'#333',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false}});
+    _rsiSeries.createPriceLine({{price:30,color:'#333',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false}});
+
+    _macdInst=_makeChart('macdEl',{{
+      timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false,rightOffset:5}},
+    }});
+    _macdHist=_macdInst.addHistogramSeries({{lastValueVisible:false,priceLineVisible:false}});
+    _macdLine=_macdInst.addLineSeries({{color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
+    _macdSignal=_macdInst.addLineSeries({{color:'#FF5722',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
+
+    chart={{timeScale:function(){{return _chartInst.timeScale();}}}};
+
+    // sync all three time scales
+    function _syncTo(src,targets){{
+      src.timeScale().subscribeVisibleLogicalRangeChange(function(r){{
+        if(_syncingRange||!r)return;
+        _syncingRange=true;
+        targets.forEach(function(t){{t.timeScale().setVisibleLogicalRange(r);}});
+        _syncingRange=false;
+      }});
+    }}
+    _syncTo(_chartInst,[_rsiInst,_macdInst]);
+    _syncTo(_rsiInst,[_chartInst,_macdInst]);
+    _syncTo(_macdInst,[_chartInst,_rsiInst]);
+
+    // ctrl+scroll zoom on any chart
+    ['chartEl','rsiEl','macdEl'].forEach(function(id){{
+      document.getElementById(id).addEventListener('wheel',function(e){{
+        if(!e.ctrlKey)return;
+        e.preventDefault();
+        var r=_chartInst.timeScale().getVisibleLogicalRange();
+        if(!r)return;
+        var f=e.deltaY>0?1.2:0.83,mid=(r.from+r.to)/2,half=(r.to-r.from)*0.5*f;
+        var nr={{from:mid-half,to:mid+half}};
+        [_chartInst,_rsiInst,_macdInst].forEach(function(c){{c.timeScale().setVisibleLogicalRange(nr);}});
+      }},{{passive:false}});
+    }});
+
+    setChartMsg('Select a date to load chart data','');
   }} catch(e) {{
-    setChartMsg('Chart init error: '+e.message, e.stack||'');
+    setChartMsg('Chart init error: '+e.message,e.stack||'');
   }}
 }}
 
+// ─── Indicator math ───────────────────────────────────────────────────────────
+function _emaArr(closes,p){{
+  var out=new Array(closes.length).fill(null);
+  if(closes.length<p)return out;
+  var s=0;for(var j=0;j<p;j++)s+=closes[j];
+  out[p-1]=s/p;var k=2/(p+1);
+  for(var i=p;i<closes.length;i++)out[i]=closes[i]*k+out[i-1]*(1-k);
+  return out;
+}}
+function calcIndicators(data){{
+  var closes=data.map(function(c){{return c.close;}}),times=data.map(function(c){{return c.time;}}),n=data.length;
+  function toS(arr){{var o=[];for(var i=0;i<arr.length;i++)if(arr[i]!==null)o.push({{time:times[i],value:parseFloat(arr[i].toFixed(4))}});return o;}}
+  var e20=_emaArr(closes,20),e50=_emaArr(closes,50);
+  var e12=_emaArr(closes,12),e26=_emaArr(closes,26);
+  var macdArr=new Array(n).fill(null);
+  for(var i=0;i<n;i++)if(e12[i]!==null&&e26[i]!==null)macdArr[i]=e12[i]-e26[i];
+  var fm=macdArr.findIndex(function(v){{return v!==null;}});
+  var sigArr=new Array(n).fill(null);
+  if(fm>=0){{var ms=macdArr.slice(fm),es=_emaArr(ms,9);for(var i=0;i<ms.length;i++)sigArr[fm+i]=es[i];}}
+  // RSI Wilder smoothing
+  var rsiArr=new Array(n).fill(null);
+  if(n>14){{var g=0,l=0;for(var i=1;i<=14;i++){{var d=closes[i]-closes[i-1];if(d>0)g+=d;else l-=d;}}var ag=g/14,al=l/14;rsiArr[14]=al===0?100:100-(100/(1+ag/al));for(var i=15;i<n;i++){{var d=closes[i]-closes[i-1],gv=d>0?d:0,lv=d<0?-d:0;ag=(ag*13+gv)/14;al=(al*13+lv)/14;rsiArr[i]=al===0?100:100-(100/(1+ag/al));}}}}
+  var hist=[];
+  for(var i=0;i<n;i++){{if(macdArr[i]!==null&&sigArr[i]!==null){{var v=macdArr[i]-sigArr[i];hist.push({{time:times[i],value:parseFloat(v.toFixed(4)),color:v>=0?'rgba(38,166,154,0.7)':'rgba(239,83,80,0.7)'}});}}}}
+  return{{ema20:toS(e20),ema50:toS(e50),rsi:toS(rsiArr),macdLine:toS(macdArr),sigLine:toS(sigArr),histogram:hist}};
+}}
+function updateIndicators(){{
+  if(!candles.length||!_ema20s)return;
+  var ind=calcIndicators(candles);
+  _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
+  if(_rsiSeries)_rsiSeries.setData(ind.rsi);
+  if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
+  // sync sub-charts to main visible range
+  var r=_chartInst.timeScale().getVisibleLogicalRange();
+  if(r){{_rsiInst.timeScale().setVisibleLogicalRange(r);_macdInst.timeScale().setVisibleLogicalRange(r);}}
+  else{{_rsiInst.timeScale().fitContent();_macdInst.timeScale().fitContent();}}
+}}
+// ─────────────────────────────────────────────────────────────────────────────
+
 window.addEventListener('DOMContentLoaded', function() {{
   initChart();
-  var today=new Date().toISOString().slice(0,10);
+  var now=new Date(Date.now()+19800000); // UTC+5:30 IST offset
+  var today=now.toISOString().slice(0,10);
   document.getElementById('dp').value=today;
   curDate=today;
   loadAll();
 }});
 
 function shiftDay(d) {{
-  var dt=new Date(curDate+'T00:00:00');
-  dt.setDate(dt.getDate()+d);
+  var p=curDate.split('-');
+  var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
+  dt.setUTCDate(dt.getUTCDate()+d);
   curDate=dt.toISOString().slice(0,10);
   document.getElementById('dp').value=curDate;
   loadAll();
@@ -1308,7 +1438,7 @@ async function loadChart() {{
     candles=d.candles||[]; curInterval=d.interval||'1m';
     document.getElementById('ivl').textContent=d.interval||'--';
     series.setData(candles);
-    if (candles.length) {{ chart.timeScale().fitContent(); hideChartMsg(); }}
+    if (candles.length) {{ chart.timeScale().fitContent(); hideChartMsg(); updateIndicators(); }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
     setChartMsg(e.name==='AbortError'?'Chart load timed out':'Chart error: '+e.message,'');
@@ -1323,7 +1453,7 @@ async function loadSample() {{
     var d=await r.json();
     candles=d.candles||[];
     series.setData(candles);
-    if (candles.length) {{ chart.timeScale().fitContent(); hideChartMsg(); document.getElementById('ivl').textContent='sample'; }}
+    if (candles.length) {{ chart.timeScale().fitContent(); hideChartMsg(); document.getElementById('ivl').textContent='sample'; updateIndicators(); }}
     else setChartMsg('0 candles returned','');
   }} catch(e) {{ setChartMsg('Test error: '+e.message,''); }}
 }}
@@ -1385,9 +1515,10 @@ function snapTs(ts){{
 }}
 function putMarkers(trades){{
   if(!series)return;
+  var list=isolateId!==null?trades.filter(function(t){{return t.id===isolateId;}}):trades;
   var markers=[];
-  for(var i=0;i<trades.length;i++){{
-    var t=trades[i];
+  for(var i=0;i<list.length;i++){{
+    var t=list[i];
     var col=t.option_type==='CE'?'#4fc3f7':'#ffb74d';
     var lbl=t.option_type+' '+(t.strike?t.strike.toLocaleString('en-IN'):'');
     var ets=tsFor(curDate,t.entry_time);
@@ -1407,8 +1538,14 @@ function putMarkers(trades){{
   series.setMarkers(markers);
 }}
 function selTrade(id,entryTime){{
-  selId=id;
+  if(selId===id){{
+    selId=null; isolateId=null;
+    document.querySelectorAll('#tbody tr').forEach(function(r){{r.classList.remove('sel');}});
+    putMarkers(_filtered()); return;
+  }}
+  selId=id; isolateId=id;
   document.querySelectorAll('#tbody tr').forEach(function(r){{r.classList.toggle('sel',+r.dataset.id===id);}});
+  putMarkers(_filtered());
   if(entryTime&&candles.length){{
     var ts=tsFor(curDate,entryTime);
     var sec=curInterval==='5m'?300:60;
@@ -1437,7 +1574,7 @@ async function delTrade(id,e){{
   try{{
     await fetch('/api/trade/'+id,{{method:'DELETE'}});
     allTrades=allTrades.filter(function(t){{return t.id!==id;}});
-    if(selId===id)selId=null;
+    if(selId===id){{selId=null;isolateId=null;}}
     var f=_filtered(); renderTrades(f); putMarkers(f);
   }}catch(e){{console.error(e);}}
 }}
