@@ -131,12 +131,22 @@ def _is_no_records_error(resp) -> bool:
 
 
 def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
-    """Parse a Dhan trade history CSV into raw trade dicts (same shape as API records)."""
+    """Parse a Dhan trade history CSV into raw trade dicts (same shape as API records).
+
+    Handles multiple column naming conventions and datetime formats including:
+    - Dhan API export (tradingSymbol, createTime, ...)
+    - Dhan app export (Stock Name, Timestamp, Price (₹), ...)
+    """
     import csv
     import io
+    import re as _re
 
     def _nc(name: str) -> str:
-        return name.lower().strip().replace(" ", "_").replace("-", "_").replace("/", "_")
+        """Normalise a column name: lower, strip non-ASCII, collapse non-alphanum to _."""
+        s = name.lower().strip()
+        s = _re.sub(r'[^\x00-\x7f]', '', s)   # drop non-ASCII (₹, etc.)
+        s = _re.sub(r'[^a-z0-9]+', '_', s)     # non-alphanum → _
+        return s.strip('_')
 
     def _find(sample: dict, candidates: list) -> str | None:
         norm = {_nc(k): k for k in sample}
@@ -148,14 +158,34 @@ def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
     def _parse_date(val: str) -> str | None:
         val = val.strip()
         for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d",
-                    "%m/%d/%Y", "%d-%b-%Y", "%d %b %Y"):
+                    "%m/%d/%Y", "%d-%b-%Y", "%d %b %Y", "%b %d %Y"):
             try:
                 return datetime.strptime(val, fmt).strftime("%Y-%m-%d")
             except ValueError:
                 pass
-        if " " in val:
-            return _parse_date(val.split()[0])
         return None
+
+    def _split_dt(val: str) -> tuple[str | None, str]:
+        """Split any datetime string into (YYYY-MM-DD, HH:MM:SS)."""
+        val = val.strip()
+        # ISO: YYYY-MM-DD...
+        if _re.match(r'^\d{4}-\d{2}-\d{2}', val):
+            d = val[:10]
+            t = val[11:19] if len(val) >= 19 else (val[11:] + ":00")[:8]
+            return d, t
+        # Generic: find HH:MM[:SS] token, treat remainder as date
+        tokens = val.split()
+        time_tok, date_toks = None, []
+        for tok in tokens:
+            if _re.match(r'^\d{1,2}:\d{2}(:\d{2})?$', tok):
+                time_tok = tok
+            else:
+                date_toks.append(tok)
+        d = _parse_date(" ".join(date_toks))
+        t = time_tok if time_tok else "09:15:00"
+        if len(t) == 5:
+            t += ":00"
+        return d, t
 
     try:
         rows = list(csv.DictReader(io.StringIO(content)))
@@ -166,43 +196,56 @@ def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
         return [], "CSV has no data rows"
 
     s = rows[0]
-    c_sym    = _find(s, ["tradingSymbol","trading_symbol","symbol","instrument","scrip","description"])
-    c_tx     = _find(s, ["transactionType","transaction_type","trade_type","buy_sell","buysell","side","b_s","type"])
-    c_qty    = _find(s, ["tradedQuantity","traded_quantity","quantity","qty","trade_qty","executed_qty"])
-    c_price  = _find(s, ["tradedPrice","traded_price","price","rate","avg_price","trade_price","executed_price"])
-    c_date   = _find(s, ["trade_date","tradeDate","date","order_date","exchange_date","created_date"])
-    c_time   = _find(s, ["trade_time","tradeTime","time","order_time","exchange_time","created_time"])
+    c_sym    = _find(s, ["tradingSymbol","trading_symbol","stock_name","stock name",
+                         "symbol","instrument","scrip","description","name"])
+    c_tx     = _find(s, ["transactionType","transaction_type","transaction",
+                         "trade_type","buy_sell","buysell","side","b_s","type"])
+    c_qty    = _find(s, ["tradedQuantity","traded_quantity","quantity","qty",
+                         "trade_qty","executed_qty"])
+    c_price  = _find(s, ["tradedPrice","traded_price","price","rate",
+                         "avg_price","trade_price","executed_price"])
+    c_date   = _find(s, ["trade_date","tradeDate","date","order_date","exchange_date"])
+    c_time   = _find(s, ["trade_time","tradeTime","time","order_time","exchange_time"])
     c_seg    = _find(s, ["exchangeSegment","exchange_segment","segment","exchange"])
-    c_oid    = _find(s, ["orderId","order_id","orderid","trade_id","tradeid","trade_no.","trade_no"])
+    c_oid    = _find(s, ["orderId","order_id","orderid","trade_id","tradeid",
+                         "trade_no","trade_no."])
     c_opt    = _find(s, ["drvOptionType","option_type","optionType","call_put","put_call"])
     c_strike = _find(s, ["drvStrikePrice","strike_price","strike","strikeprice"])
     c_expiry = _find(s, ["drvExpiryDate","expiry_date","expiry","expirydate"])
-    c_create = _find(s, ["createTime","create_time","created_time","timestamp","datetime","order_date_time"])
+    c_create = _find(s, ["createTime","create_time","created_time","timestamp",
+                         "datetime","order_date_time"])
     c_sid    = _find(s, ["securityId","security_id","sec_id"])
 
     if not c_sym:
-        return [], "Cannot detect tradingSymbol column — check CSV format"
+        cols = list(s.keys())
+        return [], (f"Cannot detect instrument/symbol column. "
+                    f"Columns found: {cols}. "
+                    f"Expected one of: Stock Name, tradingSymbol, symbol")
 
     result = []
     for row in rows:
-        def g(col):
-            return (row.get(col) or "").strip() if col else ""
+        def g(col, _row=row):
+            return (_row.get(col) or "").strip() if col else ""
 
+        # Build createTime
         create_val = g(c_create)
-        if create_val and len(create_val) >= 16:
-            d_part = _parse_date(create_val[:10]) or create_val[:10]
-            t_part = create_val[11:19] if len(create_val) >= 19 else (create_val[11:] + ":00")[:8]
-            create_time = f"{d_part} {t_part}"
-        else:
+        if create_val:
+            d, t = _split_dt(create_val)
+        elif g(c_date):
             d = _parse_date(g(c_date))
-            if not d:
-                continue
             t = g(c_time).strip() or "09:15:00"
             if len(t) == 5:
                 t += ":00"
-            create_time = f"{d} {t}"
+        else:
+            continue
+        if not d:
+            continue
+        create_time = f"{d} {t}"
 
         sym = g(c_sym)
+        if not sym:
+            continue
+
         tx = g(c_tx).upper()
         if tx in ("B", "BUY", "LONG", "1"):     tx = "BUY"
         elif tx in ("S", "SELL", "SHORT", "-1"): tx = "SELL"
@@ -221,7 +264,22 @@ def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
 
         seg = g(c_seg) or ("BSE_FNO" if "SENSEX" in sym.upper() else "NSE_FNO")
         oid = g(c_oid)
-        sid = g(c_sid) or sym  # use trading symbol as fallback security ID for grouping
+        sid = g(c_sid) or sym  # trading symbol as security ID for grouping
+
+        # Auto-detect option type from symbol when no explicit column
+        opt_type = g(c_opt)
+        if not opt_type:
+            su = sym.upper()
+            if su.endswith("CALL") or " CALL " in su: opt_type = "CALL"
+            elif su.endswith("PUT") or " PUT " in su:  opt_type = "PUT"
+            elif su.endswith("CE"):                     opt_type = "CE"
+            elif su.endswith("PE"):                     opt_type = "PE"
+
+        # Extract strike from symbol when no explicit column (e.g. "SENSEX 11 JUN 74300 CALL")
+        strike = g(c_strike)
+        if not strike:
+            m = _re.search(r'\b(\d{4,6})\b', sym)
+            strike = m.group(1) if m else ""
 
         result.append({
             "tradingSymbol":   sym,
@@ -231,8 +289,8 @@ def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
             "createTime":      create_time,
             "orderId":         oid,
             "exchangeSegment": seg,
-            "drvOptionType":   g(c_opt),
-            "drvStrikePrice":  g(c_strike),
+            "drvOptionType":   opt_type,
+            "drvStrikePrice":  strike,
             "drvExpiryDate":   g(c_expiry),
             "securityId":      sid,
         })
@@ -380,7 +438,9 @@ def _is_option(trade: dict) -> bool:
     inst = (trade.get("instrumentType") or trade.get("drvInstrumentType") or "").upper()
     inst_ok = inst in ("OPTIDX", "OPTSTK")
     sym = (trade.get("tradingSymbol") or trade.get("customSymbol") or "").upper()
-    sym_ok = sym.endswith("CE") or sym.endswith("PE") or " CALL " in sym or " PUT " in sym
+    sym_ok = (sym.endswith("CE") or sym.endswith("PE") or
+              sym.endswith("CALL") or sym.endswith("PUT") or
+              " CALL " in sym or " PUT " in sym)
     return seg_ok and (opt_ok or inst_ok or sym_ok)
 
 
