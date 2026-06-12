@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v22"
+APP_VERSION = "v23"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -100,6 +100,16 @@ def _init_db(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_date ON trades(date);
             CREATE INDEX IF NOT EXISTS idx_underlying ON trades(underlying);
+            CREATE TABLE IF NOT EXISTS trade_notes (
+                date         TEXT NOT NULL,
+                underlying   TEXT NOT NULL,
+                option_type  TEXT NOT NULL,
+                strike       REAL NOT NULL,
+                entry_time   TEXT NOT NULL,
+                notes        TEXT DEFAULT '',
+                updated_at   REAL DEFAULT 0,
+                PRIMARY KEY (date, underlying, option_type, strike, entry_time)
+            );
         """)
     # migrate existing DBs that lack the direction column
     try:
@@ -986,12 +996,20 @@ def api_trades():
     u  = (request.args.get("underlying") or "").upper()
     ot = (request.args.get("option_type") or "").upper()
     db = get_db()
-    q, p = "SELECT * FROM trades WHERE date=?", [d]
+    q = (
+        "SELECT t.*, COALESCE(n.notes, t.notes, '') AS notes"
+        " FROM trades t"
+        " LEFT JOIN trade_notes n"
+        "   ON n.date=t.date AND n.underlying=t.underlying"
+        "   AND n.option_type=t.option_type AND n.strike=t.strike AND n.entry_time=t.entry_time"
+        " WHERE t.date=?"
+    )
+    p = [d]
     if u and u != "ALL":
-        q += " AND underlying=?"; p.append(u)
+        q += " AND t.underlying=?"; p.append(u)
     if ot and ot not in ("ALL", "BOTH", ""):
-        q += " AND option_type=?"; p.append(ot)
-    return jsonify([dict(r) for r in db.execute(q + " ORDER BY entry_time", p).fetchall()])
+        q += " AND t.option_type=?"; p.append(ot)
+    return jsonify([dict(r) for r in db.execute(q + " ORDER BY t.entry_time", p).fetchall()])
 
 
 @app.route("/api/trade/<int:tid>", methods=["DELETE"])
@@ -1031,11 +1049,24 @@ def api_close_trade(tid: int):
     return jsonify({"ok": True, "pnl": pnl})
 
 
+@app.route("/api/trade/<int:tid>/notes", methods=["PUT"])
 def api_notes(tid: int):
     notes = (request.json or {}).get("notes", "")
     with _db_lock:
         db = get_db()
         db.execute("UPDATE trades SET notes=? WHERE id=?", (notes, tid))
+        row = db.execute(
+            "SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?", (tid,)
+        ).fetchone()
+        if row:
+            db.execute(
+                "INSERT INTO trade_notes (date, underlying, option_type, strike, entry_time, notes, updated_at)"
+                " VALUES (?,?,?,?,?,?,?)"
+                " ON CONFLICT(date, underlying, option_type, strike, entry_time)"
+                " DO UPDATE SET notes=excluded.notes, updated_at=excluded.updated_at",
+                (row["date"], row["underlying"], row["option_type"],
+                 row["strike"], row["entry_time"], notes, datetime.now().timestamp()),
+            )
         db.commit()
     return jsonify({"ok": True})
 
@@ -1333,7 +1364,7 @@ function initChart() {{
   // ── main candle chart (critical) ──────────────────────────────────────────
   try {{
     var el = document.getElementById('chartEl');
-    _chartInst = LightweightCharts.createChart(el, _chartOpts(el, {{ timeVisible: false }}));
+    _chartInst = LightweightCharts.createChart(el, _chartOpts(el, {{ visible: false }}));
     series   = _chartInst.addCandlestickSeries({{ upColor:'#26a69a', downColor:'#ef5350', borderVisible:false, wickUpColor:'#26a69a', wickDownColor:'#ef5350' }});
     _ema20s  = _chartInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
     _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
@@ -1359,7 +1390,7 @@ function initChart() {{
   // ── RSI + MACD (optional — failure doesn't affect main chart) ─────────────
   try {{
     var rsiEl = document.getElementById('rsiEl');
-    _rsiInst   = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, {{ timeVisible: false }}));
+    _rsiInst   = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, {{ visible: false }}));
     _rsiSeries = _rsiInst.addLineSeries({{ color:'#9c27b0', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
     _rsiSeries.createPriceLine({{ price:70, color:'#444', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _rsiSeries.createPriceLine({{ price:30, color:'#444', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
