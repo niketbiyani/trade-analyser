@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v8"
+APP_VERSION = "v9"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -120,6 +120,16 @@ def _extract_batch(resp) -> list[dict]:
     return []
 
 
+def _is_no_records_error(resp) -> bool:
+    """True when Dhan returns TRADE_RESOURCE_ERROR meaning 'no records on this date'."""
+    if not isinstance(resp, dict):
+        return False
+    remarks = resp.get("remarks", {})
+    if not isinstance(remarks, dict):
+        return False
+    return "RESOURCE_ERROR" in (remarks.get("error_type") or "")
+
+
 # ── Dhan import ──────────────────────────────────────────────────────────────────
 
 
@@ -187,7 +197,10 @@ def _do_import(from_date: str, to_date: str) -> dict:
                         page = 2
                         continue
                     else:
-                        diag["history_raw_p0"] = str(resp)[:400]
+                        if not _is_no_records_error(resp) and not _is_no_records_error(resp1):
+                            diag["history_raw_p0"] = str(resp)[:400]
+                        else:
+                            diag["note"] = "No trades found on Dhan for this date range."
                 break
             raw.extend(batch)
             if len(batch) < 50:
@@ -903,10 +916,15 @@ class CandleChart {{
   _bw()  {{ var vis=this._vis(); return vis.length ? (this.cv.width-68)/vis.length : 1; }}
   _mdown(e) {{
     this._drag=true; this._dragX=e.clientX;
-    var c=this.candles;
+    var c=this.candles, n=c.length;
+    if(this.ve===0 && n>0){{
+      var defSpan=Math.min(n,200);
+      this.vs=Math.max(0,n-defSpan); this.ve=n;
+    }}
     this._dragVs=this.vs;
-    this._dragVe=(this.ve>0?this.ve:c.length);
+    this._dragVe=(this.ve>0?this.ve:n);
     this.cv.style.cursor='grabbing';
+    this._draw();
   }}
   _mmove(e) {{
     var r=this.cv.getBoundingClientRect();
@@ -926,7 +944,7 @@ class CandleChart {{
   _wheel(e) {{
     var c=this.candles; if(!c.length)return;
     var vis=this._vis(), span=vis.length; if(!span)return;
-    var newSpan=Math.max(20,Math.min(c.length,Math.round(span*(e.deltaY>0?1.18:0.85))));
+    var newSpan=Math.max(20,Math.min(c.length,Math.round(span*(e.deltaY>0?1.33:0.75))));
     var r=this.cv.getBoundingClientRect();
     var relX=(e.clientX-r.left)/r.width;
     var pivot=this.vs+Math.round(span*relX);
