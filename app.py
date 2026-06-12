@@ -919,7 +919,25 @@ def api_delete_date(trade_date: str):
     return jsonify({"ok": True})
 
 
-@app.route("/api/trade/<int:tid>/notes", methods=["PUT"])
+@app.route("/api/trade/<int:tid>/close", methods=["PUT"])
+def api_close_trade(tid: int):
+    data = request.json or {}
+    exit_price = float(data.get("exit_price", 0))
+    exit_time  = str(data.get("exit_time") or "15:30:00")
+    with _db_lock:
+        db  = get_db()
+        row = db.execute("SELECT entry_price, quantity FROM trades WHERE id=?", (tid,)).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        pnl = round((row["entry_price"] - exit_price) * row["quantity"], 2)
+        db.execute(
+            "UPDATE trades SET exit_price=?, exit_time=?, pnl=?, status='CLOSED' WHERE id=?",
+            (exit_price, exit_time, pnl, tid),
+        )
+        db.commit()
+    return jsonify({"ok": True, "pnl": pnl})
+
+
 def api_notes(tid: int):
     notes = (request.json or {}).get("notes", "")
     with _db_lock:
@@ -1319,7 +1337,7 @@ function renderTrades(trades) {{
       '<td>'+lts+'</td><td>'+pl+'</td>' +
       '<td><input class="ni" value="'+nt+'" placeholder="note..." ' +
         'onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)"></td>' +
-      '<td><button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>' +
+      (t.status==='OPEN'?'<td><button class="delbtn" style="color:#ffb74d;font-size:10px;white-space:nowrap" onclick="closeTrade('+t.id+',event)" title="Mark closed">&#10003; Close</button> <button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>':'<td><button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>') +
       '</tr>';
   }});
   document.getElementById('tbody').innerHTML=rows.join('');
@@ -1371,6 +1389,22 @@ function selTrade(id,entryTime){{
     var sec=curInterval==='5m'?300:60;
     if(ts)chart.timeScale().setVisibleRange({{from:ts-sec*25,to:ts+sec*90}});
   }}
+}}
+async function closeTrade(id,e){{
+  e.stopPropagation();
+  var px=prompt('Exit price? Enter 0 if expired worthless.','0');
+  if(px===null)return;
+  var price=parseFloat(px);
+  if(isNaN(price)||price<0){{alert('Invalid price');return;}}
+  try{{
+    var r=await fetch('/api/trade/'+id+'/close',{{method:'PUT',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{exit_price:price}})}});
+    var d=await r.json();
+    if(d.ok){{
+      var t=allTrades.find(function(x){{return x.id===id;}});
+      if(t){{t.status='CLOSED';t.exit_price=price;t.exit_time='15:30:00';t.pnl=d.pnl;}}
+      var f=_filtered(); renderTrades(f); putMarkers(f);
+    }}
+  }}catch(err){{console.error(err);}}
 }}
 async function delTrade(id,e){{
   e.stopPropagation();
