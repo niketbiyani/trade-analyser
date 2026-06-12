@@ -901,6 +901,24 @@ def api_trades():
     return jsonify([dict(r) for r in db.execute(q + " ORDER BY entry_time", p).fetchall()])
 
 
+@app.route("/api/trade/<int:tid>", methods=["DELETE"])
+def api_delete_trade(tid: int):
+    with _db_lock:
+        db = get_db()
+        db.execute("DELETE FROM trades WHERE id=?", (tid,))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/trades/date/<trade_date>", methods=["DELETE"])
+def api_delete_date(trade_date: str):
+    with _db_lock:
+        db = get_db()
+        db.execute("DELETE FROM trades WHERE date=?", (trade_date,))
+        db.commit()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/trade/<int:tid>/notes", methods=["PUT"])
 def api_notes(tid: int):
     notes = (request.json or {}).get("notes", "")
@@ -1001,6 +1019,8 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
 .ni {{ background: none; border: none; color: var(--text); font: inherit; width: 100%; outline: none }}
 .ni:focus {{ border-bottom: 1px solid var(--acc) }}
 .ni::placeholder {{ color: #333 }}
+.delbtn {{ background: none; border: none; color: #333; cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1 }}
+.delbtn:hover {{ color: var(--red) }}
 #empty {{ text-align: center; color: var(--dim); padding: 36px; font-size: 12px }}
 #ov {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
       z-index: 99; align-items: center; justify-content: center }}
@@ -1070,13 +1090,14 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <b>TRADES</b>
       <span id="pcnt" style="font-size:11px;color:var(--dim)"></span>
       <span id="psummary"></span>
+      <button class="hbtn" style="margin-left:auto;font-size:10px" onclick="wipeDate()" title="Delete all trades for this date and reimport">&#128465; Wipe &amp; reimport</button>
     </div>
     <div id="pbody">
       <div id="empty">No trades for this date &#8212; import from Dhan or pick another day.</div>
       <table id="tbl" style="display:none">
         <thead><tr>
           <th>Time</th><th>Type</th><th>Strike</th>
-          <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Lots</th><th>P&amp;L</th><th>Notes</th>
+          <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Lots</th><th>P&amp;L</th><th>Notes</th><th></th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -1298,6 +1319,7 @@ function renderTrades(trades) {{
       '<td>'+lts+'</td><td>'+pl+'</td>' +
       '<td><input class="ni" value="'+nt+'" placeholder="note..." ' +
         'onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)"></td>' +
+      '<td><button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>' +
       '</tr>';
   }});
   document.getElementById('tbody').innerHTML=rows.join('');
@@ -1349,6 +1371,27 @@ function selTrade(id,entryTime){{
     var sec=curInterval==='5m'?300:60;
     if(ts)chart.timeScale().setVisibleRange({{from:ts-sec*25,to:ts+sec*90}});
   }}
+}}
+async function delTrade(id,e){{
+  e.stopPropagation();
+  if(!confirm('Delete this trade?'))return;
+  try{{
+    await fetch('/api/trade/'+id,{{method:'DELETE'}});
+    allTrades=allTrades.filter(function(t){{return t.id!==id;}});
+    if(selId===id)selId=null;
+    var f=_filtered(); renderTrades(f); putMarkers(f);
+  }}catch(e){{console.error(e);}}
+}}
+async function wipeDate(){{
+  if(!confirm('Delete ALL trades for '+curDate+' and reimport from Dhan?'))return;
+  try{{
+    await fetch('/api/trades/date/'+curDate,{{method:'DELETE'}});
+    allTrades=[]; renderTrades([]); putMarkers([]);
+    var btn=document.getElementById('mBtn');
+    document.getElementById('mFrom').value=curDate;
+    document.getElementById('mTo').value=curDate;
+    document.getElementById('ov').classList.add('show');
+  }}catch(e){{console.error(e);}}
 }}
 async function saveNote(id,notes){{
   try{{
