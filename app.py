@@ -401,16 +401,21 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
 
             with _db_lock:
                 existing = db.execute(
-                    "SELECT id, status FROM trades WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
+                    "SELECT id, status, direction FROM trades"
+                    " WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
                     (trade_date, sid, entry_time, order_id),
                 ).fetchone()
                 if existing:
-                    # Update OPEN → CLOSED when exit data now available
+                    updates = {}
                     if existing["status"] == "OPEN" and exit_t:
-                        db.execute(
-                            "UPDATE trades SET exit_time=?,exit_price=?,pnl=?,status='CLOSED',direction=? WHERE id=?",
-                            (exit_time, exit_price, pnl, direction, existing["id"]),
-                        )
+                        updates = dict(exit_time=exit_time, exit_price=exit_price,
+                                       pnl=pnl, status="CLOSED", direction=direction)
+                    elif (existing["direction"] or "SHORT") != direction:
+                        updates = dict(direction=direction)
+                    if updates:
+                        cols = ", ".join(f"{k}=?" for k in updates)
+                        db.execute(f"UPDATE trades SET {cols} WHERE id=?",
+                                   (*updates.values(), existing["id"]))
                         db.commit()
                         imported += 1
                     else:
