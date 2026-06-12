@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v19"
+APP_VERSION = "v20"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -33,12 +33,18 @@ LOT_SIZES = {
 }
 
 DHAN_INDEX_IDS = {
-    "NIFTY":  {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "NIFTY":  {"security_id": "13", "exchange_segment": "IDX_I",  "instrument_type": "INDEX"},
     "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
 }
 
+# Fallback candidates for NIFTY tried in order when primary returns empty data.
+NIFTY_FALLBACKS = [
+    {"security_id": "13", "exchange_segment": "IDX_I",  "instrument_type": "INDEX"},
+    {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    {"security_id": "13", "exchange_segment": "NSE",    "instrument_type": "INDEX"},
+]
+
 # Fallback candidates tried in order when SENSEX returns empty data.
-# Dhan BSE index historical data is not well documented; we scan until one works.
 SENSEX_FALLBACKS = [
     {"security_id": "51", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
     {"security_id": "1",  "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
@@ -684,6 +690,7 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                 "type":            "1",
             },
         )
+        logger.info("Hist-1m raw [%s %s]: %s", security_id, exchange_segment, str(resp)[:300])
         if _candle_count(resp) > 0:
             logger.info("Dhan hist-1m [%s %s %s]: %d candles", security_id, exchange_segment, day, _candle_count(resp))
             return resp, ""
@@ -700,7 +707,7 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
             from_date=f"{day} 09:00:00",
             to_date=f"{day} 15:30:00",
         )
-        logger.info("Dhan intraday [%s %s %s]: %d candles", security_id, exchange_segment, day, _candle_count(resp))
+        logger.info("Intraday raw [%s %s]: %s", security_id, exchange_segment, str(resp)[:300])
         if _is_auth_error(resp):
             logger.info("Chart auth error — refreshing token and retrying")
             try:
@@ -781,8 +788,13 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
     u = underlying.upper()
     prev_day = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Build candidate list: for SENSEX try multiple configs, others use primary only
-    candidates = SENSEX_FALLBACKS if u == "SENSEX" else []
+    # Build candidate list with per-underlying fallbacks
+    if u == "SENSEX":
+        candidates = SENSEX_FALLBACKS[:]
+    elif u == "NIFTY":
+        candidates = NIFTY_FALLBACKS[:]
+    else:
+        candidates = []
     primary = DHAN_INDEX_IDS.get(u)
     if primary and (not candidates or candidates[0] != primary):
         candidates = [primary] + [c for c in candidates if c != primary]
@@ -797,10 +809,10 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
         trade_candles = _fetch_day_candles(idx, trade_date)
         if trade_candles:
             working_idx = idx
-            if u == "SENSEX" and idx != DHAN_INDEX_IDS.get(u):
-                logger.info("SENSEX working config: sid=%s seg=%s — update DHAN_INDEX_IDS",
-                            idx["security_id"], idx["exchange_segment"])
-                DHAN_INDEX_IDS["SENSEX"] = idx
+            if idx != DHAN_INDEX_IDS.get(u):
+                logger.info("%s working config: sid=%s seg=%s — update DHAN_INDEX_IDS",
+                            u, idx["security_id"], idx["exchange_segment"])
+                DHAN_INDEX_IDS[u] = idx
             break
 
     if not trade_candles:
