@@ -1262,13 +1262,13 @@ function initChart() {{
       timeScale:{{borderColor:'#2a2a2a',timeVisible:false,rightOffset:5}},
     }});
     _rsiSeries=_rsiInst.addLineSeries({{color:'#9c27b0',lineWidth:1,lastValueVisible:true,priceLineVisible:false}});
-    _rsiSeries.createPriceLine({{price:70,color:'#333',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false}});
-    _rsiSeries.createPriceLine({{price:30,color:'#333',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false}});
+    _rsiSeries.createPriceLine({{price:70,color:'#444',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+    _rsiSeries.createPriceLine({{price:30,color:'#444',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
 
     _macdInst=_makeChart('macdEl',{{
       timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false,rightOffset:5}},
     }});
-    _macdHist=_macdInst.addHistogramSeries({{lastValueVisible:false,priceLineVisible:false}});
+    _macdHist=_macdInst.addHistogramSeries({{color:'#555',lastValueVisible:false,priceLineVisible:false}});
     _macdLine=_macdInst.addLineSeries({{color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
     _macdSignal=_macdInst.addLineSeries({{color:'#FF5722',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
 
