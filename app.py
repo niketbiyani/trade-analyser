@@ -660,6 +660,7 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                 instrument_type=instrument_type,
                 from_date=fd,
                 to_date=to_date,
+                interval=1,
             ), ""
         except TypeError:
             return _with_timeout(
@@ -734,12 +735,11 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
 
 
 def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
-    dt  = datetime.strptime(trade_date, "%Y-%m-%d")
-    age = (datetime.now() - dt).days
-    interval = "1m" if age <= 5 else ("5m" if age <= 55 else "1d")
-    # fetch from 2 days before for indicator warmup; keep prev day + trade day
-    start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
-    end   = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+    # Always 1m — yfinance only has 1m for the last ~7 days, used only as fallback
+    dt       = datetime.strptime(trade_date, "%Y-%m-%d")
+    interval = "1m"
+    start    = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
+    end      = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
     try:
         df = _with_timeout(yf.Ticker(sym).history,
                            start=start, end=end,
@@ -751,10 +751,9 @@ def _chart_from_yfinance(sym: str, trade_date: str) -> tuple[list[dict], str]:
         return [], interval
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
-    if interval in ("1m", "5m"):
-        # include previous trading day for EMA warmup; markers on frontend are filtered by curDate
-        prev = (dt - timedelta(days=1)).date()
-        df = df[df.index.date >= prev]
+    # include previous trading day for EMA warmup
+    prev = (dt - timedelta(days=1)).date()
+    df = df[df.index.date >= prev]
     candles = []
     for ts, row in df.iterrows():
         o, h, l, c = (float(row[k]) for k in ("Open", "High", "Low", "Close"))
