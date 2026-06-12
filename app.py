@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v10"
+APP_VERSION = "v11"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -83,11 +83,19 @@ def _init_db(conn: sqlite3.Connection) -> None:
                 security_id     TEXT    DEFAULT '',
                 exchange_segment TEXT   DEFAULT 'NSE_FNO',
                 dhan_order_id   TEXT    DEFAULT '',
-                created_at      REAL    DEFAULT 0
+                created_at      REAL    DEFAULT 0,
+                direction       TEXT    DEFAULT 'SHORT'
             );
             CREATE INDEX IF NOT EXISTS idx_date ON trades(date);
             CREATE INDEX IF NOT EXISTS idx_underlying ON trades(underlying);
         """)
+    # migrate existing DBs that lack the direction column
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN direction TEXT DEFAULT 'SHORT'")
+        conn.execute("UPDATE trades SET direction='SHORT' WHERE direction IS NULL")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
 
 
 # ── Dhan client ────────────────────────────────────────────────────────────────────
@@ -362,6 +370,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             lots        = round(qty / lot_size, 2) if lot_size else float(qty)
             order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
 
+            direction = "SHORT"
             exit_t = next(
                 (
                     b for b in buys
@@ -380,6 +389,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 ]
                 if before:
                     exit_t = max(before, key=lambda b: b.get("createTime") or b.get("orderCreateTime") or "")
+                    direction = "LONG"
             if exit_t:
                 buys.remove(exit_t)
 
@@ -390,11 +400,21 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             status     = "CLOSED" if exit_t else "OPEN"
 
             with _db_lock:
-                if db.execute(
-                    "SELECT id FROM trades WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
+                existing = db.execute(
+                    "SELECT id, status FROM trades WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
                     (trade_date, sid, entry_time, order_id),
-                ).fetchone():
-                    skipped += 1
+                ).fetchone()
+                if existing:
+                    # Update OPEN → CLOSED when exit data now available
+                    if existing["status"] == "OPEN" and exit_t:
+                        db.execute(
+                            "UPDATE trades SET exit_time=?,exit_price=?,pnl=?,status='CLOSED',direction=? WHERE id=?",
+                            (exit_time, exit_price, pnl, direction, existing["id"]),
+                        )
+                        db.commit()
+                        imported += 1
+                    else:
+                        skipped += 1
                     continue
 
                 db.execute(
@@ -403,14 +423,14 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                         (date, underlying, option_type, strike, expiry,
                          entry_time, entry_price, exit_time, exit_price,
                          quantity, lot_size, lots, pnl, status,
-                         security_id, exchange_segment, dhan_order_id, created_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         security_id, exchange_segment, dhan_order_id, created_at, direction)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         trade_date, underlying, opt_type, strike, expiry,
                         entry_time, entry_price, exit_time, exit_price,
                         qty, lot_size, lots, pnl, status,
-                        sid, exseg, order_id, datetime.now().timestamp(),
+                        sid, exseg, order_id, datetime.now().timestamp(), direction,
                     ),
                 )
                 db.commit()
@@ -1008,6 +1028,10 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip ce on" data-v="CE" onclick="togT(this)">CE</div>
     <div class="chip pe on" data-v="PE" onclick="togT(this)">PE</div>
   </div>
+  <div class="chips" id="dChips">
+    <div class="chip on" data-v="SHORT" onclick="togD(this)">Short</div>
+    <div class="chip on" data-v="LONG"  onclick="togD(this)">Hedge</div>
+  </div>
   <span id="ivl">&#8212;</span>
   <span style="font-size:9px;color:#2a2a2a">scroll=pan&#160;&#183;&#160;ctrl+scroll=zoom&#160;&#183;&#160;drag=pan</span>
   <button class="hbtn" onclick="loadSample()">Test Chart</button>
@@ -1278,6 +1302,7 @@ class CandleChart {{
 var _chartInst=null, chart=null, series=null;
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
+var dirOn=new Set(['SHORT','LONG']);
 var allTrades=[], candles=[], curInterval='1m';
 var selId=null;
 
@@ -1319,12 +1344,22 @@ function setU(el) {{
   document.querySelectorAll('#uChips .chip').forEach(function(c){{c.classList.remove('on');}});
   el.classList.add('on'); curU=el.dataset.v; loadAll();
 }}
+function _filtered(){{
+  return allTrades.filter(function(t){{
+    return typeOn.has(t.option_type) && dirOn.has(t.direction||'SHORT');
+  }});
+}}
 function togT(el) {{
   var v=el.dataset.v;
   if (typeOn.has(v)) {{ if(typeOn.size>1){{typeOn.delete(v);el.classList.remove('on');}} }}
   else {{ typeOn.add(v); el.classList.add('on'); }}
-  var f=allTrades.filter(function(t){{return typeOn.has(t.option_type);}});
-  renderTrades(f); putMarkers(f);
+  var f=_filtered(); renderTrades(f); putMarkers(f);
+}}
+function togD(el) {{
+  var v=el.dataset.v;
+  if (dirOn.has(v)) {{ if(dirOn.size>1){{dirOn.delete(v);el.classList.remove('on');}} }}
+  else {{ dirOn.add(v); el.classList.add('on'); }}
+  var f=_filtered(); renderTrades(f); putMarkers(f);
 }}
 function loadAll() {{ loadChart(); loadTrades(); }}
 
@@ -1363,8 +1398,7 @@ async function loadTrades() {{
   try {{
     var r=await fetch('/api/trades?date='+curDate+'&underlying='+curU);
     allTrades=await r.json();
-    var f=allTrades.filter(function(t){{return typeOn.has(t.option_type);}});
-    renderTrades(f); putMarkers(f);
+    var f=_filtered(); renderTrades(f); putMarkers(f);
   }} catch(e) {{ console.error(e); }}
 }}
 
