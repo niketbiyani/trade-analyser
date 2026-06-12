@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v17"
+APP_VERSION = "v18"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -650,44 +650,76 @@ def _is_auth_error(resp) -> bool:
 
 def _raw_dhan_chart(security_id: str, exchange_segment: str,
                     instrument_type: str, day: str) -> tuple[dict, str]:
-    """Fetch 1m candles for a single day. from_date == to_date == day (Dhan requirement)."""
+    """Fetch 1m candles for a single day.
+
+    Tries two Dhan endpoints in order:
+    1. /charts/historical with type=1 — true historical minute data (any past date)
+    2. /charts/intraday — real-time feed, only last 5 trading days during market hours
+    """
     try:
         dhan = _dhan_client()
     except Exception as e:
         return {}, str(e)
 
-    def _call(d):
-        return _with_timeout(
-            d.intraday_minute_data,
+    def _candle_count(resp):
+        if not isinstance(resp, dict) or resp.get("status") != "success":
+            return 0
+        data = resp.get("data", resp)
+        if not isinstance(data, dict):
+            return 0
+        return len(data.get("timestamp") or data.get("timestamps") or [])
+
+    # Approach 1: historical minute data (type="1") — works for any past date
+    try:
+        resp = _with_timeout(
+            dhan.dhan_http.post,
+            "/charts/historical",
+            {
+                "securityId":      security_id,
+                "exchangeSegment": exchange_segment,
+                "instrument":      instrument_type,
+                "expiryCode":      0,
+                "fromDate":        day,
+                "toDate":          day,
+                "type":            "1",
+            },
+        )
+        if _candle_count(resp) > 0:
+            logger.info("Dhan hist-1m [%s %s %s]: %d candles", security_id, exchange_segment, day, _candle_count(resp))
+            return resp, ""
+    except Exception as e:
+        logger.warning("Historical minute API error: %s", e)
+
+    # Approach 2: intraday feed (last 5 trading days, works during/after market hours)
+    try:
+        resp = _with_timeout(
+            dhan.intraday_minute_data,
             security_id=security_id,
             exchange_segment=exchange_segment,
             instrument_type=instrument_type,
             from_date=day,
             to_date=day,
         )
-
-    try:
-        resp = _call(dhan)
+        logger.info("Dhan intraday [%s %s %s]: %d candles", security_id, exchange_segment, day, _candle_count(resp))
+        if _is_auth_error(resp):
+            logger.info("Chart auth error — refreshing token and retrying")
+            try:
+                import token_manager  # noqa: PLC0415
+                if token_manager.refresh_token():
+                    dhan = _dhan_client()
+                    resp = _with_timeout(
+                        dhan.intraday_minute_data,
+                        security_id=security_id,
+                        exchange_segment=exchange_segment,
+                        instrument_type=instrument_type,
+                        from_date=day,
+                        to_date=day,
+                    )
+            except Exception as e:
+                logger.warning("Token refresh failed during chart load: %s", e)
+        return resp, ""
     except Exception as e:
         return {}, str(e)
-
-    if _is_auth_error(resp):
-        logger.info("Chart API auth error — refreshing token and retrying")
-        try:
-            import token_manager  # noqa: PLC0415
-            if token_manager.refresh_token():
-                dhan = _dhan_client()
-                resp = _call(dhan)
-        except Exception as e:
-            logger.warning("Token refresh failed during chart load: %s", e)
-
-    logger.info(
-        "Dhan chart [%s %s %s %s]: status=%s candles=%s",
-        security_id, exchange_segment, instrument_type, day,
-        resp.get("status") if isinstance(resp, dict) else type(resp).__name__,
-        len((resp.get("data") or resp).get("timestamp", [])) if isinstance(resp, dict) else 0,
-    )
-    return resp, ""
 
 
 def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
@@ -710,12 +742,16 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
         logger.info("Chart response has no timestamps. data keys: %s", list(data.keys()))
         return []
     candles = []
-    for i, ts_str in enumerate(timestamps):
+    for i, ts_raw in enumerate(timestamps):
         try:
-            ts_str = str(ts_str).strip()
-            if len(ts_str) <= 8:
-                ts_str = f"{trade_date} {ts_str}"
-            ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+            # Handle integer Unix epoch (historical API returns these)
+            if isinstance(ts_raw, (int, float)):
+                ts = datetime.fromtimestamp(ts_raw)
+            else:
+                ts_str = str(ts_raw).strip()
+                if len(ts_str) <= 8:
+                    ts_str = f"{trade_date} {ts_str}"
+                ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
             candles.append({
                 "time":  int(ts.timestamp()),
                 "open":  round(float(opens[i]),  2),
