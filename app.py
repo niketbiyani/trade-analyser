@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v12"
+APP_VERSION = "v13"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -306,6 +306,30 @@ def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
     return result, ""
 
 
+def _aggregate_partial_fills(trades: list[dict]) -> list[dict]:
+    """Merge partial fills that share the same orderId into one record (summed qty, weighted avg price)."""
+    seen: dict = {}
+    result: list[dict] = []
+    for t in trades:
+        oid = t.get("orderId") or ""
+        if not oid:
+            result.append(t)
+            continue
+        if oid not in seen:
+            seen[oid] = dict(t)
+            result.append(seen[oid])
+        else:
+            agg = seen[oid]
+            pq = int(agg.get("tradedQuantity") or 0)
+            nq = int(t.get("tradedQuantity") or 0)
+            pp = float(agg.get("tradedPrice") or 0)
+            np_ = float(t.get("tradedPrice") or 0)
+            total = pq + nq
+            agg["tradedQuantity"] = total
+            agg["tradedPrice"] = round((pp * pq + np_ * nq) / total, 4) if total else 0
+    return result
+
+
 def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict:
     """Dedup, filter options, pair SELL/BUY, insert into DB. Returns result dict."""
     diag: dict = dict(extra_diag or {})
@@ -342,6 +366,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
     db = get_db()
 
     for (trade_date, sid), group in groups.items():
+        group = _aggregate_partial_fills(group)
         sells = sorted(
             [t for t in group if _tx_type(t) == "SELL"],
             key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
