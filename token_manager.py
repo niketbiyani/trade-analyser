@@ -1,24 +1,20 @@
 """
-Automatic Dhan API Token Manager.
+Automatic Dhan API Token Manager for Trade Analyser.
 
-Handles token generation and renewal without manual intervention.
-Strategy:
-  1. Try RenewToken (fast, extends active token by 24h)
-  2. If renewal fails (token expired), generate fresh token via PIN + TOTP
-  3. Update .env file so the app picks up the new token on next _dhan_client() call
+Primary strategy: copy DHAN_ACCESS_TOKEN from the sibling Risk-Management app's
+.env at startup and on demand — risk-management already handles full token refresh
+(PIN + TOTP), so no need to duplicate that logic here.
 
-Requires in .env:
+Fallback (if Risk-Management .env is unavailable): try RenewToken, then PIN + TOTP
+from local .env.
+
+Requires in local .env:
   DHAN_CLIENT_ID
+  DHAN_ACCESS_TOKEN  (updated automatically by sync or refresh)
+
+For fallback to work, also add:
   DHAN_PIN          (6-digit Dhan login PIN)
   DHAN_TOTP_SECRET  (base32 secret from Dhan TOTP setup)
-
-If DHAN_PIN / DHAN_TOTP_SECRET are not set here, falls back to the sibling
-Risk-Management/.env so both apps can share credentials without duplication.
-
-Setup TOTP:
-  1. Go to https://web.dhan.co -> Profile -> DhanHQ Trading APIs
-  2. Click "Setup TOTP" and copy the secret key
-  3. Add DHAN_TOTP_SECRET=YOUR_SECRET to .env
 """
 
 import logging
@@ -34,18 +30,12 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-# Sibling risk-management .env — used as fallback for PIN/TOTP if not set locally
-_RM_ENV  = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+RM_ENV   = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                           "..", "Risk-Management", ".env"))
 
 
 def _load_env():
-    """Reload .env and return current credentials. Falls back to Risk-Management/.env for PIN/TOTP."""
     load_dotenv(ENV_FILE, override=True)
-    # If PIN or TOTP secret are missing, try sibling Risk-Management app's .env
-    if (not os.getenv("DHAN_PIN") or not os.getenv("DHAN_TOTP_SECRET")) and os.path.exists(_RM_ENV):
-        logger.info("PIN/TOTP not in local .env — loading from %s", _RM_ENV)
-        load_dotenv(_RM_ENV, override=False)  # override=False: don't overwrite already-set vars
     return {
         "client_id":    os.getenv("DHAN_CLIENT_ID", ""),
         "access_token": os.getenv("DHAN_ACCESS_TOKEN", ""),
@@ -66,125 +56,147 @@ def _update_env_token(new_token: str):
     )
     with open(ENV_FILE, "w") as f:
         f.write(content)
-    logger.info("Updated access token in .env")
+    logger.info("Updated DHAN_ACCESS_TOKEN in local .env")
 
 
-def try_renew_token(client_id: str, current_token: str) -> str | None:
+def sync_from_risk_management() -> bool:
     """
-    Try to renew an active token. Returns new token or None if renewal fails.
-    This only works if the current token has NOT expired yet.
+    Copy DHAN_ACCESS_TOKEN (and DHAN_CLIENT_ID) from the sibling Risk-Management
+    .env into the local .env. Returns True if the token was copied successfully.
     """
+    if not os.path.exists(RM_ENV):
+        logger.warning("Risk-Management .env not found at %s — skipping sync", RM_ENV)
+        return False
+
+    # Read RM .env without polluting os.environ permanently
+    rm_vars = {}
+    with open(RM_ENV) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                rm_vars[k.strip()] = v.strip()
+
+    token     = rm_vars.get("DHAN_ACCESS_TOKEN", "")
+    client_id = rm_vars.get("DHAN_CLIENT_ID", "")
+
+    if not token:
+        logger.error("No DHAN_ACCESS_TOKEN found in Risk-Management .env")
+        return False
+
+    _update_env_token(token)
+
+    # Also sync DHAN_CLIENT_ID if local .env has it — update in case it drifted
+    if client_id:
+        with open(ENV_FILE, "r") as f:
+            content = f.read()
+        if "DHAN_CLIENT_ID=" in content:
+            content = re.sub(r"^DHAN_CLIENT_ID=.*$", f"DHAN_CLIENT_ID={client_id}",
+                             content, flags=re.MULTILINE)
+            with open(ENV_FILE, "w") as f:
+                f.write(content)
+
+    logger.info("Synced token from Risk-Management .env (%.20s...)", token)
+    return True
+
+
+def _try_renew(client_id: str, current_token: str) -> str | None:
     try:
         login = DhanLogin(client_id)
-        response = login.renew_token(current_token)
-        logger.info("RenewToken response: %s", response)
-        if isinstance(response, dict):
-            new_token = response.get("accessToken") or response.get("access_token")
-            if new_token:
-                return new_token
-            data = response.get("data", {})
+        resp  = login.renew_token(current_token)
+        logger.info("RenewToken response: %s", resp)
+        if isinstance(resp, dict):
+            tok = resp.get("accessToken") or resp.get("access_token")
+            if tok:
+                return tok
+            data = resp.get("data", {})
             if isinstance(data, dict):
-                new_token = data.get("accessToken") or data.get("access_token")
-                if new_token:
-                    return new_token
-        logger.warning("RenewToken did not return a valid token: %s", response)
+                tok = data.get("accessToken") or data.get("access_token")
+                if tok:
+                    return tok
+        logger.warning("RenewToken did not return a token: %s", resp)
         return None
     except Exception as e:
-        logger.warning("RenewToken failed (token likely expired): %s", e)
+        logger.warning("RenewToken failed: %s", e)
         return None
 
 
-def generate_fresh_token(client_id: str, pin: str, totp_secret: str, max_retries: int = 3) -> str | None:
-    """
-    Generate a brand new token using PIN + TOTP. Fully headless, no browser needed.
-    Retries on Dhan's rate limit ("Token can be generated once every 2 minutes").
-    """
+def _try_generate(client_id: str, pin: str, totp_secret: str, max_retries: int = 3) -> str | None:
     if not pin or not totp_secret:
-        logger.error("DHAN_PIN and DHAN_TOTP_SECRET must be set in .env for auto token generation")
+        logger.error("DHAN_PIN and DHAN_TOTP_SECRET must be set for auto token generation")
         return None
-
     for attempt in range(1, max_retries + 1):
         try:
             totp_code = pyotp.TOTP(totp_secret).now()
-            logger.info("Generated TOTP code, requesting new token... (attempt %d/%d)", attempt, max_retries)
+            logger.info("Generating token via PIN+TOTP (attempt %d/%d)...", attempt, max_retries)
             login = DhanLogin(client_id)
-            response = login.generate_token(pin=pin, totp=totp_code)
+            resp  = login.generate_token(pin=pin, totp=totp_code)
             logger.info("GenerateToken response keys: %s",
-                        list(response.keys()) if isinstance(response, dict) else type(response))
-
-            if isinstance(response, dict):
-                if response.get("status") == "error":
-                    msg = response.get("message", "")
+                        list(resp.keys()) if isinstance(resp, dict) else type(resp))
+            if isinstance(resp, dict):
+                if resp.get("status") == "error":
+                    msg = resp.get("message", "")
                     if "once every" in msg.lower() or "2 minute" in msg.lower():
                         if attempt < max_retries:
-                            logger.warning("Rate limited by Dhan: %s. Waiting 130s before retry...", msg)
+                            logger.warning("Rate limited — waiting 130s...")
                             time.sleep(130)
                             continue
-                        else:
-                            logger.error("Rate limited by Dhan after %d attempts: %s", max_retries, msg)
-                            return None
-
-                new_token = response.get("accessToken") or response.get("access_token")
-                if new_token:
-                    return new_token
-                data = response.get("data", {})
+                        logger.error("Rate limited after %d attempts", max_retries)
+                        return None
+                tok = resp.get("accessToken") or resp.get("access_token")
+                if tok:
+                    return tok
+                data = resp.get("data", {})
                 if isinstance(data, dict):
-                    new_token = data.get("accessToken") or data.get("access_token")
-                    if new_token:
-                        return new_token
-
-            logger.error("GenerateToken did not return a valid token: %s", response)
+                    tok = data.get("accessToken") or data.get("access_token")
+                    if tok:
+                        return tok
+            logger.error("GenerateToken did not return a token: %s", resp)
             return None
         except Exception as e:
             logger.error("GenerateToken failed: %s", e)
             return None
-
     return None
 
 
 def refresh_token() -> bool:
     """
-    Refresh the Dhan access token and persist to local .env.
-    1. Try RenewToken  (fast, works while token is still active)
-    2. Fall back to PIN + TOTP fresh generation
+    Refresh the Dhan access token.
+
+    1. Sync from Risk-Management .env (primary — RM already does the hard refresh)
+    2. Try RenewToken via Dhan API  (fallback if RM not available)
+    3. Generate fresh token via PIN + TOTP  (last resort)
     """
+    # Primary: copy from risk-management
+    if sync_from_risk_management():
+        return True
+
+    # Fallback: own renew / generate
+    logger.info("Risk-Management sync unavailable — attempting own token refresh...")
     creds = _load_env()
     if not creds["client_id"]:
-        logger.error("DHAN_CLIENT_ID not set in .env")
+        logger.error("DHAN_CLIENT_ID not set")
         return False
 
     new_token = None
-
-    # Step 1: Try renewal (works if current token is still active)
     if creds["access_token"]:
-        logger.info("Attempting token renewal...")
-        new_token = try_renew_token(creds["client_id"], creds["access_token"])
-        if new_token:
-            logger.info("Token renewed successfully via RenewToken")
-
-    # Step 2: Fall back to fresh generation via PIN + TOTP
+        new_token = _try_renew(creds["client_id"], creds["access_token"])
     if not new_token:
-        logger.info("Attempting fresh token generation via PIN + TOTP...")
-        new_token = generate_fresh_token(creds["client_id"], creds["pin"], creds["totp_secret"])
-        if new_token:
-            logger.info("Fresh token generated successfully")
+        new_token = _try_generate(creds["client_id"], creds["pin"], creds["totp_secret"])
 
     if not new_token:
-        logger.error("All token refresh methods failed. Manual intervention required.")
+        logger.error("All token refresh methods failed")
         return False
 
-    # Step 3: Persist to local .env
     _update_env_token(new_token)
     return True
 
 
 def is_token_refresh_configured() -> bool:
-    """Check if auto token refresh is properly configured."""
-    creds = _load_env()
-    return bool(creds["client_id"] and creds["pin"] and creds["totp_secret"])
+    return os.path.exists(RM_ENV) or bool(_load_env()["pin"] and _load_env()["totp_secret"])
 
 
-# ── Standalone CLI: python token_manager.py ────────────────────────────────────
+# ── Standalone CLI: python token_manager.py ───────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -200,7 +212,7 @@ if __name__ == "__main__":
     if success:
         load_dotenv(ENV_FILE, override=True)
         tok = os.getenv("DHAN_ACCESS_TOKEN", "")
-        print(f"Token refreshed: {tok[:20]}...{tok[-10:]}")
+        print(f"Token synced: {tok[:20]}...{tok[-10:]}")
     else:
-        print("Token refresh FAILED. Check analyser.log for details.")
+        print("Token sync FAILED. Check analyser.log for details.")
         sys.exit(1)
