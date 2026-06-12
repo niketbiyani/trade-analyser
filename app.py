@@ -33,8 +33,7 @@ LOT_SIZES = {
 }
 
 DHAN_INDEX_IDS = {
-    "NIFTY":     {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
-    "BANKNIFTY": {"security_id": "25", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "NIFTY":  {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
     "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
 }
 
@@ -1122,9 +1121,8 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <button onclick="shiftDay(1)">&#8594;</button>
   </div>
   <div class="chips" id="uChips">
-    <div class="chip on" data-v="NIFTY"     onclick="setU(this)">NIFTY</div>
-    <div class="chip"    data-v="SENSEX"    onclick="setU(this)">SENSEX</div>
-    <div class="chip"    data-v="BANKNIFTY" onclick="setU(this)">BANKNIFTY</div>
+    <div class="chip on" data-v="NIFTY"  onclick="setU(this)">NIFTY</div>
+    <div class="chip"    data-v="SENSEX" onclick="setU(this)">SENSEX</div>
   </div>
   <div class="chips" id="tChips">
     <div class="chip ce on" data-v="CE" onclick="togT(this)">CE</div>
