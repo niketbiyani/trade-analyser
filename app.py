@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v15"
+APP_VERSION = "v16"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -33,9 +33,21 @@ LOT_SIZES = {
 }
 
 DHAN_INDEX_IDS = {
-    "NIFTY":  {"security_id": "13",  "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
-    "SENSEX": {"security_id": "51",  "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
+    "NIFTY":     {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "BANKNIFTY": {"security_id": "25", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
+    "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
 }
+
+# Fallback candidates tried in order when SENSEX returns empty data.
+# Dhan BSE index historical data is not well documented; we scan until one works.
+SENSEX_FALLBACKS = [
+    {"security_id": "51", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
+    {"security_id": "1",  "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
+    {"security_id": "51", "exchange_segment": "BSE",     "instrument_type": "INDEX"},
+    {"security_id": "1",  "exchange_segment": "BSE",     "instrument_type": "INDEX"},
+    {"security_id": "19", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
+    {"security_id": "16", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
+]
 
 
 CHART_TIMEOUT = 10
@@ -733,19 +745,29 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
     prev_day = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-    idx = DHAN_INDEX_IDS.get(u)
-    if idx:
+
+    candidates = SENSEX_FALLBACKS if u == "SENSEX" else []
+    primary = DHAN_INDEX_IDS.get(u)
+    if primary and (not candidates or candidates[0] != primary):
+        candidates = [primary] + [c for c in candidates if c != primary]
+
+    for idx in candidates:
         raw_resp, dhan_err = _raw_dhan_chart(
             idx["security_id"], idx["exchange_segment"],
             idx["instrument_type"],
             to_date=trade_date, from_date=prev_day,
         )
         if dhan_err:
-            logger.error("Dhan chart error: %s", dhan_err)
-        else:
-            candles = _parse_dhan_candles(raw_resp, trade_date)
-            if candles:
-                return candles, "1m", ""
+            logger.error("Dhan chart error [%s %s]: %s", idx["security_id"], idx["exchange_segment"], dhan_err)
+            continue
+        candles = _parse_dhan_candles(raw_resp, trade_date)
+        if candles:
+            if u == "SENSEX" and idx != DHAN_INDEX_IDS.get(u):
+                logger.info("SENSEX chart: working config is sid=%s seg=%s — update DHAN_INDEX_IDS",
+                            idx["security_id"], idx["exchange_segment"])
+                DHAN_INDEX_IDS["SENSEX"] = idx  # cache for this session
+            return candles, "1m", ""
+
     return [], "1m", (
         f"No 1m chart data for {u} {trade_date} from Dhan. "
         "Check /api/debug-chart?underlying=" + u + "&date=" + trade_date
@@ -1100,8 +1122,9 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <button onclick="shiftDay(1)">&#8594;</button>
   </div>
   <div class="chips" id="uChips">
-    <div class="chip on" data-v="NIFTY"  onclick="setU(this)">NIFTY</div>
-    <div class="chip"    data-v="SENSEX" onclick="setU(this)">SENSEX</div>
+    <div class="chip on" data-v="NIFTY"     onclick="setU(this)">NIFTY</div>
+    <div class="chip"    data-v="SENSEX"    onclick="setU(this)">SENSEX</div>
+    <div class="chip"    data-v="BANKNIFTY" onclick="setU(this)">BANKNIFTY</div>
   </div>
   <div class="chips" id="tChips">
     <div class="chip ce on" data-v="CE" onclick="togT(this)">CE</div>
