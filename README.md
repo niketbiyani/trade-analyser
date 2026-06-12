@@ -8,9 +8,11 @@ Since option charts aren't accessible after expiry, trades are overlaid on the *
 
 ## What it looks like
 
-- **Top bar** — date picker with prev/next arrows, underlying selector (NIFTY / SENSEX / BANKNIFTY), CE/PE filter chips, token refresh button, import button
-- **Chart** — TradingView candlestick chart of the index. Blue `▼` markers for CE entries, amber `▼` for PE entries. Green `▲` for profitable exits, red `▲` for losing exits. Exit markers show the P&L in points.
-- **Trades panel** — table of all trades for the selected date. Click any row to scroll the chart to that trade's entry candle. Add notes inline — saves automatically.
+- **Top bar** — date picker with prev/next arrows, underlying selector, direction filter (Short / Hedge), CE/PE filter, import button, token refresh button
+- **Chart** — 1-minute TradingView candlestick chart of the index with EMA 20 (blue) and EMA 50 (orange). Blue `▼` markers for CE entries, amber `▼` for PE entries. Green `▲` for profitable exits, red `▲` for losing exits.
+- **RSI 14** — oscillator panel below the main chart, synced scrolling
+- **MACD 12,26,9** — histogram + signal panel below RSI, synced scrolling
+- **Trades panel** — table of all trades for the selected date. Click any row to isolate that trade on the chart. Click again to show all. Add notes inline — saves automatically and is preserved across wipe+reimport.
 
 ---
 
@@ -18,13 +20,14 @@ Since option charts aren't accessible after expiry, trades are overlaid on the *
 
 - Python 3.11+
 - A Dhan account with API access enabled
-- TOTP set up on your Dhan account (for auto token refresh)
+- TOTP configured on your Dhan account (for auto token refresh)
 
 ---
 
-## Installation
+## First-time setup on VPS
 
 ```bash
+cd ~
 git clone https://github.com/niketbiyani/trade-analyser
 cd trade-analyser
 git checkout claude/admiring-einstein-prd40v
@@ -32,18 +35,16 @@ git checkout claude/admiring-einstein-prd40v
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+cp .env.example .env
+nano .env          # fill in credentials (see Configuration below)
 ```
 
 ---
 
 ## Configuration
 
-Copy the example env file and fill in your credentials:
-
-```bash
-cp .env.example .env
-nano .env
-```
+Edit `.env` with your Dhan credentials:
 
 ```env
 # Your Dhan client ID (shown on the Dhan web portal under API settings)
@@ -55,42 +56,29 @@ DHAN_ACCESS_TOKEN=your_access_token_here
 # Your 6-digit Dhan login PIN (used for auto token regeneration)
 DHAN_PIN=123456
 
-# TOTP secret from Dhan (base32 string, not a 6-digit code)
-# Get it from: https://web.dhan.co -> Profile -> DhanHQ Trading APIs -> Setup TOTP
+# TOTP secret from Dhan (base32 string — NOT the 6-digit code)
+# Get it from: web.dhan.co → Profile → DhanHQ Trading APIs → Setup TOTP → "show secret"
 DHAN_TOTP_SECRET=YOUR_BASE32_SECRET
 
 # Port to run on (default 5556)
 PORT=5556
 ```
 
-### Getting your TOTP secret
-
-1. Go to [web.dhan.co](https://web.dhan.co)
-2. Profile → DhanHQ Trading APIs → **Setup TOTP**
-3. Instead of scanning the QR code, click "show secret" or "copy key"
-4. Paste that base32 string as `DHAN_TOTP_SECRET`
-
-> If you already have this configured in your risk-management project, use the same values — it's the same Dhan account.
+> If you already have this configured in your risk-management project, use the same `DHAN_CLIENT_ID`, `DHAN_ACCESS_TOKEN`, `DHAN_PIN`, and `DHAN_TOTP_SECRET` values — it's the same Dhan account.
 
 ---
 
-## Running
+## Running as a systemd service (always-on)
+
+This is the recommended way to run the app — it starts automatically on VPS boot and restarts itself if it ever crashes.
+
+### 1. Create the service file
 
 ```bash
-cd ~/trade-analyser
-source venv/bin/activate
-python app.py
+sudo nano /etc/systemd/system/trade-analyser.service
 ```
 
-Open `http://YOUR_VPS_IP:5556` in your browser.
-
-On startup the app automatically attempts a token refresh if PIN + TOTP are configured.
-
----
-
-## Running as a systemd service (optional)
-
-Create `/etc/systemd/system/trade-analyser.service`:
+Paste this content (adjust paths if your username isn't `root`):
 
 ```ini
 [Unit]
@@ -102,21 +90,75 @@ Type=simple
 User=root
 WorkingDirectory=/root/trade-analyser
 ExecStart=/root/trade-analyser/venv/bin/python app.py
-Restart=on-failure
+Restart=always
 RestartSec=5
+StandardOutput=append:/root/trade-analyser/analyser.log
+StandardError=append:/root/trade-analyser/analyser.log
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+### 2. Enable and start
+
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable trade-analyser
+sudo systemctl enable trade-analyser    # auto-start on boot
 sudo systemctl start trade-analyser
+sudo systemctl status trade-analyser    # confirm it's running
+```
+
+Dashboard: `http://YOUR_VPS_IP:5556`
+
+### Once it's running — it stays running
+
+Once enabled and started, you don't need to do anything. The service:
+- Starts automatically when the VPS boots
+- Restarts itself within 5 seconds if it crashes
+- Keeps running indefinitely unless you stop it manually
+
+---
+
+## Day-to-day commands
+
+### Check if it's running
+```bash
 sudo systemctl status trade-analyser
 ```
 
-Logs: `tail -f /root/trade-analyser/analyser.log`
+### View logs
+```bash
+tail -f /root/trade-analyser/analyser.log
+```
+
+### Restart (after pulling updates)
+```bash
+cd ~/trade-analyser
+git pull origin claude/admiring-einstein-prd40v
+sudo systemctl restart trade-analyser
+```
+
+### Stop the service
+```bash
+sudo systemctl stop trade-analyser
+```
+
+### Disable auto-start (if you no longer want it running on boot)
+```bash
+sudo systemctl disable trade-analyser
+```
+
+---
+
+## Pulling updates
+
+```bash
+cd ~/trade-analyser
+git pull origin claude/admiring-einstein-prd40v
+sudo systemctl restart trade-analyser
+# tail the log to confirm it started cleanly:
+tail -f /root/trade-analyser/analyser.log
+```
 
 ---
 
@@ -124,40 +166,40 @@ Logs: `tail -f /root/trade-analyser/analyser.log`
 
 ### Importing trades
 
-1. Click **↓ Import from Dhan** in the top bar
+1. Click **↓ Import** in the top bar
 2. Set **From Date** and **To Date** (you can import weeks or months at once)
 3. Click **Import**
-4. The app fetches your full trade history from Dhan, filters to options only (NSE_FNO / BSE_FNO), pairs each SELL (entry) with the earliest subsequent BUY (exit) for the same instrument, and stores everything locally
-5. Duplicate detection — re-importing the same date range is safe, already-stored trades are skipped
+4. The app fetches your trade history from Dhan, filters to options only (NSE_FNO / BSE_FNO), pairs each SELL (entry) with the earliest subsequent BUY (exit) for the same instrument, and stores everything locally
+5. Re-importing the same date range is safe — already-stored trades are skipped. Any notes you've added are preserved.
 
 ### Viewing trades on the chart
 
 - Use the **date picker** or **← →** arrows to navigate between days
-- Switch between **NIFTY / SENSEX / BANKNIFTY** with the underlying chips — the chart and trade list update together
-- Toggle **CE** and **PE** chips to show/hide each type
-- **Click any row** in the trades panel to zoom the chart to that trade's entry candle
-
-### Chart resolution
-
-The chart automatically picks the best resolution based on how old the date is:
-
-| Age of date | Resolution |
-|---|---|
-| Last 5 days | 1-minute candles |
-| Last 55 days | 5-minute candles |
-| Older | Daily candles |
-
-The resolution badge in the top bar shows which is active.
+- Switch between **NIFTY / SENSEX / BANKNIFTY** with the underlying chips
+- Toggle **CE** / **PE** / **Short** / **Hedge** chips to show/hide each type
+- **Click any row** in the trades panel to isolate that trade on the chart (other markers hidden). Click again to show all.
 
 ### Adding notes
 
-Click the **Notes** cell in any trade row, type your note, then click away. It saves automatically. Notes persist across sessions.
+Click the **Notes** cell in any trade row, type your note, then click away — saves automatically. Notes are linked to the trade by instrument + entry time, so they survive a wipe-and-reimport.
 
 ### Token management
 
-The **↻ Token** button in the top bar manually refreshes your Dhan access token (renew first, regenerate via PIN+TOTP if expired). The token is also refreshed automatically:
+The **↻ Token** button manually refreshes your Dhan access token. Token is also refreshed automatically:
 - On app startup
 - If an import call fails with an auth error (auto-retry once)
+
+---
+
+## Chart and indicators
+
+- **Always 1-minute candles** via Dhan's historical API (supports up to 5 years of history)
+- Loads **today + previous trading day** data so EMAs are warm from the start of the session
+- Markers are only shown for the selected date — not the previous day
+- **EMA 20** (blue), **EMA 50** (orange) overlaid on candles
+- **RSI 14** in pane below — 70/30 reference lines
+- **MACD 12,26,9** in bottom pane — histogram + signal line
+- All three panes scroll and zoom in sync
 
 ---
 
@@ -165,67 +207,71 @@ The **↻ Token** button in the top bar manually refreshes your Dhan access toke
 
 | Marker | Meaning |
 |---|---|
-| Blue `▼` above candle | CE trade entry (you sold a call) |
-| Amber `▼` above candle | PE trade entry (you sold a put) |
+| Blue `▼` above candle | CE trade entry (short call) |
+| Amber `▼` above candle | PE trade entry (short put) |
+| Blue `▽` above candle | CE hedge entry (long call) |
+| Amber `▽` above candle | PE hedge entry (long put) |
 | Green `▲` below candle | Exit at a profit |
 | Red `▲` below candle | Exit at a loss |
 | Number on exit marker | P&L in ₹ for that trade |
-
-Markers are snapped to the nearest available candle if the exact minute is missing from the chart data.
 
 ---
 
 ## Trade matching logic
 
-Dhan's trade history returns individual executions. The app reconstructs positions as follows:
+Dhan's trade history returns individual executions (including partial fills). The app reconstructs positions as follows:
 
 1. Group all option trades by `(date, securityId)`
-2. Within each group, sort SELLs and BUYs by time
-3. Each SELL = opening a short position (entry)
-4. Match each SELL with the earliest BUY that occurs **after** it with the same quantity
-5. P&L = `(entry_price - exit_price) × quantity`
-
-For **credit spreads**, both legs appear as separate trades (the sell leg and the hedge buy leg each get their own marker). Spread grouping is not yet implemented — it's on the roadmap.
-
-For **naked shorts**, only one SELL→BUY pair appears.
-
----
-
-## Data storage
-
-All imported trades are stored in `analyser.db` (SQLite, in the project directory). The database is never overwritten on re-import — it only appends new trades.
-
-To reset and re-import everything from scratch:
-```bash
-rm analyser.db
-```
+2. Aggregate partial fills — same `orderId` records are merged (summed quantity, weighted-avg price)
+3. Within each group, sort SELLs and BUYs by time
+4. **Short trades:** each SELL (entry) is matched with the earliest subsequent BUY (exit) of equal quantity
+5. **Hedge/LONG trades:** each BUY (entry) is matched with the earliest subsequent SELL (exit) of equal quantity
+6. P&L for short = `(entry_price - exit_price) × quantity`; for hedge = `(exit_price - entry_price) × quantity`
 
 ---
 
 ## Troubleshooting
 
 **Chart shows no data**
-- If the date is a weekend or market holiday, yfinance returns no candles — this is expected
-- For dates older than 55 days, only daily candles are available
-- SENSEX (`^BSESN`) on yfinance sometimes has data gaps — this is a yfinance limitation
+- If the date is a weekend or market holiday, no candles are available — expected
+- Dhan historical API only returns data for trading days with market activity
 
 **Import returns 0 trades**
-- Check that the date range had actual trades executed through Dhan
+- Check the date range actually had trades executed through Dhan
 - Futures (FUTIDX) are filtered out — only options (OPTIDX) are imported
 - Equity trades (NSE_EQ / BSE_EQ) are filtered out
 
 **Import fails with auth error**
 - The app will auto-retry once after refreshing the token
-- If it still fails, click **↻ Token** in the top bar to force a refresh
+- If it still fails, click **↻ Token** in the top bar
 - Make sure `DHAN_PIN` and `DHAN_TOTP_SECRET` are set correctly in `.env`
 
-**Token generation rate limited ("once every 2 minutes")**
+**Token generation rate limited**
 - Dhan rate-limits token generation to once per 2 minutes
 - The token manager waits 130 seconds and retries automatically — just wait
 
 **P&L shows as `—` for some trades**
-- The trade is still OPEN (no matching BUY found in that session)
-- Or the BUY happened on a different day (e.g. overnight position)
+- The trade is OPEN (no matching exit found in that session)
+- Or the exit happened on a different day
+
+**Service not starting**
+```bash
+sudo journalctl -u trade-analyser -n 50
+```
+Check the log output for the specific error.
+
+---
+
+## Data storage
+
+All imported trades are stored in `analyser.db` (SQLite, in the project directory). Re-importing never overwrites existing records — it only appends new ones. Notes are always preserved.
+
+To delete all trade data and start fresh:
+```bash
+sudo systemctl stop trade-analyser
+rm /root/trade-analyser/analyser.db
+sudo systemctl start trade-analyser
+```
 
 ---
 

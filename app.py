@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v14"
+APP_VERSION = "v15"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1231,79 +1231,83 @@ function setChartMsg(main,sub) {{
 }}
 function hideChartMsg() {{ document.getElementById('chartMsg').classList.add('hide'); }}
 
-function _makeChart(elId, opts) {{
-  var el=document.getElementById(elId);
-  var base={{
-    layout:{{background:{{color:'#0d0d0d'}},textColor:'#888'}},
-    grid:{{vertLines:{{color:'#181818'}},horzLines:{{color:'#181818'}}}},
-    crosshair:{{mode:LightweightCharts.CrosshairMode.Normal}},
-    rightPriceScale:{{borderColor:'#2a2a2a'}},
-    handleScroll:{{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true}},
-    handleScale:{{mouseWheel:false,pinch:true,axisPressedMouseMove:{{price:true,time:true}}}},
+function _chartOpts(el, timeScaleOpts) {{
+  return {{
+    width:  el.clientWidth  || 800,
+    height: el.clientHeight || 200,
+    layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#888' }},
+    grid:   {{ vertLines: {{ color: '#181818' }}, horzLines: {{ color: '#181818' }} }},
+    crosshair: {{ mode: 1 }},
+    rightPriceScale: {{ borderColor: '#2a2a2a' }},
+    timeScale: Object.assign({{ borderColor: '#2a2a2a', rightOffset: 5 }}, timeScaleOpts||{{}}),
+    handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true }},
+    handleScale: {{ mouseWheel: false, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
   }};
-  var merged=Object.assign({{width:el.clientWidth||800,height:el.clientHeight||200}},base,opts);
-  var inst=LightweightCharts.createChart(el,merged);
-  new ResizeObserver(function(){{
-    var sz=el.getBoundingClientRect();
-    if(sz.width>0&&sz.height>0)inst.resize(sz.width,sz.height);
+}}
+function _watchResize(inst, el) {{
+  new ResizeObserver(function() {{
+    var sz = el.getBoundingClientRect();
+    if (sz.width > 0 && sz.height > 0) inst.resize(sz.width, sz.height);
   }}).observe(el);
-  return inst;
 }}
 
 function initChart() {{
+  // ── main candle chart (critical) ──────────────────────────────────────────
   try {{
-    _chartInst=_makeChart('chartEl',{{
-      timeScale:{{borderColor:'#2a2a2a',timeVisible:false,rightOffset:5}},
-    }});
-    series=_chartInst.addCandlestickSeries({{upColor:'#26a69a',downColor:'#ef5350',borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'}});
-    _ema20s=_chartInst.addLineSeries({{color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
-    _ema50s=_chartInst.addLineSeries({{color:'#FF9800',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
+    var el = document.getElementById('chartEl');
+    _chartInst = LightweightCharts.createChart(el, _chartOpts(el, {{ timeVisible: false }}));
+    series   = _chartInst.addCandlestickSeries({{ upColor:'#26a69a', downColor:'#ef5350', borderVisible:false, wickUpColor:'#26a69a', wickDownColor:'#ef5350' }});
+    _ema20s  = _chartInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
+    _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
+    chart    = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
+    _watchResize(_chartInst, el);
+    el.addEventListener('wheel', function(e) {{
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      var r = _chartInst.timeScale().getVisibleLogicalRange();
+      if (!r) return;
+      var f = e.deltaY > 0 ? 1.2 : 0.83, mid = (r.from+r.to)/2, half = (r.to-r.from)*0.5*f;
+      var nr = {{ from: mid-half, to: mid+half }};
+      _chartInst.timeScale().setVisibleLogicalRange(nr);
+      if (_rsiInst)  _rsiInst.timeScale().setVisibleLogicalRange(nr);
+      if (_macdInst) _macdInst.timeScale().setVisibleLogicalRange(nr);
+    }}, {{ passive: false }});
+    setChartMsg('Select a date to load chart data', '');
+  }} catch(e) {{
+    setChartMsg('Chart init error: ' + e.message, e.stack || '');
+    return;
+  }}
 
-    _rsiInst=_makeChart('rsiEl',{{
-      timeScale:{{borderColor:'#2a2a2a',timeVisible:false,rightOffset:5}},
-    }});
-    _rsiSeries=_rsiInst.addLineSeries({{color:'#9c27b0',lineWidth:1,lastValueVisible:true,priceLineVisible:false}});
-    _rsiSeries.createPriceLine({{price:70,color:'#444',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
-    _rsiSeries.createPriceLine({{price:30,color:'#444',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+  // ── RSI + MACD (optional — failure doesn't affect main chart) ─────────────
+  try {{
+    var rsiEl = document.getElementById('rsiEl');
+    _rsiInst   = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, {{ timeVisible: false }}));
+    _rsiSeries = _rsiInst.addLineSeries({{ color:'#9c27b0', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
+    _rsiSeries.createPriceLine({{ price:70, color:'#444', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:30, color:'#444', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _watchResize(_rsiInst, rsiEl);
 
-    _macdInst=_makeChart('macdEl',{{
-      timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false,rightOffset:5}},
-    }});
-    _macdHist=_macdInst.addHistogramSeries({{color:'#555',lastValueVisible:false,priceLineVisible:false}});
-    _macdLine=_macdInst.addLineSeries({{color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
-    _macdSignal=_macdInst.addLineSeries({{color:'#FF5722',lineWidth:1,lastValueVisible:false,priceLineVisible:false}});
+    var macdEl = document.getElementById('macdEl');
+    _macdInst  = LightweightCharts.createChart(macdEl, _chartOpts(macdEl, {{ timeVisible:true, secondsVisible:false }}));
+    _macdHist  = _macdInst.addHistogramSeries({{ color:'#555', lastValueVisible:false, priceLineVisible:false }});
+    _macdLine  = _macdInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
+    _macdSignal= _macdInst.addLineSeries({{ color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
+    _watchResize(_macdInst, macdEl);
 
-    chart={{timeScale:function(){{return _chartInst.timeScale();}}}};
-
-    // sync all three time scales
-    function _syncTo(src,targets){{
-      src.timeScale().subscribeVisibleLogicalRangeChange(function(r){{
-        if(_syncingRange||!r)return;
-        _syncingRange=true;
-        targets.forEach(function(t){{t.timeScale().setVisibleLogicalRange(r);}});
-        _syncingRange=false;
+    // sync time scales
+    function _syncTo(src, targets) {{
+      src.timeScale().subscribeVisibleLogicalRangeChange(function(r) {{
+        if (_syncingRange || !r) return;
+        _syncingRange = true;
+        targets.forEach(function(t) {{ t.timeScale().setVisibleLogicalRange(r); }});
+        _syncingRange = false;
       }});
     }}
-    _syncTo(_chartInst,[_rsiInst,_macdInst]);
-    _syncTo(_rsiInst,[_chartInst,_macdInst]);
-    _syncTo(_macdInst,[_chartInst,_rsiInst]);
-
-    // ctrl+scroll zoom on any chart
-    ['chartEl','rsiEl','macdEl'].forEach(function(id){{
-      document.getElementById(id).addEventListener('wheel',function(e){{
-        if(!e.ctrlKey)return;
-        e.preventDefault();
-        var r=_chartInst.timeScale().getVisibleLogicalRange();
-        if(!r)return;
-        var f=e.deltaY>0?1.2:0.83,mid=(r.from+r.to)/2,half=(r.to-r.from)*0.5*f;
-        var nr={{from:mid-half,to:mid+half}};
-        [_chartInst,_rsiInst,_macdInst].forEach(function(c){{c.timeScale().setVisibleLogicalRange(nr);}});
-      }},{{passive:false}});
-    }});
-
-    setChartMsg('Select a date to load chart data','');
+    _syncTo(_chartInst, [_rsiInst, _macdInst]);
+    _syncTo(_rsiInst,   [_chartInst, _macdInst]);
+    _syncTo(_macdInst,  [_chartInst, _rsiInst]);
   }} catch(e) {{
-    setChartMsg('Chart init error: '+e.message,e.stack||'');
+    console.warn('Indicator charts failed to init:', e.message);
   }}
 }}
 
