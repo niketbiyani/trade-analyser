@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v6"
+APP_VERSION = "v7"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -861,10 +861,17 @@ class CandleChart {{
     this.vs = 0;
     this.ve = 0;
     this.mx = -1;
+    this._drag = false;
+    this._dragX = 0;
+    this._dragVs = 0;
+    this._dragVe = 0;
     var me = this;
     new ResizeObserver(function() {{ me._fit(); }}).observe(container);
-    cv.addEventListener('mousemove', function(e) {{ me._hover(e); }});
-    cv.addEventListener('mouseleave', function() {{ me.mx = -1; me._draw(); }});
+    cv.addEventListener('mousedown', function(e) {{ me._mdown(e); }});
+    cv.addEventListener('mousemove', function(e) {{ me._mmove(e); }});
+    cv.addEventListener('mouseup',   function()  {{ me._mup(); }});
+    cv.addEventListener('mouseleave',function()  {{ me.mx=-1; me._drag=false; me.cv.style.cursor='crosshair'; me._draw(); }});
+    cv.addEventListener('wheel', function(e) {{ me._wheel(e); e.preventDefault(); }}, {{passive:false}});
     this._fit();
   }}
   _fit() {{
@@ -893,13 +900,40 @@ class CandleChart {{
     }};
   }}
   _vis() {{ return this.ve>0 ? this.candles.slice(this.vs,this.ve) : this.candles.slice(this.vs); }}
-  _hover(e) {{
+  _bw()  {{ var vis=this._vis(); return vis.length ? (this.cv.width-68)/vis.length : 1; }}
+  _mdown(e) {{
+    this._drag=true; this._dragX=e.clientX;
+    var c=this.candles;
+    this._dragVs=this.vs;
+    this._dragVe=(this.ve>0?this.ve:c.length);
+    this.cv.style.cursor='grabbing';
+  }}
+  _mmove(e) {{
     var r=this.cv.getBoundingClientRect();
-    var mx=(e.clientX-r.left)*this.cv.width/r.width;
-    var vis=this._vis();
-    if (!vis.length) return;
-    var bw=(this.cv.width-68)/vis.length;
-    this.mx=Math.max(0,Math.min(vis.length-1,Math.floor((mx-10)/bw)));
+    var cx=(e.clientX-r.left)*this.cv.width/r.width;
+    var vis=this._vis(); if(!vis.length)return;
+    var bw=this._bw();
+    this.mx=Math.max(0,Math.min(vis.length-1,Math.floor((cx-10)/bw)));
+    if(this._drag){{
+      var shift=Math.round((this._dragX-e.clientX)/Math.max(1,bw));
+      var n=this.candles.length, span=this._dragVe-this._dragVs;
+      var ns=Math.max(0,Math.min(n-span,this._dragVs+shift));
+      this.vs=ns; this.ve=(ns+span>=n)?0:ns+span;
+    }}
+    this._draw();
+  }}
+  _mup() {{ this._drag=false; this.cv.style.cursor='crosshair'; }}
+  _wheel(e) {{
+    var c=this.candles; if(!c.length)return;
+    var vis=this._vis(), span=vis.length; if(!span)return;
+    var newSpan=Math.max(20,Math.min(c.length,Math.round(span*(e.deltaY>0?1.18:0.85))));
+    var r=this.cv.getBoundingClientRect();
+    var relX=(e.clientX-r.left)/r.width;
+    var pivot=this.vs+Math.round(span*relX);
+    var ns=Math.max(0,Math.round(pivot-newSpan*relX));
+    var ne=ns+newSpan;
+    if(ne>=c.length){{ne=c.length;ns=Math.max(0,c.length-newSpan);}}
+    this.vs=ns; this.ve=(ne>=c.length)?0:ne;
     this._draw();
   }}
   _draw() {{
