@@ -29,7 +29,7 @@ PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
 
 LOT_SIZES = {
-    "NIFTY": 75, "BANKNIFTY": 30, "SENSEX": 20,
+    "NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20,
     "FINNIFTY": 65, "MIDCPNIFTY": 75,
 }
 
@@ -402,9 +402,18 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             with _db_lock:
                 existing = db.execute(
                     "SELECT id, status, direction FROM trades"
-                    " WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
-                    (trade_date, sid, entry_time, order_id),
+                    " WHERE date=? AND security_id=? AND entry_time=?",
+                    (trade_date, sid, entry_time),
                 ).fetchone()
+                if not existing:
+                    # fallback: match OPEN rows by trade identity when security_id differs
+                    # (e.g. first import from CSV uses symbol as ID, second from Dhan uses numeric ID)
+                    existing = db.execute(
+                        "SELECT id, status, direction FROM trades"
+                        " WHERE date=? AND underlying=? AND option_type=? AND strike=?"
+                        " AND entry_time=? AND status='OPEN'",
+                        (trade_date, underlying, opt_type, strike, entry_time),
+                    ).fetchone()
                 if existing:
                     updates = {}
                     if existing["status"] == "OPEN" and exit_t:
