@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v24"
+APP_VERSION = "v25"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1133,7 +1133,7 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 .vbadge {{ font-size: 9px; color: #444; border: 1px solid #2a2a2a; padding: 1px 5px;
            border-radius: 2px; letter-spacing: 1px }}
 #main {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
-#chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
+#chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
 #chartBox {{ flex: 3; min-height: 120px; position: relative; overflow: hidden }}
 #chartEl {{ position: absolute; inset: 0 }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
@@ -1228,8 +1228,10 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 </div>
 <div id="main">
   <div id="chartsArea">
+    <div id="xhairLine" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(150,150,150,0.4);pointer-events:none;display:none;z-index:5"></div>
     <div id="chartBox">
       <div id="chartEl"></div>
+      <div id="chartLegend" style="position:absolute;top:4px;left:8px;font-size:11px;color:#666;pointer-events:none;z-index:2;white-space:nowrap"></div>
       <div id="chartMsg">
         <span id="chartMsgMain">Initialising chart&#8230;</span>
         <span id="chartMsgSub"></span>
@@ -1347,7 +1349,7 @@ function _chartOpts(el, timeScaleOpts) {{
     height: el.clientHeight || 200,
     layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#888' }},
     grid:   {{ vertLines: {{ color: '#181818' }}, horzLines: {{ color: '#181818' }} }},
-    crosshair: {{ mode: 1 }},
+    crosshair: {{ mode: 0 }},
     rightPriceScale: {{ borderColor: '#2a2a2a' }},
     timeScale: Object.assign({{ borderColor: '#2a2a2a', rightOffset: 5 }}, timeScaleOpts||{{}}),
     handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true }},
@@ -1367,8 +1369,8 @@ function initChart() {{
     var el = document.getElementById('chartEl');
     _chartInst = LightweightCharts.createChart(el, _chartOpts(el, {{ visible: false }}));
     series   = _chartInst.addCandlestickSeries({{ upColor:'#26a69a', downColor:'#ef5350', borderVisible:false, wickUpColor:'#26a69a', wickDownColor:'#ef5350' }});
-    _ema20s  = _chartInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
-    _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
+    _ema20s  = _chartInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
+    _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
     chart    = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
     el.addEventListener('wheel', function(e) {{
@@ -1382,6 +1384,20 @@ function initChart() {{
       if (_rsiInst)  _rsiInst.timeScale().setVisibleLogicalRange(nr);
       if (_macdInst) _macdInst.timeScale().setVisibleLogicalRange(nr);
     }}, {{ passive: false }});
+    // OHLC legend — shows time and price at cursor position
+    var _leg = document.getElementById('chartLegend');
+    _chartInst.subscribeCrosshairMove(function(param) {{
+      if (!param.time || !param.seriesData || !param.seriesData.get(series)) {{
+        _leg.innerHTML = ''; return;
+      }}
+      var b = param.seriesData.get(series);
+      var hh = new Date(param.time * 1000).toISOString().slice(11, 16);
+      _leg.innerHTML = '<span style="color:#555">' + hh + '</span>'
+        + ' &nbsp;O<span style="color:#aaa">' + b.open.toFixed(0) + '</span>'
+        + ' H<span style="color:#26a69a">' + b.high.toFixed(0) + '</span>'
+        + ' L<span style="color:#ef5350">' + b.low.toFixed(0) + '</span>'
+        + ' C<span style="color:#ccc">' + b.close.toFixed(0) + '</span>';
+    }});
     setChartMsg('Select a date to load chart data', '');
   }} catch(e) {{
     setChartMsg('Chart init error: ' + e.message, e.stack || '');
@@ -1417,25 +1433,17 @@ function initChart() {{
     _syncTo(_rsiInst,   [_chartInst, _macdInst]);
     _syncTo(_macdInst,  [_chartInst, _rsiInst]);
 
-    // crosshair sync — vertical line extends across all three panes
-    function _setCross(inst, ser, map, t) {{
-      try {{
-        if (!t) {{ inst.clearCrossHair(); return; }}
-        var v = map[t];
-        if (v !== undefined) inst.setCrossHairPosition(v, t, ser);
-      }} catch(e) {{}}
+    // crosshair vertical line across all panes via CSS overlay
+    // param.point.x is in the chart content area; all panes share the same width so x is the same
+    var _xLine = document.getElementById('xhairLine');
+    function _moveCrossLine(param) {{
+      if (!param.point || param.point.x < 0) {{ _xLine.style.display='none'; return; }}
+      _xLine.style.left = param.point.x + 'px';
+      _xLine.style.display = 'block';
     }}
-    function _syncCrossFrom(srcInst, peers) {{
-      srcInst.subscribeCrosshairMove(function(param) {{
-        if (_syncingCross) return;
-        _syncingCross = true;
-        peers.forEach(function(p) {{ _setCross(p[0], p[1], p[2], param.time); }});
-        _syncingCross = false;
-      }});
-    }}
-    _syncCrossFrom(_chartInst, [[_rsiInst, _rsiSeries, _rsiMap], [_macdInst, _macdHist, _macdMap]]);
-    _syncCrossFrom(_rsiInst,   [[_chartInst, series, _candleMap], [_macdInst, _macdHist, _macdMap]]);
-    _syncCrossFrom(_macdInst,  [[_chartInst, series, _candleMap], [_rsiInst, _rsiSeries, _rsiMap]]);
+    _chartInst.subscribeCrosshairMove(_moveCrossLine);
+    _rsiInst.subscribeCrosshairMove(_moveCrossLine);
+    _macdInst.subscribeCrosshairMove(_moveCrossLine);
   }} catch(e) {{
     console.warn('Indicator charts failed to init:', e.message);
   }}
