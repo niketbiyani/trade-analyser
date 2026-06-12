@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v9"
+APP_VERSION = "v10"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -130,6 +130,233 @@ def _is_no_records_error(resp) -> bool:
     return "RESOURCE_ERROR" in (remarks.get("error_type") or "")
 
 
+def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
+    """Parse a Dhan trade history CSV into raw trade dicts (same shape as API records)."""
+    import csv
+    import io
+
+    def _nc(name: str) -> str:
+        return name.lower().strip().replace(" ", "_").replace("-", "_").replace("/", "_")
+
+    def _find(sample: dict, candidates: list) -> str | None:
+        norm = {_nc(k): k for k in sample}
+        for c in candidates:
+            if _nc(c) in norm:
+                return norm[_nc(c)]
+        return None
+
+    def _parse_date(val: str) -> str | None:
+        val = val.strip()
+        for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d",
+                    "%m/%d/%Y", "%d-%b-%Y", "%d %b %Y"):
+            try:
+                return datetime.strptime(val, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        if " " in val:
+            return _parse_date(val.split()[0])
+        return None
+
+    try:
+        rows = list(csv.DictReader(io.StringIO(content)))
+    except Exception as e:
+        return [], f"CSV parse error: {e}"
+
+    if not rows:
+        return [], "CSV has no data rows"
+
+    s = rows[0]
+    c_sym    = _find(s, ["tradingSymbol","trading_symbol","symbol","instrument","scrip","description"])
+    c_tx     = _find(s, ["transactionType","transaction_type","trade_type","buy_sell","buysell","side","b_s","type"])
+    c_qty    = _find(s, ["tradedQuantity","traded_quantity","quantity","qty","trade_qty","executed_qty"])
+    c_price  = _find(s, ["tradedPrice","traded_price","price","rate","avg_price","trade_price","executed_price"])
+    c_date   = _find(s, ["trade_date","tradeDate","date","order_date","exchange_date","created_date"])
+    c_time   = _find(s, ["trade_time","tradeTime","time","order_time","exchange_time","created_time"])
+    c_seg    = _find(s, ["exchangeSegment","exchange_segment","segment","exchange"])
+    c_oid    = _find(s, ["orderId","order_id","orderid","trade_id","tradeid","trade_no.","trade_no"])
+    c_opt    = _find(s, ["drvOptionType","option_type","optionType","call_put","put_call"])
+    c_strike = _find(s, ["drvStrikePrice","strike_price","strike","strikeprice"])
+    c_expiry = _find(s, ["drvExpiryDate","expiry_date","expiry","expirydate"])
+    c_create = _find(s, ["createTime","create_time","created_time","timestamp","datetime","order_date_time"])
+    c_sid    = _find(s, ["securityId","security_id","sec_id"])
+
+    if not c_sym:
+        return [], "Cannot detect tradingSymbol column — check CSV format"
+
+    result = []
+    for row in rows:
+        def g(col):
+            return (row.get(col) or "").strip() if col else ""
+
+        create_val = g(c_create)
+        if create_val and len(create_val) >= 16:
+            d_part = _parse_date(create_val[:10]) or create_val[:10]
+            t_part = create_val[11:19] if len(create_val) >= 19 else (create_val[11:] + ":00")[:8]
+            create_time = f"{d_part} {t_part}"
+        else:
+            d = _parse_date(g(c_date))
+            if not d:
+                continue
+            t = g(c_time).strip() or "09:15:00"
+            if len(t) == 5:
+                t += ":00"
+            create_time = f"{d} {t}"
+
+        sym = g(c_sym)
+        tx = g(c_tx).upper()
+        if tx in ("B", "BUY", "LONG", "1"):     tx = "BUY"
+        elif tx in ("S", "SELL", "SHORT", "-1"): tx = "SELL"
+
+        try:
+            qty = int(float(g(c_qty).replace(",", "")))
+        except ValueError:
+            continue
+        if qty <= 0:
+            continue
+
+        try:
+            price = float(g(c_price).replace(",", ""))
+        except ValueError:
+            price = 0.0
+
+        seg = g(c_seg) or ("BSE_FNO" if "SENSEX" in sym.upper() else "NSE_FNO")
+        oid = g(c_oid)
+        sid = g(c_sid) or sym  # use trading symbol as fallback security ID for grouping
+
+        result.append({
+            "tradingSymbol":   sym,
+            "transactionType": tx,
+            "tradedQuantity":  qty,
+            "tradedPrice":     price,
+            "createTime":      create_time,
+            "orderId":         oid,
+            "exchangeSegment": seg,
+            "drvOptionType":   g(c_opt),
+            "drvStrikePrice":  g(c_strike),
+            "drvExpiryDate":   g(c_expiry),
+            "securityId":      sid,
+        })
+
+    return result, ""
+
+
+def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict:
+    """Dedup, filter options, pair SELL/BUY, insert into DB. Returns result dict."""
+    diag: dict = dict(extra_diag or {})
+    today_str = str(date.today())
+
+    seen: set = set()
+    deduped = []
+    for t in raw:
+        key = (t.get("orderId") or "", t.get("exchangeTradeId") or t.get("exchangeOrderId") or "")
+        if key[0] or key[1]:
+            if key in seen:
+                continue
+            seen.add(key)
+        deduped.append(t)
+    raw = deduped
+
+    opts = [t for t in raw if _is_option(t)]
+    logger.info("Total raw=%d (after dedup)  options=%d", len(raw), len(opts))
+
+    if raw and not opts:
+        logger.warning("No options detected. Sample record: %s", raw[0])
+        diag["sample_non_option"] = raw[0]
+    elif opts:
+        logger.info("Sample option: %s", opts[0])
+
+    groups: dict[tuple, list] = defaultdict(list)
+    for t in opts:
+        ts  = t.get("createTime") or t.get("exchangeTime") or t.get("orderCreateTime") or ""
+        sid = str(t.get("securityId") or t.get("security_id") or "")
+        trade_date = ts[:10] if len(ts) >= 10 else today_str
+        groups[(trade_date, sid)].append(t)
+
+    imported = skipped = 0
+    db = get_db()
+
+    for (trade_date, sid), group in groups.items():
+        sells = sorted(
+            [t for t in group if _tx_type(t) == "SELL"],
+            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
+        )
+        buys = sorted(
+            [t for t in group if _tx_type(t) == "BUY"],
+            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
+        )
+
+        for sell in sells:
+            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
+            entry_time  = ts_str[11:19] if len(ts_str) >= 19 else ""
+            entry_price = float(sell.get("tradedPrice") or sell.get("price") or 0)
+            qty         = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
+            opt_raw     = (sell.get("drvOptionType") or "").upper()
+            opt_type    = "CE" if opt_raw in ("CALL", "CE") else "PE"
+            if opt_raw not in ("CALL", "PUT", "CE", "PE"):
+                sym_u = (sell.get("tradingSymbol") or sell.get("customSymbol") or "").upper()
+                opt_type = "CE" if (sym_u.endswith("CE") or " CALL " in sym_u) else "PE"
+            strike      = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
+            expiry      = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
+            sym         = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
+            exseg       = sell.get("exchangeSegment") or "NSE_FNO"
+            underlying  = _underlying(sym, exseg)
+            lot_size    = LOT_SIZES.get(underlying, 1)
+            lots        = round(qty / lot_size, 2) if lot_size else float(qty)
+            order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
+
+            exit_t = next(
+                (
+                    b for b in buys
+                    if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
+                    and (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str
+                ),
+                None,
+            )
+            if exit_t:
+                buys.remove(exit_t)
+
+            exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
+            exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
+            exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
+            pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
+            status     = "CLOSED" if exit_t else "OPEN"
+
+            with _db_lock:
+                if db.execute(
+                    "SELECT id FROM trades WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
+                    (trade_date, sid, entry_time, order_id),
+                ).fetchone():
+                    skipped += 1
+                    continue
+
+                db.execute(
+                    """
+                    INSERT INTO trades
+                        (date, underlying, option_type, strike, expiry,
+                         entry_time, entry_price, exit_time, exit_price,
+                         quantity, lot_size, lots, pnl, status,
+                         security_id, exchange_segment, dhan_order_id, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        trade_date, underlying, opt_type, strike, expiry,
+                        entry_time, entry_price, exit_time, exit_price,
+                        qty, lot_size, lots, pnl, status,
+                        sid, exseg, order_id, datetime.now().timestamp(),
+                    ),
+                )
+                db.commit()
+                imported += 1
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "total_raw": len(raw),
+        "total_options": len(opts),
+        "diag": diag,
+    }
+
+
 # ── Dhan import ──────────────────────────────────────────────────────────────────
 
 
@@ -219,114 +446,7 @@ def _do_import(from_date: str, to_date: str) -> dict:
             logger.warning("get_trade_book failed: %s", e)
             diag["tradebook_error"] = str(e)
 
-    seen: set = set()
-    deduped = []
-    for t in raw:
-        key = (t.get("orderId") or "", t.get("exchangeTradeId") or t.get("exchangeOrderId") or "")
-        if key not in seen:
-            seen.add(key)
-            deduped.append(t)
-    raw = deduped
-
-    opts = [t for t in raw if _is_option(t)]
-    logger.info("Total raw=%d (after dedup)  options=%d", len(raw), len(opts))
-
-    if raw and not opts:
-        logger.warning("No options detected. Sample record: %s", raw[0])
-        diag["sample_non_option"] = raw[0]
-    elif opts:
-        logger.info("Sample option: %s", opts[0])
-
-    groups: dict[tuple, list] = defaultdict(list)
-    for t in opts:
-        ts = t.get("createTime") or t.get("exchangeTime") or t.get("orderCreateTime") or ""
-        sid = str(t.get("securityId") or t.get("security_id") or "")
-        trade_date = ts[:10] if len(ts) >= 10 else today_str
-        groups[(trade_date, sid)].append(t)
-
-    imported = skipped = 0
-    db = get_db()
-
-    for (trade_date, sid), group in groups.items():
-        sells = sorted(
-            [t for t in group if _tx_type(t) == "SELL"],
-            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
-        )
-        buys = sorted(
-            [t for t in group if _tx_type(t) == "BUY"],
-            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
-        )
-
-        for sell in sells:
-            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
-            entry_time  = ts_str[11:19] if len(ts_str) >= 19 else ""
-            entry_price = float(sell.get("tradedPrice") or sell.get("price") or 0)
-            qty         = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
-            opt_raw     = (sell.get("drvOptionType") or "").upper()
-            opt_type    = "CE" if opt_raw in ("CALL", "CE") else "PE"
-            if opt_raw not in ("CALL", "PUT", "CE", "PE"):
-                sym_u = (sell.get("tradingSymbol") or sell.get("customSymbol") or "").upper()
-                opt_type = "CE" if (sym_u.endswith("CE") or " CALL " in sym_u) else "PE"
-            strike      = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
-            expiry      = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
-            sym         = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
-            exseg       = sell.get("exchangeSegment") or "NSE_FNO"
-            underlying  = _underlying(sym, exseg)
-            lot_size    = LOT_SIZES.get(underlying, 1)
-            lots        = round(qty / lot_size, 2) if lot_size else float(qty)
-            order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
-
-            exit_t = next(
-                (
-                    b for b in buys
-                    if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
-                    and (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str
-                ),
-                None,
-            )
-            if exit_t:
-                buys.remove(exit_t)
-
-            exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
-            exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
-            exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
-            pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
-            status     = "CLOSED" if exit_t else "OPEN"
-
-            with _db_lock:
-                if db.execute(
-                    "SELECT id FROM trades WHERE date=? AND security_id=? AND entry_time=? AND dhan_order_id=?",
-                    (trade_date, sid, entry_time, order_id),
-                ).fetchone():
-                    skipped += 1
-                    continue
-
-                db.execute(
-                    """
-                    INSERT INTO trades
-                        (date, underlying, option_type, strike, expiry,
-                         entry_time, entry_price, exit_time, exit_price,
-                         quantity, lot_size, lots, pnl, status,
-                         security_id, exchange_segment, dhan_order_id, created_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        trade_date, underlying, opt_type, strike, expiry,
-                        entry_time, entry_price, exit_time, exit_price,
-                        qty, lot_size, lots, pnl, status,
-                        sid, exseg, order_id, datetime.now().timestamp(),
-                    ),
-                )
-                db.commit()
-                imported += 1
-
-    return {
-        "imported": imported,
-        "skipped": skipped,
-        "total_raw": len(raw),
-        "total_options": len(opts),
-        "diag": diag,
-    }
+    return _process_raw_trades(raw, diag)
 
 
 def import_from_dhan(from_date: str, to_date: str) -> dict:
@@ -631,6 +751,26 @@ def api_import():
         return jsonify({"ok": False, "error": str(e)}), 400
 
 
+@app.route("/api/import-csv", methods=["POST"])
+def api_import_csv():
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"ok": False, "error": "No file uploaded"}), 400
+    try:
+        content = f.read().decode("utf-8-sig")  # strip BOM if present
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Could not read file: {e}"}), 400
+    raw, parse_err = _parse_csv_trades(content)
+    if parse_err:
+        return jsonify({"ok": False, "error": parse_err}), 400
+    try:
+        result = _process_raw_trades(raw)
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        logger.error("import-csv: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
 @app.route("/api/refresh-token", methods=["POST"])
 def api_refresh_token():
     import token_manager  # noqa: PLC0415
@@ -765,6 +905,10 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
                        color: var(--text); padding: 6px 9px; border-radius: 4px;
                        font: inherit; margin-bottom: 12px }}
 .mfooter {{ display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px }}
+.mtabs {{ display:flex; gap:4px; margin-bottom:14px }}
+.mtab {{ background:var(--s2); border:1px solid var(--border); color:var(--dim); padding:4px 12px; border-radius:3px; cursor:pointer; font:inherit; font-size:12px }}
+.mtab.on {{ color:var(--text); border-color:var(--acc); background:rgba(124,77,255,.12) }}
+input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--border); color:var(--text); padding:6px 9px; border-radius:4px; font:inherit; margin-bottom:8px; cursor:pointer }}
 .btn  {{ padding: 6px 16px; border-radius: 4px; border: none; cursor: pointer; font: inherit; font-size: 12px }}
 .btnp {{ background: var(--acc); color: #fff }}
 .btns {{ background: var(--s2); color: var(--text); border: 1px solid var(--border) }}
@@ -795,6 +939,7 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
     <div class="chip pe on" data-v="PE" onclick="togT(this)">PE</div>
   </div>
   <span id="ivl">&#8212;</span>
+  <span style="font-size:9px;color:#2a2a2a">scroll=pan&#160;&#183;&#160;ctrl+scroll=zoom&#160;&#183;&#160;drag=pan</span>
   <button class="hbtn" onclick="loadSample()">Test Chart</button>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -827,18 +972,37 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
 </div>
 <div id="ov" onclick="if(event.target===this)closeImp()">
   <div id="modal">
-    <h2>Import Trades from Dhan</h2>
-    <div class="fr">
-      <label>From Date</label>
-      <input type="date" id="mFrom">
-      <label>To Date</label>
-      <input type="date" id="mTo">
+    <h2>Import Trades</h2>
+    <div class="mtabs">
+      <button class="mtab on" id="mtab-api" onclick="switchTab('api')">Dhan API</button>
+      <button class="mtab" id="mtab-csv" onclick="switchTab('csv')">CSV File</button>
     </div>
-    <div id="mres"></div>
-    <div id="mdiag"></div>
-    <div class="mfooter">
-      <button class="btn btns" onclick="closeImp()">Cancel</button>
-      <button class="btn btnp" id="mBtn" onclick="doImport()">Import</button>
+    <div id="mpanel-api">
+      <div class="fr">
+        <label>From Date</label>
+        <input type="date" id="mFrom">
+        <label>To Date</label>
+        <input type="date" id="mTo">
+      </div>
+      <div id="mres"></div>
+      <div id="mdiag"></div>
+      <div class="mfooter">
+        <button class="btn btns" onclick="closeImp()">Cancel</button>
+        <button class="btn btnp" id="mBtn" onclick="doImport()">Import</button>
+      </div>
+    </div>
+    <div id="mpanel-csv" style="display:none">
+      <div class="fr">
+        <label>Trade History CSV (Dhan export)</label>
+        <input type="file" id="mCsvFile" accept=".csv">
+      </div>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:12px">Dhan app &#8594; Trade History &#8594; Download CSV</div>
+      <div id="mres2" style="font-size:12px;min-height:18px;word-break:break-word"></div>
+      <div id="mdiag2" style="margin-top:8px;font-size:10px;color:var(--dim);max-height:120px;overflow-y:auto;background:var(--s2);border-radius:4px;padding:6px 8px;white-space:pre-wrap;display:none"></div>
+      <div class="mfooter">
+        <button class="btn btns" onclick="closeImp()">Cancel</button>
+        <button class="btn btnp" id="mBtn2" onclick="doImportCsv()">Upload &amp; Import</button>
+      </div>
     </div>
   </div>
 </div>
@@ -944,14 +1108,24 @@ class CandleChart {{
   _wheel(e) {{
     var c=this.candles; if(!c.length)return;
     var vis=this._vis(), span=vis.length; if(!span)return;
-    var newSpan=Math.max(20,Math.min(c.length,Math.round(span*(e.deltaY>0?1.33:0.75))));
-    var r=this.cv.getBoundingClientRect();
-    var relX=(e.clientX-r.left)/r.width;
-    var pivot=this.vs+Math.round(span*relX);
-    var ns=Math.max(0,Math.round(pivot-newSpan*relX));
-    var ne=ns+newSpan;
-    if(ne>=c.length){{ne=c.length;ns=Math.max(0,c.length-newSpan);}}
-    this.vs=ns; this.ve=(ne>=c.length)?0:ne;
+    var norm=e.deltaMode===1?e.deltaY*40:(e.deltaMode===2?e.deltaY*400:e.deltaY);
+    if(this.ve===0||e.ctrlKey){{
+      var factor=norm>0?1.33:0.75;
+      var newSpan=Math.max(20,Math.min(c.length,Math.round(span*factor)));
+      var r=this.cv.getBoundingClientRect();
+      var relX=(e.clientX-r.left)/r.width;
+      var pivot=this.vs+Math.round(span*relX);
+      var ns=Math.max(0,Math.round(pivot-newSpan*relX));
+      var ne=ns+newSpan;
+      if(ne>=c.length){{ne=c.length;ns=Math.max(0,c.length-newSpan);}}
+      this.vs=ns; this.ve=(ne>=c.length)?0:ne;
+    }} else {{
+      var bw=Math.max(1,this._bw());
+      var shift=Math.round(norm/bw);
+      var n=c.length;
+      var ns=Math.max(0,Math.min(n-span,this.vs+shift));
+      this.vs=ns; this.ve=(ns+span>=n)?0:ns+span;
+    }}
     this._draw();
   }}
   _draw() {{
@@ -1200,6 +1374,12 @@ async function saveNote(id,notes){{
     if(t)t.notes=notes;
   }}catch(e){{console.error(e);}}
 }}
+function switchTab(t){{
+  document.getElementById('mpanel-api').style.display=t==='api'?'':'none';
+  document.getElementById('mpanel-csv').style.display=t==='csv'?'':'none';
+  document.getElementById('mtab-api').classList.toggle('on',t==='api');
+  document.getElementById('mtab-csv').classList.toggle('on',t==='csv');
+}}
 function openImp(){{
   var t=new Date().toISOString().slice(0,10);
   document.getElementById('mFrom').value=t;
@@ -1207,6 +1387,10 @@ function openImp(){{
   document.getElementById('mres').textContent='';
   document.getElementById('mdiag').style.display='none';
   document.getElementById('mdiag').textContent='';
+  document.getElementById('mres2').textContent='';
+  document.getElementById('mdiag2').style.display='none';
+  document.getElementById('mdiag2').textContent='';
+  switchTab('api');
   document.getElementById('ov').classList.add('show');
 }}
 function closeImp(){{document.getElementById('ov').classList.remove('show');}}
@@ -1229,6 +1413,29 @@ async function doImport(){{
     }}else{{res.style.color='#ef5350';res.textContent='Error: '+d.error;}}
   }}catch(e){{res.style.color='#ef5350';res.textContent='Network error: '+e.message;}}
   btn.disabled=false; btn.textContent='Import';
+}}
+async function doImportCsv(){{
+  var inp=document.getElementById('mCsvFile');
+  var btn=document.getElementById('mBtn2');
+  var res=document.getElementById('mres2');
+  var diag=document.getElementById('mdiag2');
+  if(!inp.files||!inp.files.length){{res.style.color='#ef5350';res.textContent='Select a CSV file first';return;}}
+  btn.disabled=true; btn.textContent='Importing...'; res.style.color=''; res.textContent='Reading...';
+  diag.style.display='none'; diag.textContent='';
+  var fd=new FormData(); fd.append('file',inp.files[0]);
+  try{{
+    var r=await fetch('/api/import-csv',{{method:'POST',body:fd}});
+    var d=await r.json();
+    if(d.ok){{
+      res.style.color='#4caf50';
+      res.textContent=d.imported+' new, '+d.skipped+' stored ('+d.total_options+' options / '+d.total_raw+' rows)';
+      if((d.total_raw===0||d.total_options===0)&&d.diag){{
+        diag.textContent=JSON.stringify(d.diag,null,2); diag.style.display='block';
+      }}
+      if(d.imported>0)loadTrades();
+    }}else{{res.style.color='#ef5350';res.textContent='Error: '+d.error;}}
+  }}catch(e){{res.style.color='#ef5350';res.textContent='Error: '+e.message;}}
+  btn.disabled=false; btn.textContent='Upload & Import';
 }}
 async function doRefreshToken(){{
   var btns=document.querySelectorAll('.hbtn');
