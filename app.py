@@ -362,7 +362,6 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             lots        = round(qty / lot_size, 2) if lot_size else float(qty)
             order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
 
-            is_hedge = False
             exit_t = next(
                 (
                     b for b in buys
@@ -381,11 +380,8 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 ]
                 if before:
                     exit_t = max(before, key=lambda b: b.get("createTime") or b.get("orderCreateTime") or "")
-                    is_hedge = True
             if exit_t:
                 buys.remove(exit_t)
-            if is_hedge:
-                continue  # hedge leg — consume the BUY but don't store on chart
 
             exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
             exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
@@ -1254,7 +1250,7 @@ class CandleChart {{
     for (var i=0;i<vis.length;i++) {{
       if (i%step!==0) continue;
       var dt=new Date(vis[i].time*1000);
-      var lbl=(dt.getHours()<10?'0':'')+dt.getHours()+':'+(dt.getMinutes()<10?'0':'')+dt.getMinutes();
+      var lbl=(dt.getUTCHours()<10?'0':'')+dt.getUTCHours()+':'+(dt.getUTCMinutes()<10?'0':'')+dt.getUTCMinutes();
       ctx.fillText(lbl,xOf(i),H-6);
     }}
     if (this.mx>=0 && this.mx<n) {{
@@ -1266,6 +1262,15 @@ class CandleChart {{
       ctx.fillStyle=c2.close>=c2.open?'#26a69a':'#ef5350';
       ctx.font='bold 10px monospace'; ctx.textAlign='left';
       ctx.fillText(c2.close.toFixed(1),PL+CW+5,yOf(c2.close)+4);
+      var dt2=new Date(c2.time*1000);
+      var hh=dt2.getUTCHours(),mm=dt2.getUTCMinutes(),ss=dt2.getUTCSeconds();
+      var tStr=(hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm+':'+(ss<10?'0':'')+ss;
+      ctx.font='10px monospace';
+      var tw=ctx.measureText(tStr).width+8;
+      var tx=Math.max(PL,Math.min(PL+CW-tw,xc-tw/2));
+      ctx.fillStyle='#222'; ctx.fillRect(tx,H-PB,tw,14);
+      ctx.fillStyle='#ccc'; ctx.textAlign='left';
+      ctx.fillText(tStr,tx+4,H-PB+10);
     }}
   }}
 }}
