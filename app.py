@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v11"
+APP_VERSION = "v12"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
 
 LOT_SIZES = {
-    "NIFTY": 75, "SENSEX": 10,
-    "FINNIFTY": 40, "MIDCPNIFTY": 50,
+    "NIFTY": 75, "BANKNIFTY": 30, "SENSEX": 20,
+    "FINNIFTY": 65, "MIDCPNIFTY": 75,
 }
 
 DHAN_INDEX_IDS = {
@@ -1018,6 +1018,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 ::-webkit-scrollbar {{ width: 5px; height: 5px }}
 ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px }}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <div id="bar">
@@ -1042,7 +1043,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip on" data-v="LONG"  onclick="togD(this)">Hedge</div>
   </div>
   <span id="ivl">&#8212;</span>
-  <span style="font-size:9px;color:#2a2a2a">scroll=pan&#160;&#183;&#160;ctrl+scroll=zoom&#160;&#183;&#160;drag=pan</span>
+  <span style="font-size:9px;color:#2a2a2a">scroll=pan&#160;&#183;&#160;ctrl+scroll=zoom</span>
   <button class="hbtn" onclick="loadSample()">Test Chart</button>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -1129,184 +1130,6 @@ window.addEventListener('unhandledrejection', function(e) {{
 <!-- Main app -->
 <script>
 (function(){{ var e=document.getElementById('jss'); if(e){{ e.textContent='JS OK'; e.style.color='#4caf50'; }} }})();
-class CandleChart {{
-  constructor(container) {{
-    var cv = document.createElement('canvas');
-    cv.style.cssText = 'position:absolute;inset:0;display:block;cursor:crosshair;';
-    container.appendChild(cv);
-    this.cv = cv;
-    this.ctx = cv.getContext('2d');
-    this.candles = [];
-    this.markers = [];
-    this.vs = 0;
-    this.ve = 0;
-    this.mx = -1;
-    this._drag = false;
-    this._dragX = 0;
-    this._dragVs = 0;
-    this._dragVe = 0;
-    var me = this;
-    new ResizeObserver(function() {{ me._fit(); }}).observe(container);
-    cv.addEventListener('mousedown', function(e) {{ me._mdown(e); }});
-    cv.addEventListener('mousemove', function(e) {{ me._mmove(e); }});
-    cv.addEventListener('mouseup',   function()  {{ me._mup(); }});
-    cv.addEventListener('mouseleave',function()  {{ me.mx=-1; me._drag=false; me.cv.style.cursor='crosshair'; me._draw(); }});
-    cv.addEventListener('wheel', function(e) {{ me._wheel(e); e.preventDefault(); }}, {{passive:false}});
-    this._fit();
-  }}
-  _fit() {{
-    var cv = this.cv, p = cv.parentElement;
-    var w = p.clientWidth, h = p.clientHeight;
-    if (w > 0 && h > 0) {{ cv.width = w; cv.height = h; this._draw(); }}
-  }}
-  setData(d) {{
-    this.candles = d.slice().sort(function(a,b){{return a.time-b.time;}});
-    this.vs = 0; this.ve = 0; this._draw();
-  }}
-  setMarkers(m) {{
-    this.markers = m.slice().sort(function(a,b){{return a.time-b.time;}}); this._draw();
-  }}
-  timeScale() {{
-    var me = this;
-    return {{
-      fitContent: function() {{ me.vs=0; me.ve=0; me._draw(); }},
-      setVisibleRange: function(r) {{
-        var c=me.candles, s=0;
-        while (s<c.length && c[s].time<r.from-300) s++;
-        var e=c.length;
-        for (var i=s;i<c.length;i++) {{ if (c[i].time>r.to+5400) {{ e=i; break; }} }}
-        me.vs=Math.max(0,s); me.ve=(e<c.length?e:0); me._draw();
-      }}
-    }};
-  }}
-  _vis() {{ return this.ve>0 ? this.candles.slice(this.vs,this.ve) : this.candles.slice(this.vs); }}
-  _bw()  {{ var vis=this._vis(); return vis.length ? (this.cv.width-68)/vis.length : 1; }}
-  _mdown(e) {{
-    this._drag=true; this._dragX=e.clientX;
-    var c=this.candles, n=c.length;
-    if(this.ve===0 && n>0){{
-      var defSpan=Math.min(n,200);
-      this.vs=Math.max(0,n-defSpan); this.ve=n;
-    }}
-    this._dragVs=this.vs;
-    this._dragVe=(this.ve>0?this.ve:n);
-    this.cv.style.cursor='grabbing';
-    this._draw();
-  }}
-  _mmove(e) {{
-    var r=this.cv.getBoundingClientRect();
-    var cx=(e.clientX-r.left)*this.cv.width/r.width;
-    var vis=this._vis(); if(!vis.length)return;
-    var bw=this._bw();
-    this.mx=Math.max(0,Math.min(vis.length-1,Math.floor((cx-10)/bw)));
-    if(this._drag){{
-      var shift=Math.round((this._dragX-e.clientX)/Math.max(1,bw));
-      var n=this.candles.length, span=this._dragVe-this._dragVs;
-      var ns=Math.max(0,Math.min(n-span,this._dragVs+shift));
-      this.vs=ns; this.ve=(ns+span>=n)?0:ns+span;
-    }}
-    this._draw();
-  }}
-  _mup() {{ this._drag=false; this.cv.style.cursor='crosshair'; }}
-  _wheel(e) {{
-    var c=this.candles; if(!c.length)return;
-    var vis=this._vis(), span=vis.length; if(!span)return;
-    var norm=e.deltaMode===1?e.deltaY*40:(e.deltaMode===2?e.deltaY*400:e.deltaY);
-    if(this.ve===0||e.ctrlKey){{
-      var factor=norm>0?1.33:0.75;
-      var newSpan=Math.max(20,Math.min(c.length,Math.round(span*factor)));
-      var r=this.cv.getBoundingClientRect();
-      var relX=(e.clientX-r.left)/r.width;
-      var pivot=this.vs+Math.round(span*relX);
-      var ns=Math.max(0,Math.round(pivot-newSpan*relX));
-      var ne=ns+newSpan;
-      if(ne>=c.length){{ne=c.length;ns=Math.max(0,c.length-newSpan);}}
-      this.vs=ns; this.ve=(ne>=c.length)?0:ne;
-    }} else {{
-      var bw=Math.max(1,this._bw());
-      var shift=Math.round(norm/bw);
-      var n=c.length;
-      var ns=Math.max(0,Math.min(n-span,this.vs+shift));
-      this.vs=ns; this.ve=(ns+span>=n)?0:ns+span;
-    }}
-    this._draw();
-  }}
-  _draw() {{
-    var cv=this.cv, ctx=this.ctx;
-    var W=cv.width, H=cv.height;
-    if (!W||!H) return;
-    ctx.fillStyle='#0d0d0d'; ctx.fillRect(0,0,W,H);
-    var vis=this._vis();
-    if (!vis.length) return;
-    var PL=10,PR=58,PT=12,PB=24;
-    var CW=W-PL-PR, CH=H-PT-PB, n=vis.length;
-    var bw=CW/n;
-    var lo=vis[0].low, hi=vis[0].high;
-    for (var k=1;k<vis.length;k++) {{ if(vis[k].low<lo)lo=vis[k].low; if(vis[k].high>hi)hi=vis[k].high; }}
-    var pad=(hi-lo)*0.06||5, mn=lo-pad, mx=hi+pad;
-    var xOf=function(i){{return PL+(i+0.5)*bw;}};
-    var yOf=function(p){{return PT+(1-(p-mn)/(mx-mn))*CH;}};
-    ctx.strokeStyle='#181818'; ctx.lineWidth=1;
-    for (var i=0;i<=5;i++) {{ var yp=PT+CH*i/5; ctx.beginPath();ctx.moveTo(PL,yp);ctx.lineTo(PL+CW,yp);ctx.stroke(); }}
-    var bdy=Math.max(1,bw-1);
-    for (var i=0;i<vis.length;i++) {{
-      var c=vis[i], up=c.close>=c.open, col=up?'#26a69a':'#ef5350', xc=xOf(i);
-      ctx.strokeStyle=col; ctx.lineWidth=1;
-      ctx.beginPath(); ctx.moveTo(xc,yOf(c.high)); ctx.lineTo(xc,yOf(c.low)); ctx.stroke();
-      ctx.fillStyle=col;
-      var y1=yOf(Math.max(c.open,c.close)), y2=yOf(Math.min(c.open,c.close));
-      ctx.fillRect(xc-bdy/2,y1,bdy,Math.max(1,y2-y1));
-    }}
-    ctx.font='9px monospace';
-    for (var j=0;j<this.markers.length;j++) {{
-      var m=this.markers[j];
-      var idx=-1;
-      for (var i=0;i<vis.length;i++) {{ if(vis[i].time>=m.time){{idx=i;break;}} }}
-      if (idx<0) idx=vis.length-1;
-      var xm=xOf(idx), cv2=vis[idx];
-      var above=m.position==='aboveBar';
-      var ya=above?yOf(cv2.high)-16:yOf(cv2.low)+16;
-      ctx.fillStyle=m.color||'#fff';
-      ctx.beginPath();
-      if (above) {{ ctx.moveTo(xm,ya+8);ctx.lineTo(xm-4,ya+2);ctx.lineTo(xm+4,ya+2); }}
-      else       {{ ctx.moveTo(xm,ya-8);ctx.lineTo(xm-4,ya-2);ctx.lineTo(xm+4,ya-2); }}
-      ctx.fill();
-      if (m.text) {{ ctx.textAlign='center'; ctx.fillText(String(m.text).slice(0,14),xm,above?ya-1:ya+13); }}
-    }}
-    ctx.font='10px monospace'; ctx.fillStyle='#555'; ctx.textAlign='left';
-    for (var i=0;i<=5;i++) {{
-      var p=mn+(mx-mn)*(1-i/5);
-      ctx.fillText(Math.round(p),PL+CW+4,PT+CH*i/5+4);
-    }}
-    ctx.textAlign='center'; ctx.fillStyle='#444';
-    var step=Math.max(1,Math.floor(n/8));
-    for (var i=0;i<vis.length;i++) {{
-      if (i%step!==0) continue;
-      var dt=new Date(vis[i].time*1000);
-      var lbl=(dt.getUTCHours()<10?'0':'')+dt.getUTCHours()+':'+(dt.getUTCMinutes()<10?'0':'')+dt.getUTCMinutes();
-      ctx.fillText(lbl,xOf(i),H-6);
-    }}
-    if (this.mx>=0 && this.mx<n) {{
-      var xc=xOf(this.mx), c2=vis[this.mx];
-      ctx.strokeStyle='#2a2a2a'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
-      ctx.beginPath(); ctx.moveTo(xc,PT); ctx.lineTo(xc,PT+CH); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle='#1a1a1a'; ctx.fillRect(PL+CW+2,yOf(c2.close)-8,54,16);
-      ctx.fillStyle=c2.close>=c2.open?'#26a69a':'#ef5350';
-      ctx.font='bold 10px monospace'; ctx.textAlign='left';
-      ctx.fillText(c2.close.toFixed(1),PL+CW+5,yOf(c2.close)+4);
-      var dt2=new Date(c2.time*1000);
-      var hh=dt2.getUTCHours(),mm=dt2.getUTCMinutes(),ss=dt2.getUTCSeconds();
-      var tStr=(hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm+':'+(ss<10?'0':'')+ss;
-      ctx.font='10px monospace';
-      var tw=ctx.measureText(tStr).width+8;
-      var tx=Math.max(PL,Math.min(PL+CW-tw,xc-tw/2));
-      ctx.fillStyle='#222'; ctx.fillRect(tx,H-PB,tw,14);
-      ctx.fillStyle='#ccc'; ctx.textAlign='left';
-      ctx.fillText(tStr,tx+4,H-PB+10);
-    }}
-  }}
-}}
 
 var _chartInst=null, chart=null, series=null;
 var curDate='', curU='NIFTY';
@@ -1324,10 +1147,39 @@ function hideChartMsg() {{ document.getElementById('chartMsg').classList.add('hi
 
 function initChart() {{
   try {{
-    _chartInst=new CandleChart(document.getElementById('chartEl'));
-    chart={{timeScale:function(){{return _chartInst.timeScale();}}}};
-    series={{setData:function(d){{_chartInst.setData(d);}},setMarkers:function(m){{_chartInst.setMarkers(m);}}}};
-    setChartMsg('Select a date to load chart data','');
+    var el = document.getElementById('chartEl');
+    _chartInst = LightweightCharts.createChart(el, {{
+      width: el.clientWidth || 800,
+      height: el.clientHeight || 400,
+      layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#888' }},
+      grid: {{ vertLines: {{ color: '#181818' }}, horzLines: {{ color: '#181818' }} }},
+      crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+      rightPriceScale: {{ borderColor: '#2a2a2a' }},
+      timeScale: {{ borderColor: '#2a2a2a', timeVisible: true, secondsVisible: false, rightOffset: 5 }},
+      handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true }},
+      handleScale: {{ mouseWheel: false, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
+    }});
+    series = _chartInst.addCandlestickSeries({{
+      upColor: '#26a69a', downColor: '#ef5350',
+      borderVisible: false,
+      wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    }});
+    chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
+    el.addEventListener('wheel', function(e) {{
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      var r = _chartInst.timeScale().getVisibleLogicalRange();
+      if (!r) return;
+      var factor = e.deltaY > 0 ? 1.2 : 0.83;
+      var mid = (r.from + r.to) / 2;
+      var half = (r.to - r.from) * 0.5 * factor;
+      _chartInst.timeScale().setVisibleLogicalRange({{ from: mid - half, to: mid + half }});
+    }}, {{ passive: false }});
+    new ResizeObserver(function() {{
+      var sz = el.getBoundingClientRect();
+      if (sz.width > 0 && sz.height > 0) _chartInst.resize(sz.width, sz.height);
+    }}).observe(el);
+    setChartMsg('Select a date to load chart data', '');
   }} catch(e) {{
     setChartMsg('Chart init error: '+e.message, e.stack||'');
   }}
@@ -1431,7 +1283,7 @@ function renderTrades(trades) {{
     var sel=selId===t.id?' sel':'';
     var nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
-      '<td>'+(t.entry_time?t.entry_time.slice(0,5):'--')+'</td>' +
+      '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,5):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,5):'')+'</td>' +
       '<td><span class="tag '+tc+'">'+t.option_type+'</span></td>' +
       '<td>'+sk+'</td><td>'+t.entry_price.toFixed(2)+'</td><td>'+ep+'</td>' +
       '<td>'+lts+'</td><td>'+pl+'</td>' +
