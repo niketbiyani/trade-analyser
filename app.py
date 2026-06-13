@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v52"
+APP_VERSION = "v53"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -799,34 +799,36 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
     return _parse_dhan_candles(raw_resp, day)
 
 
-def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> list[dict]:
+def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[dict], str]:
     """Fetch up to 3 previous trading days as warmup data.
 
-    Walks backwards from to_day, fetching one day at a time (Dhan requires
-    fromDate == toDate). Collects up to 3 days with actual data so RSI/MACD
-    have ~1125 warmup bars instead of ~375, ensuring indicators are converged
-    by the time trading-day candles begin.
+    Returns (candles, summary_log) where summary_log is a human-readable string
+    describing which days were fetched and which were skipped (and why).
     """
     current   = datetime.strptime(to_day, "%Y-%m-%d")
     cutoff    = datetime.strptime(from_day, "%Y-%m-%d")
     all_candles: list[dict] = []
     days_found = 0
+    log_parts: list[str] = []
     while current >= cutoff and days_found < 3:
         day_str = current.strftime("%Y-%m-%d")
         candles = _fetch_day_candles(idx, day_str)
         if candles:
-            all_candles = candles + all_candles  # prepend to keep chronological order
+            all_candles = candles + all_candles
             days_found += 1
+            log_parts.append(f"{day_str}: {len(candles)} candles")
             logger.info("Warmup day %d: %d candles from %s", days_found, len(candles), day_str)
         else:
+            log_parts.append(f"{day_str}: no data")
             logger.info("Warmup: no data for %s, trying earlier", day_str)
         current -= timedelta(days=1)
     if not all_candles:
         logger.warning("Warmup: no trading data found between %s and %s", from_day, to_day)
-    return all_candles
+    summary = " | ".join(log_parts) if log_parts else "no warmup data"
+    return all_candles, summary
 
 
-def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
+def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str, str]:
     u = underlying.upper()
     # Look back 10 calendar days for warmup — guarantees 3 trading days even across
     # long weekends and multi-day holidays (e.g. Diwali). Weekends + 1 holiday = 3 skip days;
@@ -846,7 +848,7 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
         candidates = [primary] + [c for c in candidates if c != primary]
 
     if not candidates:
-        return [], "1m", f"No index config for {u}"
+        return [], "1m", f"No index config for {u}", ""
 
     # Try each candidate until we get data for trade_date
     working_idx = None
@@ -865,14 +867,14 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
         return [], "1m", (
             f"No 1m chart data for {u} {trade_date} from Dhan. "
             "Check /api/debug-chart?underlying=" + u + "&date=" + trade_date
-        )
+        ), ""
 
     # Fetch up to 3 previous trading days as warmup so RSI/MACD are converged
     # by the time the trading-day candles start (~1125 bars vs ~375 for 1 day).
-    prev_candles = _fetch_warmup_candles(working_idx, warmup_from, warmup_to)
+    prev_candles, warmup_log = _fetch_warmup_candles(working_idx, warmup_from, warmup_to)
 
     all_candles = sorted(prev_candles + trade_candles, key=lambda c: c["time"])
-    return all_candles, "1m", ""
+    return all_candles, "1m", "", warmup_log
 
 
 def _make_test_candles(trade_date: str) -> list[dict]:
@@ -1109,8 +1111,8 @@ def api_notes(tid: int):
 def api_chart():
     u = request.args.get("underlying") or "NIFTY"
     d = request.args.get("date")       or str(date.today())
-    candles, interval, err = chart_candles(u, d)
-    return jsonify({"candles": candles, "interval": interval, "error": err})
+    candles, interval, err, warmup_log = chart_candles(u, d)
+    return jsonify({"candles": candles, "interval": interval, "error": err, "warmup_log": warmup_log})
 
 
 @app.route("/api/dates")
@@ -1502,15 +1504,28 @@ function updateIndicators(){{
 }}
 // ── Pane expand / collapse ────────────────────────────────────────────────────
 function togglePaneExpand(n){{
-  if(!_chartInst)return;
+  console.log('[pane] click n='+n+' chartInst='+!!_chartInst+' expandedPane='+_expandedPane);
+  if(!_chartInst){{ console.warn('[pane] no chart'); return; }}
+  var hasPanes=typeof _chartInst.panes==='function';
+  console.log('[pane] hasPanes='+hasPanes);
+  if(!hasPanes){{ console.warn('[pane] panes() not a function'); return; }}
   var panes=_chartInst.panes();
+  console.log('[pane] panes.length='+panes.length);
   if(!panes.length)return;
-  if(_expandedPane===n){{
-    _expandedPane=-1;
-    _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
-  }}else{{
-    _expandedPane=n;
-    panes.forEach(function(p,i){{p.setStretchFactor(i===n?7.4:0.1);}});
+  var hasSF=panes[0]&&typeof panes[0].setStretchFactor==='function';
+  console.log('[pane] hasSetStretchFactor='+hasSF);
+  try{{
+    if(_expandedPane===n){{
+      _expandedPane=-1;
+      _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
+    }}else{{
+      _expandedPane=n;
+      // Use extreme ratio so any working implementation is obvious
+      panes.forEach(function(p,i){{p.setStretchFactor(i===n?100:0.01);}});
+    }}
+    console.log('[pane] setStretchFactor done, expandedPane='+_expandedPane);
+  }}catch(e){{
+    console.error('[pane] setStretchFactor error:',e.message);
   }}
   _updatePaneBtns();
 }}
@@ -1583,6 +1598,7 @@ async function loadChart() {{
     var d=await r.json();
     candles=d.candles||[]; curInterval=d.interval||'1m';
     document.getElementById('ivl').textContent=d.interval||'--';
+    if(d.warmup_log) console.log('[warmup]', d.warmup_log);
     // Show all candles (warmup days + trade date) — warmup is off-screen left by default.
     // Visible range is pinned to today's trading hours; user can scroll left for context.
     series.setData(candles);
