@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v47"
+APP_VERSION = "v48"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1479,19 +1479,16 @@ function calcIndicators(data){{
 }}
 function updateIndicators(){{
   if(!candles.length||!_ema20s)return;
-  var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
-  function _td(a){{return a.filter(function(d){{return d.time>=_cut;}});}}
-  var todayCandles=candles.filter(function(c){{return c.time>=_cut;}});
-  // EMA resets daily (today-only candles) so no cross-day warmup curve.
-  // RSI/MACD use full 2-day array for warmup — needs ~35 bars to converge.
-  var indT=calcIndicators(todayCandles);
+  // Compute all indicators over all loaded candles (warmup days + today).
+  // Shows continuous EMA/RSI/MACD across all visible days.
   var ind=calcIndicators(candles);
-  _ema20s.setData(indT.ema20);_ema50s.setData(indT.ema50);
-  if(_rsiSeries)_rsiSeries.setData(_td(ind.rsi));
-  if(_macdHist){{_macdHist.setData(_td(ind.histogram));_macdLine.setData(_td(ind.macdLine));_macdSignal.setData(_td(ind.sigLine));}}
+  _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
+  if(_rsiSeries)_rsiSeries.setData(ind.rsi);
+  if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
   _candleMap={{}};candles.forEach(function(c){{_candleMap[c.time]=c.close;}});
-  _rsiMap={{}};_td(ind.rsi).forEach(function(d){{_rsiMap[d.time]=d.value;}});
-  _macdMap={{}};_td(ind.sigLine).forEach(function(d){{_macdMap[d.time]=d.value;}});
+  var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
+  _rsiMap={{}};ind.rsi.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_rsiMap[d.time]=d.value;}});
+  _macdMap={{}};ind.sigLine.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_macdMap[d.time]=d.value;}});
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
