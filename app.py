@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v41"
+APP_VERSION = "v42"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1435,15 +1435,18 @@ function initChart() {{
     _watchResize(_macdInst, macdEl);
 
     // ONE-WAY sync: main chart drives RSI/MACD only.
-    // Use logical range (bar indices) — more reliable than time range across separate pane instances.
-    function _syncMain(lr) {{
-      if (_syncingRange || !lr) return;
+    // Time-range sync is more robust than logical-range — works even when panes
+    // have slightly different bar counts (e.g. RSI gap at start without warmup).
+    function _syncMain() {{
+      if (_syncingRange) return;
+      var r = _chartInst.timeScale().getVisibleRange();
+      if (!r) return;
       _syncingRange = true;
-      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleLogicalRange(lr);  }} catch(x) {{}}
-      try {{ if(_macdInst) _macdInst.timeScale().setVisibleLogicalRange(lr); }} catch(x) {{}}
+      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(r);  }} catch(x) {{}}
+      try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(r); }} catch(x) {{}}
       _syncingRange = false;
     }}
-    _chartInst.timeScale().subscribeVisibleLogicalRangeChange(_syncMain);
+    _chartInst.timeScale().subscribeVisibleTimeRangeChange(_syncMain);
 
     // thin 1px crosshair overlay spanning all panes + time label at bottom
     var _xl=document.getElementById('xLine'), _xt=document.getElementById('xTime');
@@ -1493,13 +1496,15 @@ function calcIndicators(data){{
 }}
 function updateIndicators(){{
   if(!candles.length||!_ema20s)return;
-  var ind=calcIndicators(candles); // full 2-day array → accurate warmup
   var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
   function _td(a){{return a.filter(function(d){{return d.time>=_cut;}});}}
-  // Suppress sync callbacks while loading data — prevents RSI/MACD setData
-  // from triggering their own range changes that feedback into the main chart
+  var todayCandles=candles.filter(function(c){{return c.time>=_cut;}});
+  // EMA resets daily (today-only candles) so no cross-day warmup curve.
+  // RSI/MACD use full 2-day array for warmup — needs ~35 bars to converge.
+  var indT=calcIndicators(todayCandles);
+  var ind=calcIndicators(candles);
   _syncingRange=true;
-  _ema20s.setData(_td(ind.ema20));_ema50s.setData(_td(ind.ema50));
+  _ema20s.setData(indT.ema20);_ema50s.setData(indT.ema50);
   if(_rsiSeries)_rsiSeries.setData(_td(ind.rsi));
   if(_macdHist){{_macdHist.setData(_td(ind.histogram));_macdLine.setData(_td(ind.macdLine));_macdSignal.setData(_td(ind.sigLine));}}
   _syncingRange=false;
@@ -1567,13 +1572,13 @@ async function loadChart() {{
       hideChartMsg();
       updateIndicators();
       _chartInst.timeScale().fitContent();
-      // Explicit sync after fitContent using logical range — guarantees alignment on every load
+      // Explicit sync after fitContent — subscribeVisibleTimeRangeChange may not fire on initial fitContent
       setTimeout(function() {{
-        var _lr = _chartInst.timeScale().getVisibleLogicalRange();
-        if (_lr) {{
+        var _r = _chartInst.timeScale().getVisibleRange();
+        if (_r) {{
           _syncingRange = true;
-          try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleLogicalRange(_lr);  }} catch(x) {{}}
-          try {{ if(_macdInst) _macdInst.timeScale().setVisibleLogicalRange(_lr); }} catch(x) {{}}
+          try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(_r);  }} catch(x) {{}}
+          try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
           _syncingRange = false;
         }}
       }}, 50);
