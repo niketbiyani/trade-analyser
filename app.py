@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v42"
+APP_VERSION = "v43"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1571,17 +1571,17 @@ async function loadChart() {{
     if (candles.length) {{
       hideChartMsg();
       updateIndicators();
-      _chartInst.timeScale().fitContent();
-      // Explicit sync after fitContent — subscribeVisibleTimeRangeChange may not fire on initial fitContent
-      setTimeout(function() {{
-        var _r = _chartInst.timeScale().getVisibleRange();
-        if (_r) {{
-          _syncingRange = true;
-          try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(_r);  }} catch(x) {{}}
-          try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
-          _syncingRange = false;
-        }}
-      }}, 50);
+      // Pin all three panes to today's trading hours (9:00–15:35 IST-as-UTC).
+      // fitContent() uses EMA50 as leftmost anchor (starts at bar 49) and adds
+      // padding that creates a blank area before the first candle. Explicit range
+      // avoids this entirely and keeps all panes perfectly in sync from load.
+      var _y=+curDate.slice(0,4),_m=+curDate.slice(5,7)-1,_dd=+curDate.slice(8,10);
+      var _r={{from:Date.UTC(_y,_m,_dd,9,0,0)/1000, to:Date.UTC(_y,_m,_dd,15,35,0)/1000}};
+      _syncingRange=true;
+      try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
+      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(_r);  }} catch(x) {{}}
+      try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
+      _syncingRange=false;
     }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
