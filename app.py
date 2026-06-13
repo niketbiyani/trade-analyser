@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v37"
+APP_VERSION = "v38"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1542,6 +1542,16 @@ async function loadChart() {{
       hideChartMsg();
       updateIndicators();
       _chartInst.timeScale().fitContent();
+      // Explicit sync: subscribeVisibleLogicalRangeChange may not fire on initial fitContent
+      setTimeout(function() {{
+        var _sr = _chartInst.timeScale().getVisibleRange();
+        if (_sr) {{
+          _syncingRange = true;
+          try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(_sr);  }} catch(x) {{}}
+          try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(_sr); }} catch(x) {{}}
+          _syncingRange = false;
+        }}
+      }}, 50);
     }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
