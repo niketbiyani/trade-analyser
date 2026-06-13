@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v49"
+APP_VERSION = "v50"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1428,29 +1428,32 @@ function initChart() {{
     }} catch(x) {{ console.warn('Pane stretch not available:', x.message); }}
 
     // Double-click any pane to expand it; double-click again to restore.
-    el.addEventListener('dblclick', function(ev) {{
-      var panes = _chartInst.panes();
-      if (!panes.length) return;
-      var rect = el.getBoundingClientRect();
-      var yRatio = (ev.clientY - rect.top) / rect.height;
-      // Determine which pane was clicked from current stretch factors.
-      var curFactors = _expandedPane >= 0
-        ? _PANE_FACTORS.map(function(_,i){{return i===_expandedPane?7.4:0.1;}})
-        : _PANE_FACTORS;
-      var total=curFactors.reduce(function(a,b){{return a+b;}},0), cum=0, clicked=-1;
-      for(var i=0;i<curFactors.length;i++){{
-        cum+=curFactors[i]/total;
-        if(yRatio<cum){{clicked=i;break;}}
-      }}
-      if(clicked<0)clicked=curFactors.length-1;
-      if(_expandedPane===clicked){{
-        // Restore normal proportions
-        _expandedPane=-1;
-        _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
+    // Use subscribeClick to detect double-clicks — native dblclick events are consumed
+    // by the chart canvas before they can bubble to our container div.
+    var _lastClickT=0, _lastClickY=0;
+    _chartInst.subscribeClick(function(param){{
+      if(!param.point)return;
+      var now=Date.now();
+      if(now-_lastClickT<400 && Math.abs(param.point.y-_lastClickY)<40){{
+        // Double-click detected
+        var panes=_chartInst.panes();
+        if(!panes.length)return;
+        var yRatio=param.point.y/el.clientHeight;
+        var curFactors=_expandedPane>=0
+          ? _PANE_FACTORS.map(function(f,i){{return i===_expandedPane?7.4:0.1;}})
+          : _PANE_FACTORS;
+        var total=curFactors.reduce(function(a,b){{return a+b;}},0), cum=0, clicked=curFactors.length-1;
+        for(var i=0;i<curFactors.length;i++){{cum+=curFactors[i]/total;if(yRatio<cum){{clicked=i;break;}}}}
+        if(_expandedPane===clicked){{
+          _expandedPane=-1;
+          _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
+        }}else{{
+          _expandedPane=clicked;
+          panes.forEach(function(p,i){{p.setStretchFactor(i===clicked?7.4:0.1);}});
+        }}
+        _lastClickT=0;
       }}else{{
-        // Expand clicked pane
-        _expandedPane=clicked;
-        panes.forEach(function(p,i){{p.setStretchFactor(i===clicked?7.4:0.1);}});
+        _lastClickT=now; _lastClickY=param.point.y;
       }}
     }});
 
