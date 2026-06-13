@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v48"
+APP_VERSION = "v49"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1347,6 +1347,7 @@ var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
+var _PANE_FACTORS=[5,1.2,1.2], _expandedPane=-1;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -1421,10 +1422,37 @@ function initChart() {{
     // Pane proportions: main=5, RSI=1.2, MACD=1.2
     try {{
       var panes = _chartInst.panes();
-      if (panes[0]) panes[0].setStretchFactor(5);
-      if (panes[1]) panes[1].setStretchFactor(1.2);
-      if (panes[2]) panes[2].setStretchFactor(1.2);
+      if (panes[0]) panes[0].setStretchFactor(_PANE_FACTORS[0]);
+      if (panes[1]) panes[1].setStretchFactor(_PANE_FACTORS[1]);
+      if (panes[2]) panes[2].setStretchFactor(_PANE_FACTORS[2]);
     }} catch(x) {{ console.warn('Pane stretch not available:', x.message); }}
+
+    // Double-click any pane to expand it; double-click again to restore.
+    el.addEventListener('dblclick', function(ev) {{
+      var panes = _chartInst.panes();
+      if (!panes.length) return;
+      var rect = el.getBoundingClientRect();
+      var yRatio = (ev.clientY - rect.top) / rect.height;
+      // Determine which pane was clicked from current stretch factors.
+      var curFactors = _expandedPane >= 0
+        ? _PANE_FACTORS.map(function(_,i){{return i===_expandedPane?7.4:0.1;}})
+        : _PANE_FACTORS;
+      var total=curFactors.reduce(function(a,b){{return a+b;}},0), cum=0, clicked=-1;
+      for(var i=0;i<curFactors.length;i++){{
+        cum+=curFactors[i]/total;
+        if(yRatio<cum){{clicked=i;break;}}
+      }}
+      if(clicked<0)clicked=curFactors.length-1;
+      if(_expandedPane===clicked){{
+        // Restore normal proportions
+        _expandedPane=-1;
+        _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
+      }}else{{
+        // Expand clicked pane
+        _expandedPane=clicked;
+        panes.forEach(function(p,i){{p.setStretchFactor(i===clicked?7.4:0.1);}});
+      }}
+    }});
 
     chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
