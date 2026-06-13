@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v40"
+APP_VERSION = "v41"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -800,16 +800,24 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
 
 
 def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> list[dict]:
-    """Fetch warmup candles for a date range (single API call covering multiple trading days)."""
-    raw_resp, dhan_err = _raw_dhan_chart(
-        idx["security_id"], idx["exchange_segment"], idx["instrument_type"],
-        to_day, from_date=from_day
-    )
-    if dhan_err:
-        logger.warning("Warmup candles error [%s %s %s-%s]: %s",
-                       idx["security_id"], idx["exchange_segment"], from_day, to_day, dhan_err)
-        return []
-    return _parse_dhan_candles(raw_resp, from_day)
+    """Fetch warmup candles by trying single days backwards from to_day.
+
+    Uses individual day fetches (known to work with Dhan) rather than a range
+    call — Dhan's historical API requires fromDate == toDate. Stops at the first
+    day that has data, so Monday costs 3 calls (Sun→Sat→Fri) not 5.
+    """
+    current = datetime.strptime(to_day, "%Y-%m-%d")
+    cutoff  = datetime.strptime(from_day, "%Y-%m-%d")
+    while current >= cutoff:
+        day_str = current.strftime("%Y-%m-%d")
+        candles = _fetch_day_candles(idx, day_str)
+        if candles:
+            logger.info("Warmup: %d candles from %s", len(candles), day_str)
+            return candles
+        logger.info("Warmup: no data for %s, trying earlier", day_str)
+        current -= timedelta(days=1)
+    logger.warning("Warmup: no trading data found between %s and %s", from_day, to_day)
+    return []
 
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
