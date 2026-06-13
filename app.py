@@ -1228,7 +1228,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 </div>
 <div id="main">
   <div id="chartsArea">
-    <div id="xhairLine" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(150,150,150,0.4);pointer-events:none;display:none;z-index:5"></div>
+    <div id="xhairLine" style="position:absolute;top:0;bottom:0;width:8px;background:rgba(195,188,219,0.12);pointer-events:none;display:none;z-index:5;transform:translateX(-50%)"></div>
     <div id="xhairTime" style="position:absolute;bottom:0;padding:1px 5px;font-size:10px;color:#aaa;background:#141414;border:1px solid #333;border-radius:2px;pointer-events:none;display:none;z-index:6;transform:translateX(-50%);white-space:nowrap"></div>
     <div id="chartBox">
       <div id="chartEl"></div>
@@ -1348,11 +1348,16 @@ function _chartOpts(el, timeScaleOpts) {{
   return {{
     width:  el.clientWidth  || 800,
     height: el.clientHeight || 200,
-    layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#888' }},
-    grid:   {{ vertLines: {{ color: '#181818' }}, horzLines: {{ color: '#181818' }} }},
-    crosshair: {{ mode: 0 }},
-    rightPriceScale: {{ borderColor: '#2a2a2a' }},
-    timeScale: Object.assign({{ borderColor: '#2a2a2a', rightOffset: 5 }}, timeScaleOpts||{{}}),
+    layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#C3BCDB',
+               fontFamily: "'SF Mono', Consolas, monospace" }},
+    grid:   {{ vertLines: {{ color: '#1f1f2e' }}, horzLines: {{ color: '#1f1f2e' }} }},
+    crosshair: {{
+      mode: 0,
+      vertLine: {{ visible: false, labelVisible: false }},
+      horzLine: {{ color: '#9B7DFF', width: 1, style: 0, labelBackgroundColor: '#2a2564' }},
+    }},
+    rightPriceScale: {{ borderColor: '#71649C' }},
+    timeScale: Object.assign({{ borderColor: '#71649C', rightOffset: 3 }}, timeScaleOpts||{{}}),
     handleScroll: {{ mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true }},
     handleScale: {{ mouseWheel: true, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
   }};
@@ -1386,11 +1391,11 @@ function initChart() {{
       }}
       var b = param.seriesData.get(series);
       var hh = new Date(param.time * 1000).toISOString().slice(11, 16);
-      _leg.innerHTML = '<span style="color:#555">' + hh + '</span>'
+      _leg.innerHTML = '<span style="color:#C3BCDB">' + hh + '</span>'
         + ' &nbsp;O<span style="color:#aaa">' + b.open.toFixed(0) + '</span>'
         + ' H<span style="color:#26a69a">' + b.high.toFixed(0) + '</span>'
         + ' L<span style="color:#ef5350">' + b.low.toFixed(0) + '</span>'
-        + ' C<span style="color:#ccc">' + b.close.toFixed(0) + '</span>';
+        + ' C<span style="color:#e0e0e0">' + b.close.toFixed(0) + '</span>';
     }});
     setChartMsg('Select a date to load chart data', '');
   }} catch(e) {{
@@ -1403,8 +1408,8 @@ function initChart() {{
     var rsiEl = document.getElementById('rsiEl');
     _rsiInst   = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, {{ visible: false }}));
     _rsiSeries = _rsiInst.addLineSeries({{ color:'#9c27b0', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
-    _rsiSeries.createPriceLine({{ price:70, color:'#444', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
-    _rsiSeries.createPriceLine({{ price:30, color:'#444', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:70, color:'#3a3a5c', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:30, color:'#3a3a5c', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _watchResize(_rsiInst, rsiEl);
 
     var macdEl = document.getElementById('macdEl');
