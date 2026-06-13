@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v26"
+APP_VERSION = "v27"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1229,6 +1229,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 <div id="main">
   <div id="chartsArea">
     <div id="xhairLine" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(150,150,150,0.4);pointer-events:none;display:none;z-index:5"></div>
+    <div id="xhairTime" style="position:absolute;bottom:0;padding:1px 5px;font-size:10px;color:#aaa;background:#141414;border:1px solid #333;border-radius:2px;pointer-events:none;display:none;z-index:6;transform:translateX(-50%);white-space:nowrap"></div>
     <div id="chartBox">
       <div id="chartEl"></div>
       <div id="chartLegend" style="position:absolute;top:4px;left:8px;font-size:11px;color:#666;pointer-events:none;z-index:2;white-space:nowrap"></div>
@@ -1373,14 +1374,9 @@ function initChart() {{
     _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
     chart    = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
-    el.addEventListener('wheel', function(e) {{
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      var r = _chartInst.timeScale().getVisibleLogicalRange();
-      if (!r) return;
-      var f = e.deltaY > 0 ? 1.2 : 0.83, mid = (r.from+r.to)/2, half = (r.to-r.from)*0.5*f;
-      _chartInst.timeScale().setVisibleLogicalRange({{ from: mid-half, to: mid+half }});
-      // sub-charts sync via time range (not logical range) so bar count difference doesn't matter
+    // block browser page-zoom on ctrl+scroll; LW Charts' handleScale.mouseWheel handles actual zoom
+    document.getElementById('chartsArea').addEventListener('wheel', function(e) {{
+      if (e.ctrlKey) e.preventDefault();
     }}, {{ passive: false }});
     // OHLC legend — shows time and price at cursor position
     var _leg = document.getElementById('chartLegend');
@@ -1434,14 +1430,23 @@ function initChart() {{
     _syncTo(_rsiInst,   [_chartInst, _macdInst]);
     _syncTo(_macdInst,  [_chartInst, _rsiInst]);
 
-    // crosshair vertical line across all panes via CSS overlay
-    // use timeToCoordinate from main chart for pixel-accurate alignment across panes
+    // crosshair vertical line + time label across all panes via CSS overlay
+    // timeToCoordinate from main chart gives pixel-accurate x regardless of price-scale width
     var _xLine = document.getElementById('xhairLine');
+    var _xTimeLabel = document.getElementById('xhairTime');
     function _moveCrossLine(param) {{
-      if (!param.point || param.point.x < 0) {{ _xLine.style.display='none'; return; }}
+      if (!param.point || param.point.x < 0) {{
+        _xLine.style.display='none'; _xTimeLabel.style.display='none'; return;
+      }}
       var x = param.time ? _chartInst.timeScale().timeToCoordinate(param.time) : null;
-      _xLine.style.left = (x !== null && x !== undefined && x >= 0 ? x : param.point.x) + 'px';
-      _xLine.style.display = 'block';
+      var fx = (x !== null && x !== undefined && x >= 0 ? x : param.point.x);
+      _xLine.style.left = fx + 'px'; _xLine.style.display = 'block';
+      if (param.time) {{
+        _xTimeLabel.textContent = new Date(param.time * 1000).toISOString().slice(11, 16);
+        _xTimeLabel.style.left = fx + 'px'; _xTimeLabel.style.display = 'block';
+      }} else {{
+        _xTimeLabel.style.display = 'none';
+      }}
     }}
     _chartInst.subscribeCrosshairMove(_moveCrossLine);
     _rsiInst.subscribeCrosshairMove(_moveCrossLine);
