@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v51"
+APP_VERSION = "v52"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1176,6 +1176,10 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #chartMsg.hide {{ display: none }}
 #chartMsgSub {{ font-size: 10px; color: #333; max-width: 600px; text-align: center;
                word-break: break-word; padding: 0 16px }}
+.pane-btn {{ position:absolute; right:70px; z-index:10; background:rgba(20,20,20,0.75);
+  border:1px solid #333; color:#666; font-size:10px; padding:1px 5px; border-radius:3px;
+  cursor:pointer; user-select:none; line-height:1.6; }}
+.pane-btn:hover {{ color:#ccc; border-color:#555; }}
 .ind-label {{ position: absolute; top: 5px; left: 10px; font-size: 10px; color: #484f58;
               pointer-events: none; z-index: 1; letter-spacing: 0.3px; font-weight: 500 }}
 #panel {{ height: 185px; border-top: 1px solid var(--border);
@@ -1264,6 +1268,9 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
         <span id="chartMsgSub"></span>
       </div>
       <div class="ind-label">EMA&thinsp;<span style="color:#2196F3">20</span>&ensp;<span style="color:#FF9800">50</span></div>
+      <div id="paneBtn0" class="pane-btn" style="top:4px"    onclick="togglePaneExpand(0)">&#x26F6;</div>
+      <div id="paneBtn1" class="pane-btn" style="top:67.5%"  onclick="togglePaneExpand(1)">&#x26F6;</div>
+      <div id="paneBtn2" class="pane-btn" style="top:83.7%"  onclick="togglePaneExpand(2)">&#x26F6;</div>
     </div>
   </div>
   <div id="panel">
@@ -1427,36 +1434,7 @@ function initChart() {{
       if (panes[2]) panes[2].setStretchFactor(_PANE_FACTORS[2]);
     }} catch(x) {{ console.warn('Pane stretch not available:', x.message); }}
 
-    // Double-click any pane to expand/restore.
-    // Use capture:true so our handler fires before the chart canvas processes the event.
-    // Track two rapid mousedowns manually (dblclick fires inconsistently on canvas in some browsers).
-    var _lastDblT=0, _lastDblY=0;
-    el.addEventListener('mousedown', function(ev){{
-      var now=Date.now();
-      var rect=el.getBoundingClientRect();
-      var ey=ev.clientY-rect.top;
-      if(now-_lastDblT<400 && Math.abs(ey-_lastDblY)<40){{
-        // Rapid second click — treat as double-click
-        var panes=_chartInst.panes();
-        if(!panes.length)return;
-        var yRatio=ey/rect.height;
-        var curFactors=_expandedPane>=0
-          ? _PANE_FACTORS.map(function(f,i){{return i===_expandedPane?7.4:0.1;}})
-          : _PANE_FACTORS;
-        var total=curFactors.reduce(function(a,b){{return a+b;}},0),cum=0,clicked=curFactors.length-1;
-        for(var i=0;i<curFactors.length;i++){{cum+=curFactors[i]/total;if(yRatio<cum){{clicked=i;break;}}}}
-        if(_expandedPane===clicked){{
-          _expandedPane=-1;
-          _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
-        }}else{{
-          _expandedPane=clicked;
-          panes.forEach(function(p,i){{p.setStretchFactor(i===clicked?7.4:0.1);}});
-        }}
-        _lastDblT=0;
-      }}else{{
-        _lastDblT=now; _lastDblY=ey;
-      }}
-    }}, true);
+    // Pane buttons (HTML overlays) call togglePaneExpand(n) directly — no canvas event needed.
 
     chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
@@ -1522,10 +1500,40 @@ function updateIndicators(){{
   _rsiMap={{}};ind.rsi.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_rsiMap[d.time]=d.value;}});
   _macdMap={{}};ind.sigLine.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_macdMap[d.time]=d.value;}});
 }}
+// ── Pane expand / collapse ────────────────────────────────────────────────────
+function togglePaneExpand(n){{
+  if(!_chartInst)return;
+  var panes=_chartInst.panes();
+  if(!panes.length)return;
+  if(_expandedPane===n){{
+    _expandedPane=-1;
+    _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
+  }}else{{
+    _expandedPane=n;
+    panes.forEach(function(p,i){{p.setStretchFactor(i===n?7.4:0.1);}});
+  }}
+  _updatePaneBtns();
+}}
+function _updatePaneBtns(){{
+  var factors=_expandedPane>=0
+    ? _PANE_FACTORS.map(function(f,i){{return i===_expandedPane?7.4:0.1;}})
+    : _PANE_FACTORS.slice();
+  var total=factors.reduce(function(a,b){{return a+b;}},0),cum=0;
+  factors.forEach(function(f,i){{
+    var btn=document.getElementById('paneBtn'+i);
+    if(btn){{
+      btn.style.top='calc('+((cum/total)*100).toFixed(1)+'% + 4px)';
+      btn.textContent=(_expandedPane===i)?'↩':'⛶';
+      btn.style.color=(_expandedPane===i)?'#4fc3f7':'#666';
+    }}
+    cum+=f;
+  }});
+}}
 // ─────────────────────────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', function() {{
   initChart();
+  _updatePaneBtns();
   var now=new Date(Date.now()+19800000); // UTC+5:30 IST offset
   var today=now.toISOString().slice(0,10);
   document.getElementById('dp').value=today;
