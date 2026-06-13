@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v28"
+APP_VERSION = "v29"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1221,7 +1221,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip on" data-v="LONG"  onclick="togD(this)">Hedge</div>
   </div>
   <span id="ivl">&#8212;</span>
-  <span style="font-size:9px;color:#2a2a2a">scroll=pan&#160;&#183;&#160;ctrl+scroll=zoom</span>
+  <span style="font-size:9px;color:#2a2a2a">scroll=zoom&#160;&#183;&#160;drag=pan</span>
   <button class="hbtn" onclick="loadSample()">Test Chart</button>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -1353,8 +1353,8 @@ function _chartOpts(el, timeScaleOpts) {{
     crosshair: {{ mode: 0 }},
     rightPriceScale: {{ borderColor: '#2a2a2a' }},
     timeScale: Object.assign({{ borderColor: '#2a2a2a', rightOffset: 5 }}, timeScaleOpts||{{}}),
-    handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true }},
-    handleScale: {{ mouseWheel: false, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
+    handleScroll: {{ mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true }},
+    handleScale: {{ mouseWheel: true, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
   }};
 }}
 function _watchResize(inst, el) {{
@@ -1374,32 +1374,9 @@ function initChart() {{
     _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
     chart    = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
-    // ctrl+scroll zoom: anchor on mouse position, clamp to data bounds
-    // handleScale.mouseWheel=false so LW Charts doesn't also zoom (would double-fire)
+    // Prevent browser page-zoom on ctrl+scroll; LW Charts' handleScale.mouseWheel handles zoom
     document.getElementById('chartsArea').addEventListener('wheel', function(e) {{
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      if (!candles.length) return;
-      var vr = _chartInst.timeScale().getVisibleRange();
-      if (!vr) return;
-      var f = e.deltaY > 0 ? 1.2 : 0.83;
-      var span = vr.to - vr.from;
-      // Find the time under the mouse cursor to use as zoom anchor
-      var rect = document.getElementById('chartEl').getBoundingClientRect();
-      var anchor = null;
-      try {{ anchor = _chartInst.timeScale().coordinateToTime(e.clientX - rect.left); }} catch(x) {{}}
-      if (anchor === null || anchor === undefined) anchor = (vr.from + vr.to) / 2;
-      // Clamp anchor to data so zoom doesn't pivot on virtual space at edges
-      var d0 = candles[0].time, d1 = candles[candles.length-1].time;
-      anchor = Math.max(d0, Math.min(d1, anchor));
-      var ratio = span > 0 ? Math.max(0, Math.min(1, (anchor - vr.from) / span)) : 0.5;
-      var newSpan = span * f;
-      var nf = anchor - newSpan * ratio;
-      var nt = anchor + newSpan * (1 - ratio);
-      // Hard clamp: don't push data off-screen
-      nf = Math.max(nf, d0 - 180); nt = Math.min(nt, d1 + 180);
-      if (nt - nf < 60) nt = nf + 60; // minimum 1 bar visible
-      try {{ _chartInst.timeScale().setVisibleRange({{ from: nf, to: nt }}); }} catch(x) {{}}
+      if (e.ctrlKey) e.preventDefault();
     }}, {{ passive: false }});
     // OHLC legend — shows time and price at cursor position
     var _leg = document.getElementById('chartLegend');
