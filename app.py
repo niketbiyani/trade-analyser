@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v43"
+APP_VERSION = "v44"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1161,7 +1161,7 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
            border-radius: 2px; letter-spacing: 1px }}
 #main {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
 #chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
-#chartBox {{ flex: 5; min-height: 120px; position: relative; overflow: hidden }}
+#chartBox {{ flex: 1; min-height: 220px; position: relative; overflow: hidden }}
 #chartEl {{ position: absolute; inset: 0 }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
@@ -1169,10 +1169,6 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #chartMsg.hide {{ display: none }}
 #chartMsgSub {{ font-size: 10px; color: #333; max-width: 600px; text-align: center;
                word-break: break-word; padding: 0 16px }}
-#rsiBox {{ flex: 1.2; min-height: 50px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
-#rsiEl  {{ position: absolute; inset: 0 }}
-#macdBox {{ flex: 1.2; min-height: 60px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
-#macdEl  {{ position: absolute; inset: 0 }}
 .ind-label {{ position: absolute; top: 5px; left: 10px; font-size: 10px; color: #484f58;
               pointer-events: none; z-index: 1; letter-spacing: 0.3px; font-weight: 500 }}
 #panel {{ height: 185px; border-top: 1px solid var(--border);
@@ -1223,7 +1219,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 ::-webkit-scrollbar {{ width: 5px; height: 5px }}
 ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px }}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <div id="bar">
@@ -1253,8 +1249,6 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 </div>
 <div id="main">
   <div id="chartsArea">
-    <div id="xLine" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(140,140,160,0.6);pointer-events:none;display:none;z-index:10"></div>
-    <div id="xTime" style="position:absolute;bottom:2px;padding:1px 5px;font-size:10px;background:#21262d;color:#8b949e;border-radius:2px;pointer-events:none;display:none;z-index:11;transform:translateX(-50%);white-space:nowrap;border:1px solid #30363d"></div>
     <div id="chartBox">
       <div id="chartEl"></div>
       <div id="chartLegend" style="position:absolute;top:22px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap"></div>
@@ -1263,14 +1257,6 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
         <span id="chartMsgSub"></span>
       </div>
       <div class="ind-label">EMA&thinsp;<span style="color:#2196F3">20</span>&ensp;<span style="color:#FF9800">50</span></div>
-    </div>
-    <div id="rsiBox">
-      <div id="rsiEl"></div>
-      <div class="ind-label">RSI 14</div>
-    </div>
-    <div id="macdBox">
-      <div id="macdEl"></div>
-      <div class="ind-label">MACD 12,26,9</div>
     </div>
   </div>
   <div id="panel">
@@ -1349,11 +1335,10 @@ window.addEventListener('unhandledrejection', function(e) {{
 <script>
 (function(){{ var e=document.getElementById('jss'); if(e){{ e.textContent='JS OK'; e.style.color='#4caf50'; }} }})();
 
-var _chartInst=null, _rsiInst=null, _macdInst=null;
+var _chartInst=null;
 var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
-var _syncingRange=false, _syncingCross=false;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -1369,15 +1354,15 @@ function setChartMsg(main,sub) {{
 }}
 function hideChartMsg() {{ document.getElementById('chartMsg').classList.add('hide'); }}
 
-function _chartOpts(el, timeScaleOpts) {{
+function _chartOpts(el) {{
   return {{
     width:  el.clientWidth  || 800,
-    height: el.clientHeight || 200,
+    height: el.clientHeight || 400,
     layout: {{ background: {{ color: '#0d1117' }}, textColor: '#8b949e' }},
     grid:   {{ vertLines: {{ color: '#21262d' }}, horzLines: {{ color: '#21262d' }} }},
     crosshair: {{ mode: 0 }},
     rightPriceScale: {{ borderColor: '#30363d' }},
-    timeScale: Object.assign({{ borderColor: '#30363d', timeVisible: true, secondsVisible: false }}, timeScaleOpts||{{}}),
+    timeScale: {{ borderColor: '#30363d', timeVisible: true, secondsVisible: false }},
   }};
 }}
 function _watchResize(inst, el) {{
@@ -1388,16 +1373,53 @@ function _watchResize(inst, el) {{
 }}
 
 function initChart() {{
-  // ── main candle chart (critical) ──────────────────────────────────────────
   try {{
     var el = document.getElementById('chartEl');
-    _chartInst = LightweightCharts.createChart(el, _chartOpts(el, {{ visible: false }}));
-    series   = _chartInst.addCandlestickSeries({{ upColor:'#3fb950', downColor:'#f85149', borderUpColor:'#3fb950', borderDownColor:'#f85149', wickUpColor:'#3fb950', wickDownColor:'#f85149' }});
-    _ema20s  = _chartInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
-    _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
-    chart    = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
+    _chartInst = LightweightCharts.createChart(el, _chartOpts(el));
+
+    // ── Pane 0: candlestick + EMA ──────────────────────────────────────────
+    series  = _chartInst.addSeries(LightweightCharts.CandlestickSeries, {{
+      upColor:'#3fb950', downColor:'#f85149',
+      borderUpColor:'#3fb950', borderDownColor:'#f85149',
+      wickUpColor:'#3fb950', wickDownColor:'#f85149'
+    }});
+    _ema20s = _chartInst.addSeries(LightweightCharts.LineSeries, {{
+      color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
+    }});
+    _ema50s = _chartInst.addSeries(LightweightCharts.LineSeries, {{
+      color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
+    }});
+
+    // ── Pane 1: RSI ────────────────────────────────────────────────────────
+    _rsiSeries = _chartInst.addSeries(LightweightCharts.LineSeries, {{
+      color:'#58a6ff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
+    }}, 1);
+    _rsiSeries.createPriceLine({{ price:70, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:30, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+
+    // ── Pane 2: MACD ───────────────────────────────────────────────────────
+    _macdHist   = _chartInst.addSeries(LightweightCharts.HistogramSeries, {{
+      color:'#555', lastValueVisible:false, priceLineVisible:false
+    }}, 2);
+    _macdLine   = _chartInst.addSeries(LightweightCharts.LineSeries, {{
+      color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+    }}, 2);
+    _macdSignal = _chartInst.addSeries(LightweightCharts.LineSeries, {{
+      color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+    }}, 2);
+
+    // Pane proportions: main=5, RSI=1.2, MACD=1.2
+    try {{
+      var panes = _chartInst.panes();
+      if (panes[0]) panes[0].setStretchFactor(5);
+      if (panes[1]) panes[1].setStretchFactor(1.2);
+      if (panes[2]) panes[2].setStretchFactor(1.2);
+    }} catch(x) {{ console.warn('Pane stretch not available:', x.message); }}
+
+    chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
-    // OHLC legend — shows time and price at cursor position
+
+    // OHLC legend
     var _leg = document.getElementById('chartLegend');
     _chartInst.subscribeCrosshairMove(function(param) {{
       if (!param.time || !param.seriesData || !param.seriesData.get(series)) {{
@@ -1412,59 +1434,10 @@ function initChart() {{
         + '&thinsp;L<span style="color:#f85149">' + b.low.toFixed(0) + '</span>'
         + '&thinsp;C<span style="color:' + _clr + '">' + b.close.toFixed(0) + '</span>';
     }});
+
     setChartMsg('Select a date to load chart data', '');
   }} catch(e) {{
     setChartMsg('Chart init error: ' + e.message, e.stack || '');
-    return;
-  }}
-
-  // ── RSI + MACD (optional — failure doesn't affect main chart) ─────────────
-  try {{
-    var rsiEl = document.getElementById('rsiEl');
-    _rsiInst   = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, {{ visible: false }}));
-    _rsiSeries = _rsiInst.addLineSeries({{ color:'#58a6ff', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
-    _rsiSeries.createPriceLine({{ price:70, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
-    _rsiSeries.createPriceLine({{ price:30, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
-    _watchResize(_rsiInst, rsiEl);
-
-    var macdEl = document.getElementById('macdEl');
-    _macdInst  = LightweightCharts.createChart(macdEl, _chartOpts(macdEl, {{ timeVisible:true, secondsVisible:false }}));
-    _macdHist  = _macdInst.addHistogramSeries({{ color:'#555', lastValueVisible:false, priceLineVisible:false }});
-    _macdLine  = _macdInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
-    _macdSignal= _macdInst.addLineSeries({{ color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
-    _watchResize(_macdInst, macdEl);
-
-    // ONE-WAY sync: main chart drives RSI/MACD only.
-    // Time-range sync is more robust than logical-range — works even when panes
-    // have slightly different bar counts (e.g. RSI gap at start without warmup).
-    function _syncMain() {{
-      if (_syncingRange) return;
-      var r = _chartInst.timeScale().getVisibleRange();
-      if (!r) return;
-      _syncingRange = true;
-      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(r);  }} catch(x) {{}}
-      try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(r); }} catch(x) {{}}
-      _syncingRange = false;
-    }}
-    _chartInst.timeScale().subscribeVisibleTimeRangeChange(_syncMain);
-
-    // thin 1px crosshair overlay spanning all panes + time label at bottom
-    var _xl=document.getElementById('xLine'), _xt=document.getElementById('xTime');
-    function _moveCross(param) {{
-      if (!param.point || param.point.x < 0) {{
-        _xl.style.display='none'; _xt.style.display='none'; return;
-      }}
-      _xl.style.left=param.point.x+'px'; _xl.style.display='block';
-      if (param.time) {{
-        _xt.textContent=new Date(param.time*1000).toISOString().slice(11,16);
-        _xt.style.left=param.point.x+'px'; _xt.style.display='block';
-      }} else {{ _xt.style.display='none'; }}
-    }}
-    _chartInst.subscribeCrosshairMove(_moveCross);
-    _rsiInst.subscribeCrosshairMove(_moveCross);
-    _macdInst.subscribeCrosshairMove(_moveCross);
-  }} catch(e) {{
-    console.warn('Indicator charts failed to init:', e.message);
   }}
 }}
 
@@ -1503,11 +1476,9 @@ function updateIndicators(){{
   // RSI/MACD use full 2-day array for warmup — needs ~35 bars to converge.
   var indT=calcIndicators(todayCandles);
   var ind=calcIndicators(candles);
-  _syncingRange=true;
   _ema20s.setData(indT.ema20);_ema50s.setData(indT.ema50);
   if(_rsiSeries)_rsiSeries.setData(_td(ind.rsi));
   if(_macdHist){{_macdHist.setData(_td(ind.histogram));_macdLine.setData(_td(ind.macdLine));_macdSignal.setData(_td(ind.sigLine));}}
-  _syncingRange=false;
   _candleMap={{}};candles.forEach(function(c){{_candleMap[c.time]=c.close;}});
   _rsiMap={{}};_td(ind.rsi).forEach(function(d){{_rsiMap[d.time]=d.value;}});
   _macdMap={{}};_td(ind.sigLine).forEach(function(d){{_macdMap[d.time]=d.value;}});
@@ -1571,17 +1542,10 @@ async function loadChart() {{
     if (candles.length) {{
       hideChartMsg();
       updateIndicators();
-      // Pin all three panes to today's trading hours (9:00–15:35 IST-as-UTC).
-      // fitContent() uses EMA50 as leftmost anchor (starts at bar 49) and adds
-      // padding that creates a blank area before the first candle. Explicit range
-      // avoids this entirely and keeps all panes perfectly in sync from load.
+      // Single chart — set the time range once; RSI/MACD panes sync automatically.
       var _y=+curDate.slice(0,4),_m=+curDate.slice(5,7)-1,_dd=+curDate.slice(8,10);
       var _r={{from:Date.UTC(_y,_m,_dd,9,0,0)/1000, to:Date.UTC(_y,_m,_dd,15,35,0)/1000}};
-      _syncingRange=true;
       try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
-      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(_r);  }} catch(x) {{}}
-      try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
-      _syncingRange=false;
     }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
