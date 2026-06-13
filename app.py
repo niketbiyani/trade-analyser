@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v36"
+APP_VERSION = "v37"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1407,21 +1407,18 @@ function initChart() {{
     _macdSignal= _macdInst.addLineSeries({{ color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
     _watchResize(_macdInst, macdEl);
 
-    // sync time scales by TIME range (not logical range) so all panes stay aligned
-    // even though RSI/MACD have fewer bars than the main chart (warmup bars dropped)
-    function _syncTo(src, targets) {{
-      src.timeScale().subscribeVisibleLogicalRangeChange(function() {{
-        if (_syncingRange) return;
-        var r = src.timeScale().getVisibleRange();
-        if (!r) return;
-        _syncingRange = true;
-        targets.forEach(function(t) {{ try {{ t.timeScale().setVisibleRange(r); }} catch(x) {{}} }});
-        _syncingRange = false;
-      }});
+    // ONE-WAY sync: main chart drives RSI/MACD only.
+    // Bidirectional sync causes feedback — RSI/MACD fitContent resets the main chart range.
+    function _syncMain() {{
+      if (_syncingRange) return;
+      var r = _chartInst.timeScale().getVisibleRange();
+      if (!r) return;
+      _syncingRange = true;
+      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(r);  }} catch(x) {{}}
+      try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(r); }} catch(x) {{}}
+      _syncingRange = false;
     }}
-    _syncTo(_chartInst, [_rsiInst, _macdInst]);
-    _syncTo(_rsiInst,   [_chartInst, _macdInst]);
-    _syncTo(_macdInst,  [_chartInst, _rsiInst]);
+    _chartInst.timeScale().subscribeVisibleLogicalRangeChange(_syncMain);
 
     // thin 1px crosshair overlay spanning all panes + time label at bottom
     var _xl=document.getElementById('xLine'), _xt=document.getElementById('xTime');
@@ -1471,18 +1468,19 @@ function calcIndicators(data){{
 }}
 function updateIndicators(){{
   if(!candles.length||!_ema20s)return;
-  var ind=calcIndicators(candles); // uses full 2-day data for warmup accuracy
-  // only display today's candles — prev-day warmup data stays off-screen
+  var ind=calcIndicators(candles); // full 2-day array → accurate warmup
   var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
   function _td(a){{return a.filter(function(d){{return d.time>=_cut;}});}}
+  // Suppress sync callbacks while loading data — prevents RSI/MACD setData
+  // from triggering their own range changes that feedback into the main chart
+  _syncingRange=true;
   _ema20s.setData(_td(ind.ema20));_ema50s.setData(_td(ind.ema50));
   if(_rsiSeries)_rsiSeries.setData(_td(ind.rsi));
   if(_macdHist){{_macdHist.setData(_td(ind.histogram));_macdLine.setData(_td(ind.macdLine));_macdSignal.setData(_td(ind.sigLine));}}
+  _syncingRange=false;
   _candleMap={{}};candles.forEach(function(c){{_candleMap[c.time]=c.close;}});
   _rsiMap={{}};_td(ind.rsi).forEach(function(d){{_rsiMap[d.time]=d.value;}});
   _macdMap={{}};_td(ind.sigLine).forEach(function(d){{_macdMap[d.time]=d.value;}});
-  if(_rsiInst)  try{{_rsiInst.timeScale().fitContent();}}catch(x){{}}
-  if(_macdInst) try{{_macdInst.timeScale().fitContent();}}catch(x){{}}
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
