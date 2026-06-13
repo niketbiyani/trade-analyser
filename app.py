@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v25"
+APP_VERSION = "v26"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1379,10 +1379,8 @@ function initChart() {{
       var r = _chartInst.timeScale().getVisibleLogicalRange();
       if (!r) return;
       var f = e.deltaY > 0 ? 1.2 : 0.83, mid = (r.from+r.to)/2, half = (r.to-r.from)*0.5*f;
-      var nr = {{ from: mid-half, to: mid+half }};
-      _chartInst.timeScale().setVisibleLogicalRange(nr);
-      if (_rsiInst)  _rsiInst.timeScale().setVisibleLogicalRange(nr);
-      if (_macdInst) _macdInst.timeScale().setVisibleLogicalRange(nr);
+      _chartInst.timeScale().setVisibleLogicalRange({{ from: mid-half, to: mid+half }});
+      // sub-charts sync via time range (not logical range) so bar count difference doesn't matter
     }}, {{ passive: false }});
     // OHLC legend — shows time and price at cursor position
     var _leg = document.getElementById('chartLegend');
@@ -1420,12 +1418,15 @@ function initChart() {{
     _macdSignal= _macdInst.addLineSeries({{ color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false }});
     _watchResize(_macdInst, macdEl);
 
-    // sync time scales
+    // sync time scales by TIME range (not logical range) so all panes stay aligned
+    // even though RSI/MACD have fewer bars than the main chart (warmup bars dropped)
     function _syncTo(src, targets) {{
-      src.timeScale().subscribeVisibleLogicalRangeChange(function(r) {{
-        if (_syncingRange || !r) return;
+      src.timeScale().subscribeVisibleLogicalRangeChange(function() {{
+        if (_syncingRange) return;
+        var r = src.timeScale().getVisibleRange();
+        if (!r) return;
         _syncingRange = true;
-        targets.forEach(function(t) {{ t.timeScale().setVisibleLogicalRange(r); }});
+        targets.forEach(function(t) {{ try {{ t.timeScale().setVisibleRange(r); }} catch(x) {{}} }});
         _syncingRange = false;
       }});
     }}
@@ -1434,11 +1435,12 @@ function initChart() {{
     _syncTo(_macdInst,  [_chartInst, _rsiInst]);
 
     // crosshair vertical line across all panes via CSS overlay
-    // param.point.x is in the chart content area; all panes share the same width so x is the same
+    // use timeToCoordinate from main chart for pixel-accurate alignment across panes
     var _xLine = document.getElementById('xhairLine');
     function _moveCrossLine(param) {{
       if (!param.point || param.point.x < 0) {{ _xLine.style.display='none'; return; }}
-      _xLine.style.left = param.point.x + 'px';
+      var x = param.time ? _chartInst.timeScale().timeToCoordinate(param.time) : null;
+      _xLine.style.left = (x !== null && x !== undefined && x >= 0 ? x : param.point.x) + 'px';
       _xLine.style.display = 'block';
     }}
     _chartInst.subscribeCrosshairMove(_moveCrossLine);
@@ -1484,10 +1486,15 @@ function updateIndicators(){{
   _candleMap={{}};candles.forEach(function(c){{_candleMap[c.time]=c.close;}});
   _rsiMap={{}};ind.rsi.forEach(function(d){{_rsiMap[d.time]=d.value;}});
   _macdMap={{}};ind.sigLine.forEach(function(d){{_macdMap[d.time]=d.value;}});
-  // sync sub-charts to main visible range
-  var r=_chartInst.timeScale().getVisibleLogicalRange();
-  if(r){{_rsiInst.timeScale().setVisibleLogicalRange(r);_macdInst.timeScale().setVisibleLogicalRange(r);}}
-  else{{_rsiInst.timeScale().fitContent();_macdInst.timeScale().fitContent();}}
+  // sync sub-charts to main visible range by TIME (not logical index) for correct alignment
+  var r=_chartInst.timeScale().getVisibleRange();
+  if(r){{
+    if(_rsiInst)  try{{_rsiInst.timeScale().setVisibleRange(r);}}catch(x){{}}
+    if(_macdInst) try{{_macdInst.timeScale().setVisibleRange(r);}}catch(x){{}}
+  }}else{{
+    if(_rsiInst)  _rsiInst.timeScale().fitContent();
+    if(_macdInst) _macdInst.timeScale().fitContent();
+  }}
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
