@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v45"
+APP_VERSION = "v46"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1346,6 +1346,7 @@ var _chartInst=null;
 var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
+var _markersPlugin=null;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -1390,6 +1391,8 @@ function initChart() {{
       borderUpColor:'#3fb950', borderDownColor:'#f85149',
       wickUpColor:'#3fb950', wickDownColor:'#f85149'
     }});
+    // v5: setMarkers() removed from series — use the createSeriesMarkers plugin instead
+    _markersPlugin = LightweightCharts.createSeriesMarkers(series, []);
     _ema20s = _chartInst.addSeries(LightweightCharts.LineSeries, {{
       color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
     }});
@@ -1662,7 +1665,7 @@ function putMarkers(trades){{
     }}
   }}
   markers.sort(function(a,b){{return a.time-b.time;}});
-  series.setMarkers(markers);
+  if(_markersPlugin)_markersPlugin.setMarkers(markers);
 }}
 function selTrade(id,entryTime){{
   if(selId===id){{
