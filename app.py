@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v30"
+APP_VERSION = "v31"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1359,7 +1359,6 @@ function _chartOpts(el, timeScaleOpts) {{
     rightPriceScale: {{ borderColor: '#71649C' }},
     timeScale: Object.assign({{
       borderColor: '#71649C', rightOffset: 5,
-      fixLeftEdge: true, fixRightEdge: true,
       minBarSpacing: 2,
     }}, timeScaleOpts||{{}}),
     handleScroll: {{ mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true }},
