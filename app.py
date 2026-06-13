@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v33"
+APP_VERSION = "v34"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1218,11 +1218,9 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   </div>
   <div class="chips" id="dChips">
     <div class="chip on" data-v="SHORT" onclick="togD(this)">Short</div>
-    <div class="chip on" data-v="LONG"  onclick="togD(this)">Hedge</div>
+    <div class="chip on" data-v="LONG"  onclick="togD(this)">Long</div>
   </div>
   <span id="ivl">&#8212;</span>
-  <span style="font-size:10px;color:#3a3a5c">⊕ zoom &nbsp;✥ pan</span>
-  <button class="hbtn" onclick="loadSample()">Test Chart</button>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
 </div>
@@ -1232,7 +1230,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div id="xhairTime" style="position:absolute;bottom:2px;padding:2px 6px;font-size:11px;font-weight:600;color:#131722;background:#C3BCDB;border-radius:3px;pointer-events:none;display:none;z-index:6;transform:translateX(-50%);white-space:nowrap"></div>
     <div id="chartBox">
       <div id="chartEl"></div>
-      <div id="chartLegend" style="position:absolute;top:6px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap"></div>
+      <div id="chartLegend" style="position:absolute;top:22px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap"></div>
       <div id="chartMsg">
         <span id="chartMsgMain">Initialising chart&#8230;</span>
         <span id="chartMsgSub"></span>
@@ -1566,8 +1564,9 @@ async function loadChart() {{
     document.getElementById('ivl').textContent=d.interval||'--';
     series.setData(candles);
     if (candles.length) {{
-      // Scroll to trade-date candles only — prev-day data is kept for indicator warmup
-      // but showing it by default creates a confusing overnight gap at the edges
+      hideChartMsg();
+      updateIndicators(); // set all series data FIRST so setData can't override the range below
+      // THEN set visible range — after all series data is loaded so it sticks
       var _p=curDate.split('-');
       var _dayStart=Date.UTC(+_p[0],+_p[1]-1,+_p[2],9,0,0)/1000;
       var _firstToday=null;
@@ -1575,9 +1574,8 @@ async function loadChart() {{
       try{{
         if(_firstToday){{
           _chartInst.timeScale().setVisibleRange({{from:_firstToday.time-60,to:candles[candles.length-1].time+180}});
-        }}else{{chart.timeScale().fitContent();}}
-      }}catch(x){{chart.timeScale().fitContent();}}
-      hideChartMsg(); updateIndicators();
+        }}else{{_chartInst.timeScale().fitContent();}}
+      }}catch(x){{_chartInst.timeScale().fitContent();}}
     }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
