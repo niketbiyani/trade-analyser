@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v35"
+APP_VERSION = "v36"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1226,7 +1226,9 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 </div>
 <div id="main">
   <div id="chartsArea">
-<div id="chartBox">
+    <div id="xLine" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(140,140,160,0.6);pointer-events:none;display:none;z-index:10"></div>
+    <div id="xTime" style="position:absolute;bottom:2px;padding:1px 5px;font-size:10px;background:#21262d;color:#8b949e;border-radius:2px;pointer-events:none;display:none;z-index:11;transform:translateX(-50%);white-space:nowrap;border:1px solid #30363d"></div>
+    <div id="chartBox">
       <div id="chartEl"></div>
       <div id="chartLegend" style="position:absolute;top:22px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap"></div>
       <div id="chartMsg">
@@ -1421,6 +1423,21 @@ function initChart() {{
     _syncTo(_rsiInst,   [_chartInst, _macdInst]);
     _syncTo(_macdInst,  [_chartInst, _rsiInst]);
 
+    // thin 1px crosshair overlay spanning all panes + time label at bottom
+    var _xl=document.getElementById('xLine'), _xt=document.getElementById('xTime');
+    function _moveCross(param) {{
+      if (!param.point || param.point.x < 0) {{
+        _xl.style.display='none'; _xt.style.display='none'; return;
+      }}
+      _xl.style.left=param.point.x+'px'; _xl.style.display='block';
+      if (param.time) {{
+        _xt.textContent=new Date(param.time*1000).toISOString().slice(11,16);
+        _xt.style.left=param.point.x+'px'; _xt.style.display='block';
+      }} else {{ _xt.style.display='none'; }}
+    }}
+    _chartInst.subscribeCrosshairMove(_moveCross);
+    _rsiInst.subscribeCrosshairMove(_moveCross);
+    _macdInst.subscribeCrosshairMove(_moveCross);
   }} catch(e) {{
     console.warn('Indicator charts failed to init:', e.message);
   }}
@@ -1454,22 +1471,18 @@ function calcIndicators(data){{
 }}
 function updateIndicators(){{
   if(!candles.length||!_ema20s)return;
-  var ind=calcIndicators(candles);
-  _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
-  if(_rsiSeries)_rsiSeries.setData(ind.rsi);
-  if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
+  var ind=calcIndicators(candles); // uses full 2-day data for warmup accuracy
+  // only display today's candles — prev-day warmup data stays off-screen
+  var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
+  function _td(a){{return a.filter(function(d){{return d.time>=_cut;}});}}
+  _ema20s.setData(_td(ind.ema20));_ema50s.setData(_td(ind.ema50));
+  if(_rsiSeries)_rsiSeries.setData(_td(ind.rsi));
+  if(_macdHist){{_macdHist.setData(_td(ind.histogram));_macdLine.setData(_td(ind.macdLine));_macdSignal.setData(_td(ind.sigLine));}}
   _candleMap={{}};candles.forEach(function(c){{_candleMap[c.time]=c.close;}});
-  _rsiMap={{}};ind.rsi.forEach(function(d){{_rsiMap[d.time]=d.value;}});
-  _macdMap={{}};ind.sigLine.forEach(function(d){{_macdMap[d.time]=d.value;}});
-  // sync sub-charts to main visible range by TIME (not logical index) for correct alignment
-  var r=_chartInst.timeScale().getVisibleRange();
-  if(r){{
-    if(_rsiInst)  try{{_rsiInst.timeScale().setVisibleRange(r);}}catch(x){{}}
-    if(_macdInst) try{{_macdInst.timeScale().setVisibleRange(r);}}catch(x){{}}
-  }}else{{
-    if(_rsiInst)  _rsiInst.timeScale().fitContent();
-    if(_macdInst) _macdInst.timeScale().fitContent();
-  }}
+  _rsiMap={{}};_td(ind.rsi).forEach(function(d){{_rsiMap[d.time]=d.value;}});
+  _macdMap={{}};_td(ind.sigLine).forEach(function(d){{_macdMap[d.time]=d.value;}});
+  if(_rsiInst)  try{{_rsiInst.timeScale().fitContent();}}catch(x){{}}
+  if(_macdInst) try{{_macdInst.timeScale().fitContent();}}catch(x){{}}
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1524,11 +1537,13 @@ async function loadChart() {{
     var d=await r.json();
     candles=d.candles||[]; curInterval=d.interval||'1m';
     document.getElementById('ivl').textContent=d.interval||'--';
-    series.setData(candles);
+    // Only show trade-date candles; prev-day data stays in `candles` for indicator warmup only
+    var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
+    series.setData(candles.filter(function(c){{return c.time>=_cut;}}));
     if (candles.length) {{
       hideChartMsg();
       updateIndicators();
-      _chartInst.timeScale().scrollToRealTime();
+      _chartInst.timeScale().fitContent();
     }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
