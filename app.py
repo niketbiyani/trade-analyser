@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v38"
+APP_VERSION = "v39"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1408,14 +1408,12 @@ function initChart() {{
     _watchResize(_macdInst, macdEl);
 
     // ONE-WAY sync: main chart drives RSI/MACD only.
-    // Bidirectional sync causes feedback — RSI/MACD fitContent resets the main chart range.
-    function _syncMain() {{
-      if (_syncingRange) return;
-      var r = _chartInst.timeScale().getVisibleRange();
-      if (!r) return;
+    // Use logical range (bar indices) — more reliable than time range across separate pane instances.
+    function _syncMain(lr) {{
+      if (_syncingRange || !lr) return;
       _syncingRange = true;
-      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(r);  }} catch(x) {{}}
-      try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(r); }} catch(x) {{}}
+      try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleLogicalRange(lr);  }} catch(x) {{}}
+      try {{ if(_macdInst) _macdInst.timeScale().setVisibleLogicalRange(lr); }} catch(x) {{}}
       _syncingRange = false;
     }}
     _chartInst.timeScale().subscribeVisibleLogicalRangeChange(_syncMain);
@@ -1542,13 +1540,13 @@ async function loadChart() {{
       hideChartMsg();
       updateIndicators();
       _chartInst.timeScale().fitContent();
-      // Explicit sync: subscribeVisibleLogicalRangeChange may not fire on initial fitContent
+      // Explicit sync after fitContent using logical range — guarantees alignment on every load
       setTimeout(function() {{
-        var _sr = _chartInst.timeScale().getVisibleRange();
-        if (_sr) {{
+        var _lr = _chartInst.timeScale().getVisibleLogicalRange();
+        if (_lr) {{
           _syncingRange = true;
-          try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleRange(_sr);  }} catch(x) {{}}
-          try {{ if(_macdInst) _macdInst.timeScale().setVisibleRange(_sr); }} catch(x) {{}}
+          try {{ if(_rsiInst)  _rsiInst.timeScale().setVisibleLogicalRange(_lr);  }} catch(x) {{}}
+          try {{ if(_macdInst) _macdInst.timeScale().setVisibleLogicalRange(_lr); }} catch(x) {{}}
           _syncingRange = false;
         }}
       }}, 50);
