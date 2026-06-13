@@ -1578,7 +1578,20 @@ async function loadChart() {{
     candles=d.candles||[]; curInterval=d.interval||'1m';
     document.getElementById('ivl').textContent=d.interval||'--';
     series.setData(candles);
-    if (candles.length) {{ chart.timeScale().fitContent(); hideChartMsg(); updateIndicators(); }}
+    if (candles.length) {{
+      // Scroll to trade-date candles only — prev-day data is kept for indicator warmup
+      // but showing it by default creates a confusing overnight gap at the edges
+      var _p=curDate.split('-');
+      var _dayStart=Date.UTC(+_p[0],+_p[1]-1,+_p[2],9,0,0)/1000;
+      var _firstToday=null;
+      for(var _i=0;_i<candles.length;_i++){{if(candles[_i].time>=_dayStart){{_firstToday=candles[_i];break;}}}}
+      try{{
+        if(_firstToday){{
+          _chartInst.timeScale().setVisibleRange({{from:_firstToday.time-60,to:candles[candles.length-1].time+180}});
+        }}else{{chart.timeScale().fitContent();}}
+      }}catch(x){{chart.timeScale().fitContent();}}
+      hideChartMsg(); updateIndicators();
+    }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
     setChartMsg(e.name==='AbortError'?'Chart load timed out':'Chart error: '+e.message,'');
