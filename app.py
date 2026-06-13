@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v34"
+APP_VERSION = "v35"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1100,9 +1100,9 @@ def _page() -> str:
 <style>
 *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0 }}
 :root {{
-  --bg: #0d0d0d; --surface: #141414; --s2: #1e1e1e; --border: #2a2a2a;
-  --text: #e0e0e0; --dim: #555; --ce: #4fc3f7; --pe: #ffb74d;
-  --green: #4caf50; --red: #ef5350; --acc: #7c4dff;
+  --bg: #0d1117; --surface: #161b22; --s2: #21262d; --border: #30363d;
+  --text: #e0e0e0; --dim: #8b949e; --ce: #4fc3f7; --pe: #ffb74d;
+  --green: #3fb950; --red: #f85149; --acc: #7c4dff;
 }}
 html, body {{ height: 100%; overflow: hidden }}
 body {{ display: flex; flex-direction: column; background: var(--bg); color: var(--text);
@@ -1146,7 +1146,7 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #rsiEl  {{ position: absolute; inset: 0 }}
 #macdBox {{ flex: 1.2; min-height: 60px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
 #macdEl  {{ position: absolute; inset: 0 }}
-.ind-label {{ position: absolute; top: 5px; left: 10px; font-size: 10px; color: #71649C;
+.ind-label {{ position: absolute; top: 5px; left: 10px; font-size: 10px; color: #484f58;
               pointer-events: none; z-index: 1; letter-spacing: 0.3px; font-weight: 500 }}
 #panel {{ height: 185px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }}
@@ -1226,9 +1226,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 </div>
 <div id="main">
   <div id="chartsArea">
-    <div id="xhairLine" style="position:absolute;top:0;bottom:0;width:8px;background:rgba(195,188,219,0.12);pointer-events:none;display:none;z-index:5;transform:translateX(-50%)"></div>
-    <div id="xhairTime" style="position:absolute;bottom:2px;padding:2px 6px;font-size:11px;font-weight:600;color:#131722;background:#C3BCDB;border-radius:3px;pointer-events:none;display:none;z-index:6;transform:translateX(-50%);white-space:nowrap"></div>
-    <div id="chartBox">
+<div id="chartBox">
       <div id="chartEl"></div>
       <div id="chartLegend" style="position:absolute;top:22px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap"></div>
       <div id="chartMsg">
@@ -1346,22 +1344,11 @@ function _chartOpts(el, timeScaleOpts) {{
   return {{
     width:  el.clientWidth  || 800,
     height: el.clientHeight || 200,
-    layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#C3BCDB',
-               fontFamily: "'Trebuchet MS', Roboto, Ubuntu, sans-serif" }},
-    grid:   {{ vertLines: {{ color: '#1f1f2e' }}, horzLines: {{ color: '#1f1f2e' }} }},
-    crosshair: {{
-      mode: 0,
-      vertLine: {{ visible: false, labelVisible: false }},
-      horzLine: {{ color: '#9B7DFF', width: 1, style: 0, labelBackgroundColor: '#2a2564' }},
-    }},
-    rightPriceScale: {{ borderColor: '#71649C' }},
-    timeScale: Object.assign({{
-      borderColor: '#71649C', rightOffset: 15,
-      fixLeftEdge: false, fixRightEdge: false,
-      minBarSpacing: 2,
-    }}, timeScaleOpts||{{}}),
-    handleScroll: {{ mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true }},
-    handleScale: {{ mouseWheel: true, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
+    layout: {{ background: {{ color: '#0d1117' }}, textColor: '#8b949e' }},
+    grid:   {{ vertLines: {{ color: '#21262d' }}, horzLines: {{ color: '#21262d' }} }},
+    crosshair: {{ mode: 0 }},
+    rightPriceScale: {{ borderColor: '#30363d' }},
+    timeScale: Object.assign({{ borderColor: '#30363d', timeVisible: true, secondsVisible: false }}, timeScaleOpts||{{}}),
   }};
 }}
 function _watchResize(inst, el) {{
@@ -1376,15 +1363,11 @@ function initChart() {{
   try {{
     var el = document.getElementById('chartEl');
     _chartInst = LightweightCharts.createChart(el, _chartOpts(el, {{ visible: false }}));
-    series   = _chartInst.addCandlestickSeries({{ upColor:'#26a69a', downColor:'#ef5350', borderVisible:false, wickUpColor:'#26a69a', wickDownColor:'#ef5350' }});
+    series   = _chartInst.addCandlestickSeries({{ upColor:'#3fb950', downColor:'#f85149', borderUpColor:'#3fb950', borderDownColor:'#f85149', wickUpColor:'#3fb950', wickDownColor:'#f85149' }});
     _ema20s  = _chartInst.addLineSeries({{ color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
     _ema50s  = _chartInst.addLineSeries({{ color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false }});
     chart    = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
-    // Prevent browser page-zoom on ctrl+scroll; LW Charts' handleScale.mouseWheel handles zoom
-    document.getElementById('chartsArea').addEventListener('wheel', function(e) {{
-      if (e.ctrlKey) e.preventDefault();
-    }}, {{ passive: false }});
     // OHLC legend — shows time and price at cursor position
     var _leg = document.getElementById('chartLegend');
     _chartInst.subscribeCrosshairMove(function(param) {{
@@ -1393,12 +1376,12 @@ function initChart() {{
       }}
       var b = param.seriesData.get(series);
       var hh = new Date(param.time * 1000).toISOString().slice(11, 16);
-      var _clr = b.close >= b.open ? '#26a69a' : '#ef5350';
-      _leg.innerHTML = '<span style="color:#71649C">' + hh + '</span>'
-        + '&ensp;<span style="color:#888">O</span><span style="color:#C3BCDB">' + b.open.toFixed(0) + '</span>'
-        + '&thinsp;<span style="color:#888">H</span><span style="color:#26a69a">' + b.high.toFixed(0) + '</span>'
-        + '&thinsp;<span style="color:#888">L</span><span style="color:#ef5350">' + b.low.toFixed(0) + '</span>'
-        + '&thinsp;<span style="color:#888">C</span><span style="color:' + _clr + '">' + b.close.toFixed(0) + '</span>';
+      var _clr = b.close >= b.open ? '#3fb950' : '#f85149';
+      _leg.innerHTML = '<span style="color:#8b949e">' + hh + '</span>'
+        + '&ensp;O<span style="color:#adbac7">' + b.open.toFixed(0) + '</span>'
+        + '&thinsp;H<span style="color:#3fb950">' + b.high.toFixed(0) + '</span>'
+        + '&thinsp;L<span style="color:#f85149">' + b.low.toFixed(0) + '</span>'
+        + '&thinsp;C<span style="color:' + _clr + '">' + b.close.toFixed(0) + '</span>';
     }});
     setChartMsg('Select a date to load chart data', '');
   }} catch(e) {{
@@ -1410,9 +1393,9 @@ function initChart() {{
   try {{
     var rsiEl = document.getElementById('rsiEl');
     _rsiInst   = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, {{ visible: false }}));
-    _rsiSeries = _rsiInst.addLineSeries({{ color:'#7E57C2', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
-    _rsiSeries.createPriceLine({{ price:70, color:'#3a3a5c', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
-    _rsiSeries.createPriceLine({{ price:30, color:'#3a3a5c', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries = _rsiInst.addLineSeries({{ color:'#58a6ff', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
+    _rsiSeries.createPriceLine({{ price:70, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:30, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _watchResize(_rsiInst, rsiEl);
 
     var macdEl = document.getElementById('macdEl');
@@ -1438,27 +1421,6 @@ function initChart() {{
     _syncTo(_rsiInst,   [_chartInst, _macdInst]);
     _syncTo(_macdInst,  [_chartInst, _rsiInst]);
 
-    // crosshair vertical line + time label across all panes via CSS overlay
-    // timeToCoordinate from main chart gives pixel-accurate x regardless of price-scale width
-    var _xLine = document.getElementById('xhairLine');
-    var _xTimeLabel = document.getElementById('xhairTime');
-    function _moveCrossLine(param) {{
-      if (!param.point || param.point.x < 0) {{
-        _xLine.style.display='none'; _xTimeLabel.style.display='none'; return;
-      }}
-      var x = param.time ? _chartInst.timeScale().timeToCoordinate(param.time) : null;
-      var fx = (x !== null && x !== undefined && x >= 0 ? x : param.point.x);
-      _xLine.style.left = fx + 'px'; _xLine.style.display = 'block';
-      if (param.time) {{
-        _xTimeLabel.textContent = new Date(param.time * 1000).toISOString().slice(11, 16);
-        _xTimeLabel.style.left = fx + 'px'; _xTimeLabel.style.display = 'block';
-      }} else {{
-        _xTimeLabel.style.display = 'none';
-      }}
-    }}
-    _chartInst.subscribeCrosshairMove(_moveCrossLine);
-    _rsiInst.subscribeCrosshairMove(_moveCrossLine);
-    _macdInst.subscribeCrosshairMove(_moveCrossLine);
   }} catch(e) {{
     console.warn('Indicator charts failed to init:', e.message);
   }}
@@ -1565,17 +1527,8 @@ async function loadChart() {{
     series.setData(candles);
     if (candles.length) {{
       hideChartMsg();
-      updateIndicators(); // set all series data FIRST so setData can't override the range below
-      // THEN set visible range — after all series data is loaded so it sticks
-      var _p=curDate.split('-');
-      var _dayStart=Date.UTC(+_p[0],+_p[1]-1,+_p[2],9,0,0)/1000;
-      var _firstToday=null;
-      for(var _i=0;_i<candles.length;_i++){{if(candles[_i].time>=_dayStart){{_firstToday=candles[_i];break;}}}}
-      try{{
-        if(_firstToday){{
-          _chartInst.timeScale().setVisibleRange({{from:_firstToday.time-60,to:candles[candles.length-1].time+180}});
-        }}else{{_chartInst.timeScale().fitContent();}}
-      }}catch(x){{_chartInst.timeScale().fitContent();}}
+      updateIndicators();
+      _chartInst.timeScale().scrollToRealTime();
     }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
