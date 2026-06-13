@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v39"
+APP_VERSION = "v40"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -665,13 +665,15 @@ def _is_auth_error(resp) -> bool:
 
 
 def _raw_dhan_chart(security_id: str, exchange_segment: str,
-                    instrument_type: str, day: str) -> tuple[dict, str]:
-    """Fetch 1m candles for a single day.
+                    instrument_type: str, day: str, from_date: str = None) -> tuple[dict, str]:
+    """Fetch 1m candles for a day or date range.
 
+    from_date: if given, fetches [from_date, day] range; otherwise single day.
     Tries two Dhan endpoints in order:
     1. /charts/historical with type=1 — true historical minute data (any past date)
     2. /charts/intraday — real-time feed, only last 5 trading days during market hours
     """
+    fd = from_date or day
     try:
         dhan = _dhan_client()
     except Exception as e:
@@ -695,7 +697,7 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                 "exchangeSegment": exchange_segment,
                 "instrument":      instrument_type,
                 "expiryCode":      0,
-                "fromDate":        day,
+                "fromDate":        fd,
                 "toDate":          day,
                 "type":            "1",
             },
@@ -714,7 +716,7 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
             security_id=security_id,
             exchange_segment=exchange_segment,
             instrument_type=instrument_type,
-            from_date=f"{day} 09:00:00",
+            from_date=f"{fd} 09:00:00",
             to_date=f"{day} 15:30:00",
         )
         logger.info("Intraday raw [%s %s]: %s", security_id, exchange_segment, str(resp)[:300])
@@ -729,7 +731,7 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                         security_id=security_id,
                         exchange_segment=exchange_segment,
                         instrument_type=instrument_type,
-                        from_date=f"{day} 09:00:00",
+                        from_date=f"{fd} 09:00:00",
                         to_date=f"{day} 15:30:00",
                     )
             except Exception as e:
@@ -797,9 +799,25 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
     return _parse_dhan_candles(raw_resp, day)
 
 
+def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> list[dict]:
+    """Fetch warmup candles for a date range (single API call covering multiple trading days)."""
+    raw_resp, dhan_err = _raw_dhan_chart(
+        idx["security_id"], idx["exchange_segment"], idx["instrument_type"],
+        to_day, from_date=from_day
+    )
+    if dhan_err:
+        logger.warning("Warmup candles error [%s %s %s-%s]: %s",
+                       idx["security_id"], idx["exchange_segment"], from_day, to_day, dhan_err)
+        return []
+    return _parse_dhan_candles(raw_resp, from_day)
+
+
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
-    prev_day = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Look back 5 calendar days for warmup — covers weekends and single-day holidays.
+    # Dhan returns only trading days in the range, so we always get 1-3 real warmup days.
+    warmup_from = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
+    warmup_to   = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
     # Build candidate list with per-underlying fallbacks
     if u == "SENSEX":
@@ -834,8 +852,9 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
             "Check /api/debug-chart?underlying=" + u + "&date=" + trade_date
         )
 
-    # Fetch prev_day candles separately (for EMA/RSI/MACD warmup)
-    prev_candles = _fetch_day_candles(working_idx, prev_day)
+    # Fetch warmup candles (last 5 calendar days → 1-3 actual trading days).
+    # Single API call handles weekends and holidays correctly.
+    prev_candles = _fetch_warmup_candles(working_idx, warmup_from, warmup_to)
 
     all_candles = sorted(prev_candles + trade_candles, key=lambda c: c["time"])
     return all_candles, "1m", ""
