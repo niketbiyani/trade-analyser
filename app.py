@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v46"
+APP_VERSION = "v47"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1546,13 +1546,13 @@ async function loadChart() {{
     var d=await r.json();
     candles=d.candles||[]; curInterval=d.interval||'1m';
     document.getElementById('ivl').textContent=d.interval||'--';
-    // Only show trade-date candles; prev-day data stays in `candles` for indicator warmup only
-    var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
-    series.setData(candles.filter(function(c){{return c.time>=_cut;}}));
+    // Show all candles (warmup days + trade date) — warmup is off-screen left by default.
+    // Visible range is pinned to today's trading hours; user can scroll left for context.
+    series.setData(candles);
     if (candles.length) {{
       hideChartMsg();
       updateIndicators();
-      // Single chart — set the time range once; RSI/MACD panes sync automatically.
+      // Pin visible window to today's trading hours (9:00–15:35 IST).
       var _y=+curDate.slice(0,4),_m=+curDate.slice(5,7)-1,_dd=+curDate.slice(8,10);
       var _r={{from:Date.UTC(_y,_m,_dd,9,0,0)/1000, to:Date.UTC(_y,_m,_dd,15,35,0)/1000}};
       try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
