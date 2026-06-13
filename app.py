@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v29"
+APP_VERSION = "v30"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1106,7 +1106,7 @@ def _page() -> str:
 }}
 html, body {{ height: 100%; overflow: hidden }}
 body {{ display: flex; flex-direction: column; background: var(--bg); color: var(--text);
-       font: 13px/1.4 'SF Mono', Consolas, monospace }}
+       font: 13px/1.4 'Trebuchet MS', Roboto, Ubuntu, sans-serif }}
 #bar {{ display: flex; align-items: center; gap: 10px; padding: 8px 14px;
        background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0;
        flex-wrap: wrap }}
@@ -1134,7 +1134,7 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
            border-radius: 2px; letter-spacing: 1px }}
 #main {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
 #chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
-#chartBox {{ flex: 3; min-height: 120px; position: relative; overflow: hidden }}
+#chartBox {{ flex: 5; min-height: 120px; position: relative; overflow: hidden }}
 #chartEl {{ position: absolute; inset: 0 }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
@@ -1142,13 +1142,13 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #chartMsg.hide {{ display: none }}
 #chartMsgSub {{ font-size: 10px; color: #333; max-width: 600px; text-align: center;
                word-break: break-word; padding: 0 16px }}
-#rsiBox {{ flex: 1; min-height: 50px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
+#rsiBox {{ flex: 1.2; min-height: 50px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
 #rsiEl  {{ position: absolute; inset: 0 }}
-#macdBox {{ flex: 1.3; min-height: 60px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
+#macdBox {{ flex: 1.2; min-height: 60px; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
 #macdEl  {{ position: absolute; inset: 0 }}
-.ind-label {{ position: absolute; top: 4px; left: 8px; font-size: 9px; color: #444;
-              pointer-events: none; z-index: 1; letter-spacing: 0.5px }}
-#panel {{ height: 210px; border-top: 1px solid var(--border);
+.ind-label {{ position: absolute; top: 5px; left: 10px; font-size: 10px; color: #71649C;
+              pointer-events: none; z-index: 1; letter-spacing: 0.3px; font-weight: 500 }}
+#panel {{ height: 185px; border-top: 1px solid var(--border);
          display: flex; flex-direction: column; background: var(--surface) }}
 #ph {{ display: flex; align-items: center; gap: 12px; padding: 6px 14px;
       border-bottom: 1px solid var(--border); flex-shrink: 0 }}
@@ -1221,7 +1221,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip on" data-v="LONG"  onclick="togD(this)">Hedge</div>
   </div>
   <span id="ivl">&#8212;</span>
-  <span style="font-size:9px;color:#2a2a2a">scroll=zoom&#160;&#183;&#160;drag=pan</span>
+  <span style="font-size:10px;color:#3a3a5c">⊕ zoom &nbsp;✥ pan</span>
   <button class="hbtn" onclick="loadSample()">Test Chart</button>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -1229,15 +1229,15 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 <div id="main">
   <div id="chartsArea">
     <div id="xhairLine" style="position:absolute;top:0;bottom:0;width:8px;background:rgba(195,188,219,0.12);pointer-events:none;display:none;z-index:5;transform:translateX(-50%)"></div>
-    <div id="xhairTime" style="position:absolute;bottom:0;padding:1px 5px;font-size:10px;color:#aaa;background:#141414;border:1px solid #333;border-radius:2px;pointer-events:none;display:none;z-index:6;transform:translateX(-50%);white-space:nowrap"></div>
+    <div id="xhairTime" style="position:absolute;bottom:2px;padding:2px 6px;font-size:11px;font-weight:600;color:#131722;background:#C3BCDB;border-radius:3px;pointer-events:none;display:none;z-index:6;transform:translateX(-50%);white-space:nowrap"></div>
     <div id="chartBox">
       <div id="chartEl"></div>
-      <div id="chartLegend" style="position:absolute;top:4px;left:8px;font-size:11px;color:#666;pointer-events:none;z-index:2;white-space:nowrap"></div>
+      <div id="chartLegend" style="position:absolute;top:6px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap"></div>
       <div id="chartMsg">
         <span id="chartMsgMain">Initialising chart&#8230;</span>
         <span id="chartMsgSub"></span>
       </div>
-      <div class="ind-label">EMA <span style="color:#2196F3">20</span> &nbsp;<span style="color:#FF9800">50</span></div>
+      <div class="ind-label">EMA&thinsp;<span style="color:#2196F3">20</span>&ensp;<span style="color:#FF9800">50</span></div>
     </div>
     <div id="rsiBox">
       <div id="rsiEl"></div>
@@ -1349,7 +1349,7 @@ function _chartOpts(el, timeScaleOpts) {{
     width:  el.clientWidth  || 800,
     height: el.clientHeight || 200,
     layout: {{ background: {{ color: '#0d0d0d' }}, textColor: '#C3BCDB',
-               fontFamily: "'SF Mono', Consolas, monospace" }},
+               fontFamily: "'Trebuchet MS', Roboto, Ubuntu, sans-serif" }},
     grid:   {{ vertLines: {{ color: '#1f1f2e' }}, horzLines: {{ color: '#1f1f2e' }} }},
     crosshair: {{
       mode: 0,
@@ -1357,7 +1357,11 @@ function _chartOpts(el, timeScaleOpts) {{
       horzLine: {{ color: '#9B7DFF', width: 1, style: 0, labelBackgroundColor: '#2a2564' }},
     }},
     rightPriceScale: {{ borderColor: '#71649C' }},
-    timeScale: Object.assign({{ borderColor: '#71649C', rightOffset: 3 }}, timeScaleOpts||{{}}),
+    timeScale: Object.assign({{
+      borderColor: '#71649C', rightOffset: 5,
+      fixLeftEdge: true, fixRightEdge: true,
+      minBarSpacing: 2,
+    }}, timeScaleOpts||{{}}),
     handleScroll: {{ mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true }},
     handleScale: {{ mouseWheel: true, pinch: true, axisPressedMouseMove: {{ price: true, time: true }} }},
   }};
@@ -1391,11 +1395,12 @@ function initChart() {{
       }}
       var b = param.seriesData.get(series);
       var hh = new Date(param.time * 1000).toISOString().slice(11, 16);
-      _leg.innerHTML = '<span style="color:#C3BCDB">' + hh + '</span>'
-        + ' &nbsp;O<span style="color:#aaa">' + b.open.toFixed(0) + '</span>'
-        + ' H<span style="color:#26a69a">' + b.high.toFixed(0) + '</span>'
-        + ' L<span style="color:#ef5350">' + b.low.toFixed(0) + '</span>'
-        + ' C<span style="color:#e0e0e0">' + b.close.toFixed(0) + '</span>';
+      var _clr = b.close >= b.open ? '#26a69a' : '#ef5350';
+      _leg.innerHTML = '<span style="color:#71649C">' + hh + '</span>'
+        + '&ensp;<span style="color:#888">O</span><span style="color:#C3BCDB">' + b.open.toFixed(0) + '</span>'
+        + '&thinsp;<span style="color:#888">H</span><span style="color:#26a69a">' + b.high.toFixed(0) + '</span>'
+        + '&thinsp;<span style="color:#888">L</span><span style="color:#ef5350">' + b.low.toFixed(0) + '</span>'
+        + '&thinsp;<span style="color:#888">C</span><span style="color:' + _clr + '">' + b.close.toFixed(0) + '</span>';
     }});
     setChartMsg('Select a date to load chart data', '');
   }} catch(e) {{
@@ -1407,7 +1412,7 @@ function initChart() {{
   try {{
     var rsiEl = document.getElementById('rsiEl');
     _rsiInst   = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, {{ visible: false }}));
-    _rsiSeries = _rsiInst.addLineSeries({{ color:'#9c27b0', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
+    _rsiSeries = _rsiInst.addLineSeries({{ color:'#7E57C2', lineWidth:1, lastValueVisible:true, priceLineVisible:false }});
     _rsiSeries.createPriceLine({{ price:70, color:'#3a3a5c', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _rsiSeries.createPriceLine({{ price:30, color:'#3a3a5c', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _watchResize(_rsiInst, rsiEl);
