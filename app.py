@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v44"
+APP_VERSION = "v45"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -800,31 +800,38 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
 
 
 def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> list[dict]:
-    """Fetch warmup candles by trying single days backwards from to_day.
+    """Fetch up to 3 previous trading days as warmup data.
 
-    Uses individual day fetches (known to work with Dhan) rather than a range
-    call — Dhan's historical API requires fromDate == toDate. Stops at the first
-    day that has data, so Monday costs 3 calls (Sun→Sat→Fri) not 5.
+    Walks backwards from to_day, fetching one day at a time (Dhan requires
+    fromDate == toDate). Collects up to 3 days with actual data so RSI/MACD
+    have ~1125 warmup bars instead of ~375, ensuring indicators are converged
+    by the time trading-day candles begin.
     """
-    current = datetime.strptime(to_day, "%Y-%m-%d")
-    cutoff  = datetime.strptime(from_day, "%Y-%m-%d")
-    while current >= cutoff:
+    current   = datetime.strptime(to_day, "%Y-%m-%d")
+    cutoff    = datetime.strptime(from_day, "%Y-%m-%d")
+    all_candles: list[dict] = []
+    days_found = 0
+    while current >= cutoff and days_found < 3:
         day_str = current.strftime("%Y-%m-%d")
         candles = _fetch_day_candles(idx, day_str)
         if candles:
-            logger.info("Warmup: %d candles from %s", len(candles), day_str)
-            return candles
-        logger.info("Warmup: no data for %s, trying earlier", day_str)
+            all_candles = candles + all_candles  # prepend to keep chronological order
+            days_found += 1
+            logger.info("Warmup day %d: %d candles from %s", days_found, len(candles), day_str)
+        else:
+            logger.info("Warmup: no data for %s, trying earlier", day_str)
         current -= timedelta(days=1)
-    logger.warning("Warmup: no trading data found between %s and %s", from_day, to_day)
-    return []
+    if not all_candles:
+        logger.warning("Warmup: no trading data found between %s and %s", from_day, to_day)
+    return all_candles
 
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str]:
     u = underlying.upper()
-    # Look back 5 calendar days for warmup — covers weekends and single-day holidays.
-    # Dhan returns only trading days in the range, so we always get 1-3 real warmup days.
-    warmup_from = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
+    # Look back 10 calendar days for warmup — guarantees 3 trading days even across
+    # long weekends and multi-day holidays (e.g. Diwali). Weekends + 1 holiday = 3 skip days;
+    # a 4-day weekend = 4 skip days → need 3*1 + 4 = 7+ calendar days. 10 is safe.
+    warmup_from = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=10)).strftime("%Y-%m-%d")
     warmup_to   = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
     # Build candidate list with per-underlying fallbacks
@@ -860,8 +867,8 @@ def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, st
             "Check /api/debug-chart?underlying=" + u + "&date=" + trade_date
         )
 
-    # Fetch warmup candles (last 5 calendar days → 1-3 actual trading days).
-    # Single API call handles weekends and holidays correctly.
+    # Fetch up to 3 previous trading days as warmup so RSI/MACD are converged
+    # by the time the trading-day candles start (~1125 bars vs ~375 for 1 day).
     prev_candles = _fetch_warmup_candles(working_idx, warmup_from, warmup_to)
 
     all_candles = sorted(prev_candles + trade_candles, key=lambda c: c["time"])
