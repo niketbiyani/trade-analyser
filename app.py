@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v59"
+APP_VERSION = "v60"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -956,7 +956,290 @@ def _make_test_candles(trade_date: str) -> list[dict]:
     return candles
 
 
-# ── Flask routes ──────────────────────────────────────────────────────────────────────────
+# ── Option chart helpers ───────────────────────────────────────────────────────────────────
+
+
+def _fetch_option_candles(security_id: str, exchange_segment: str,
+                          from_date: str, to_date: str, interval: int = 1) -> tuple[list[dict], str]:
+    """Fetch OHLCV candles for an option contract via /charts/intraday.
+
+    interval: 1, 5, 15, 25, or 60 minutes (Dhan-native).
+    For 3-minute candles, fetch interval=1 and call _aggregate_candles(candles, 3).
+    """
+    try:
+        dhan = _dhan_client()
+        resp = _with_timeout(
+            dhan.intraday_minute_data,
+            security_id=security_id,
+            exchange_segment=exchange_segment,
+            instrument_type="OPTIDX",
+            from_date=f"{from_date} 09:00:00",
+            to_date=f"{to_date} 15:30:00",
+            interval=interval,
+        )
+        if _is_auth_error(resp):
+            try:
+                import token_manager  # noqa: PLC0415
+                if token_manager.refresh_token():
+                    dhan = _dhan_client()
+                    resp = _with_timeout(
+                        dhan.intraday_minute_data,
+                        security_id=security_id,
+                        exchange_segment=exchange_segment,
+                        instrument_type="OPTIDX",
+                        from_date=f"{from_date} 09:00:00",
+                        to_date=f"{to_date} 15:30:00",
+                        interval=interval,
+                    )
+            except Exception as e:
+                logger.warning("Token refresh failed: %s", e)
+        candles = _parse_dhan_candles(resp, to_date)
+        return candles, ""
+    except Exception as e:
+        return [], str(e)
+
+
+def _aggregate_candles(candles: list[dict], minutes: int) -> list[dict]:
+    """Aggregate 1-minute candles into N-minute candles."""
+    if not candles or minutes <= 1:
+        return candles
+    result: list[dict] = []
+    bucket: dict | None = None
+    for c in candles:
+        # IST-as-UTC: utcfromtimestamp gives the IST clock time
+        dt = datetime.utcfromtimestamp(c["time"])
+        m = dt.hour * 60 + dt.minute
+        # Align to N-minute boundaries from market open (09:15 = 555 min)
+        bucket_m = (m // minutes) * minutes
+        bh, bm_m = divmod(bucket_m, 60)
+        bucket_dt = dt.replace(hour=bh, minute=bm_m, second=0)
+        bucket_ts = int(bucket_dt.timestamp())
+        if bucket is None or bucket["time"] != bucket_ts:
+            if bucket:
+                result.append(bucket)
+            bucket = {
+                "time": bucket_ts,
+                "open": c["open"], "high": c["high"],
+                "low":  c["low"],  "close": c["close"],
+            }
+        else:
+            bucket["high"]  = max(bucket["high"], c["high"])
+            bucket["low"]   = min(bucket["low"],  c["low"])
+            bucket["close"] = c["close"]
+    if bucket:
+        result.append(bucket)
+    return result
+
+
+def _option_chart_page() -> str:
+    today = str(date.today())
+    ver   = APP_VERSION
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Option Chart — Trade Analyser {ver}</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
+header{{padding:8px 14px;border-bottom:1px solid #1e1e1e;display:flex;align-items:center;gap:16px;flex-shrink:0;}}
+header a{{color:#555;text-decoration:none;font-size:11px;}}
+header a:hover{{color:#aaa;}}
+.title{{font-weight:600;font-size:14px;color:#ccc;}}
+.badge{{font-size:10px;color:#555;margin-left:4px;}}
+.main{{display:flex;flex:1;min-height:0;}}
+.form-panel{{width:260px;flex-shrink:0;border-right:1px solid #1e1e1e;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:10px;}}
+.chart-panel{{flex:1;display:flex;flex-direction:column;min-width:0;}}
+.chart-toolbar{{padding:6px 12px;border-bottom:1px solid #1e1e1e;display:flex;align-items:center;gap:10px;flex-shrink:0;}}
+#chartEl{{flex:1;}}
+label{{display:block;font-size:11px;color:#888;margin-bottom:3px;}}
+input,select{{width:100%;background:#111;border:1px solid #2a2a2a;color:#ccc;padding:5px 8px;border-radius:4px;font-size:12px;}}
+input:focus,select:focus{{outline:none;border-color:#444;}}
+.row{{display:flex;gap:6px;}}
+.row>*{{flex:1;}}
+.sep{{border-top:1px solid #1e1e1e;margin:2px 0;}}
+.ivl-btn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;}}
+.ivl-btn.on{{background:#1a3a1a;border-color:#3a6a3a;color:#4fc3f7;}}
+.load-btn{{width:100%;padding:7px;background:#1a3a1a;border:1px solid #3a6a3a;color:#4fc3f7;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;}}
+.load-btn:hover{{background:#224422;}}
+.msg{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;}}
+.chart-wrap{{position:relative;flex:1;}}
+.from-trade{{font-size:11px;}}
+.from-trade select{{font-size:11px;}}
+.err{{color:#f85149;font-size:11px;padding:4px 0;}}
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← Main</a>
+  <span class="title">Option Chart</span>
+  <span class="badge">{ver}</span>
+</header>
+<div class="main">
+  <div class="form-panel">
+    <div>
+      <label>Load from imported trade</label>
+      <select id="tradeSelect" onchange="fillFromTrade(this.value)" class="from-trade">
+        <option value="">— pick a trade —</option>
+      </select>
+    </div>
+    <div class="sep"></div>
+    <div>
+      <label>Underlying</label>
+      <select id="underlying">
+        <option value="NIFTY">NIFTY</option>
+        <option value="SENSEX">SENSEX</option>
+        <option value="BANKNIFTY">BANKNIFTY</option>
+        <option value="FINNIFTY">FINNIFTY</option>
+        <option value="MIDCPNIFTY">MIDCPNIFTY</option>
+      </select>
+    </div>
+    <div class="row">
+      <div>
+        <label>Type</label>
+        <select id="optionType">
+          <option value="CE">CE</option>
+          <option value="PE">PE</option>
+        </select>
+      </div>
+      <div>
+        <label>Strike</label>
+        <input type="number" id="strike" placeholder="24500" step="50">
+      </div>
+    </div>
+    <div>
+      <label>Expiry date</label>
+      <input type="date" id="expiry">
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div><label>From</label><input type="date" id="fromDate" value="{today}"></div>
+      <div><label>To</label><input type="date" id="toDate" value="{today}"></div>
+    </div>
+    <div>
+      <label>Interval</label>
+      <div style="display:flex;gap:6px;margin-top:2px;">
+        <button class="ivl-btn on" id="ivl1" onclick="setIvl(1)">1m</button>
+        <button class="ivl-btn" id="ivl3" onclick="setIvl(3)">3m</button>
+        <button class="ivl-btn" id="ivl5" onclick="setIvl(5)">5m</button>
+        <button class="ivl-btn" id="ivl15" onclick="setIvl(15)">15m</button>
+      </div>
+    </div>
+    <div id="errBox" class="err" style="display:none"></div>
+    <button class="load-btn" onclick="loadOptionChart()">Load Chart</button>
+  </div>
+  <div class="chart-panel">
+    <div class="chart-toolbar">
+      <span id="chartTitle" style="color:#888;font-size:12px;">Select an option and click Load Chart</span>
+    </div>
+    <div class="chart-wrap">
+      <div id="msgEl" class="msg">Select an option and click Load Chart</div>
+      <div id="chartEl" style="width:100%;height:100%;"></div>
+    </div>
+  </div>
+</div>
+<script>
+var _chart=null, _series=null, _curIvl=1;
+
+function setIvl(n){{
+  _curIvl=n;
+  [1,3,5,15].forEach(function(v){{
+    var b=document.getElementById('ivl'+v);
+    if(b) b.className='ivl-btn'+(v===n?' on':'');
+  }});
+}}
+
+function showMsg(m){{document.getElementById('msgEl').style.display='';document.getElementById('msgEl').textContent=m;}}
+function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
+function showErr(m){{var e=document.getElementById('errBox');e.style.display=m?'':'none';e.textContent=m||'';}}
+
+(function initChart(){{
+  var el=document.getElementById('chartEl');
+  _chart=LightweightCharts.createChart(el,{{
+    layout:{{background:{{color:'#0d0d0d'}},textColor:'#aaa'}},
+    grid:{{vertLines:{{color:'#1a1a1a'}},horzLines:{{color:'#1a1a1a'}}}},
+    crosshair:{{mode:1}},
+    rightPriceScale:{{borderColor:'#2a2a2a'}},
+    timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false}},
+  }});
+  _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
+    upColor:'#3fb950',downColor:'#f85149',
+    borderUpColor:'#3fb950',borderDownColor:'#f85149',
+    wickUpColor:'#3fb950',wickDownColor:'#f85149',
+  }});
+  new ResizeObserver(function(){{
+    _chart.resize(el.offsetWidth,el.offsetHeight);
+  }}).observe(el);
+}})();
+
+async function loadTrades(){{
+  try{{
+    var r=await fetch('/api/option-list');
+    var list=await r.json();
+    var sel=document.getElementById('tradeSelect');
+    sel.innerHTML='<option value="">— pick a trade —</option>';
+    list.forEach(function(t){{
+      var o=document.createElement('option');
+      o.value=JSON.stringify(t);
+      var exp=(t.expiry||'').slice(0,10);
+      o.textContent=t.underlying+' '+t.strike+' '+t.option_type+' '+exp+' ('+t.date+')';
+      sel.appendChild(o);
+    }});
+  }}catch(e){{console.error(e);}}
+}}
+
+function fillFromTrade(v){{
+  if(!v) return;
+  var t=JSON.parse(v);
+  document.getElementById('underlying').value=t.underlying||'NIFTY';
+  document.getElementById('optionType').value=t.option_type||'CE';
+  document.getElementById('strike').value=t.strike||'';
+  document.getElementById('expiry').value=(t.expiry||'').slice(0,10);
+  document.getElementById('fromDate').value=t.date||'';
+  document.getElementById('toDate').value=(t.expiry||'').slice(0,10);
+  showErr('');
+}}
+
+async function loadOptionChart(){{
+  var underlying=document.getElementById('underlying').value;
+  var optionType=document.getElementById('optionType').value;
+  var strike=document.getElementById('strike').value;
+  var expiry=document.getElementById('expiry').value;
+  var fromDate=document.getElementById('fromDate').value;
+  var toDate=document.getElementById('toDate').value;
+  if(!strike){{showErr('Enter a strike price');return;}}
+  if(!fromDate||!toDate){{showErr('Enter from/to dates');return;}}
+  showErr('');
+  showMsg('Loading...');
+  var url='/api/option-candles?underlying='+underlying
+    +'&option_type='+optionType+'&strike='+strike
+    +'&expiry='+expiry+'&from_date='+fromDate+'&to_date='+toDate
+    +'&interval='+_curIvl;
+  try{{
+    var r=await fetch(url);
+    var d=await r.json();
+    if(d.error){{showMsg('');showErr(d.error);return;}}
+    var candles=d.candles||[];
+    if(!candles.length){{showMsg('No data returned for this option');return;}}
+    _series.setData(candles);
+    _chart.timeScale().fitContent();
+    hideMsg();
+    var title=underlying+' '+strike+' '+optionType
+      +(expiry?' exp:'+expiry.slice(5):'')
+      +' | '+_curIvl+'m | '+candles.length+' candles';
+    document.getElementById('chartTitle').textContent=title;
+    document.getElementById('chartTitle').style.color='#ccc';
+  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
+}}
+
+loadTrades();
+</script>
+</body>
+</html>"""
+
+
 
 app = Flask(__name__)
 
@@ -1183,6 +1466,89 @@ def api_dates():
     return jsonify([r["date"] for r in rows])
 
 
+@app.route("/option-chart")
+def option_chart():
+    return _option_chart_page()
+
+
+@app.route("/api/option-list")
+def api_option_list():
+    """Return distinct options from the trades database for the picker dropdown."""
+    rows = get_db().execute(
+        "SELECT underlying, option_type, strike, expiry, security_id, exchange_segment, date"
+        " FROM trades"
+        " WHERE security_id != ''"
+        " ORDER BY date DESC, entry_time DESC"
+        " LIMIT 500"
+    ).fetchall()
+    # Deduplicate by (underlying, option_type, strike, expiry), keep latest trade date
+    seen: set = set()
+    result = []
+    for r in rows:
+        key = (r["underlying"], r["option_type"], r["strike"], r["expiry"])
+        if key not in seen:
+            seen.add(key)
+            result.append(dict(r))
+    return jsonify(result)
+
+
+@app.route("/api/option-candles")
+def api_option_candles():
+    underlying  = (request.args.get("underlying") or "NIFTY").upper()
+    option_type = (request.args.get("option_type") or "CE").upper()
+    try:
+        strike = float(request.args.get("strike") or 0)
+    except ValueError:
+        return jsonify({"candles": [], "error": "Invalid strike"}), 400
+    expiry    = request.args.get("expiry") or ""
+    from_date = request.args.get("from_date") or str(date.today())
+    to_date   = request.args.get("to_date")   or str(date.today())
+    try:
+        interval = int(request.args.get("interval") or 1)
+    except ValueError:
+        interval = 1
+
+    # Look up security_id from imported trades
+    db  = get_db()
+    row = db.execute(
+        "SELECT security_id, exchange_segment FROM trades"
+        " WHERE underlying=? AND option_type=? AND strike=?"
+        " AND (expiry LIKE ? OR ?='')"
+        " AND security_id != ''"
+        " ORDER BY date DESC LIMIT 1",
+        (underlying, option_type, strike, f"%{expiry[:10]}%", expiry),
+    ).fetchone()
+
+    if not row:
+        return jsonify({
+            "candles": [],
+            "error": (
+                f"No security_id found for {underlying} {strike} {option_type}"
+                + (f" expiry {expiry}" if expiry else "")
+                + ". Import trades for this option first."
+            ),
+        })
+
+    security_id      = row["security_id"]
+    exchange_segment = row["exchange_segment"]
+
+    # Dhan supports 1, 5, 15, 25, 60 natively; 3m = fetch 1m and aggregate
+    fetch_interval = 1 if interval == 3 else interval
+    candles, err = _fetch_option_candles(
+        security_id, exchange_segment, from_date, to_date, fetch_interval
+    )
+    if err:
+        return jsonify({"candles": [], "error": f"Dhan error: {err}"})
+
+    if interval == 3:
+        candles = _aggregate_candles(candles, 3)
+
+    logger.info("Option candles: %s %s %s %s→%s ivl=%dm → %d candles",
+                underlying, strike, option_type, from_date, to_date, interval, len(candles))
+    return jsonify({"candles": candles, "error": "", "security_id": security_id,
+                    "exchange_segment": exchange_segment})
+
+
 # ── HTML page ─────────────────────────────────────────────────────────────────────────────────
 
 
@@ -1319,6 +1685,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <span id="ivl">&#8212;</span>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
+  <a href="/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
 </div>
 <div id="main">
   <div id="chartsArea">
