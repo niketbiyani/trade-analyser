@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v55"
+APP_VERSION = "v56"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -801,31 +801,51 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
 
 
 def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[dict], str]:
-    """Fetch up to 3 previous trading days as warmup data.
+    """Fetch warmup candles for EMA/RSI/MACD convergence.
 
-    Returns (candles, summary_log) where summary_log is a human-readable string
-    describing which days were fetched and which were skipped (and why).
+    Primary path: single /charts/historical batch call for the full date range —
+    one API call, no rate-limit risk, fast.
 
-    Uses 0.5s inter-call sleep + 1 retry (1.5s backoff) to avoid Dhan rate-limiting
-    that causes every-other-call failures in rapid sequential warmup loops.
+    Fallback: individual intraday calls per day with a short inter-call pause.
     """
-    current   = datetime.strptime(to_day, "%Y-%m-%d")
-    cutoff    = datetime.strptime(from_day, "%Y-%m-%d")
+    # Primary: batch historical call covering the full warmup range
+    raw_resp, dhan_err = _raw_dhan_chart(
+        idx["security_id"], idx["exchange_segment"], idx["instrument_type"],
+        to_day, from_date=from_day
+    )
+    if not dhan_err:
+        batch_candles = _parse_dhan_candles(raw_resp, to_day)
+        if batch_candles:
+            # Group by trading date, keep 3 most recent days
+            day_groups: dict[str, list] = {}
+            for c in batch_candles:
+                dt = datetime.utcfromtimestamp(c["time"]).strftime("%Y-%m-%d")
+                day_groups.setdefault(dt, []).append(c)
+            trading_days = sorted(day_groups.keys())
+            keep_days = trading_days[-3:] if len(trading_days) > 3 else trading_days
+            result: list[dict] = []
+            for d in keep_days:
+                result.extend(day_groups[d])
+            summary = " | ".join(f"{d}: {len(day_groups[d])} candles" for d in keep_days)
+            logger.info("Warmup batch: %d days, %d candles (%s..%s)",
+                        len(keep_days), len(result), from_day, to_day)
+            return result, summary
+
+    # Fallback: individual intraday calls per day
+    logger.info("Warmup batch returned nothing (%s) — falling back to per-day calls",
+                dhan_err or "0 candles")
+    current = datetime.strptime(to_day, "%Y-%m-%d")
+    cutoff  = datetime.strptime(from_day, "%Y-%m-%d")
     all_candles: list[dict] = []
     days_found = 0
     log_parts: list[str] = []
     first_call = True
     while current >= cutoff and days_found < 3:
         day_str = current.strftime("%Y-%m-%d")
-        # Small pause between calls to avoid Dhan rate-limiting
         if not first_call:
-            time.sleep(0.5)
+            time.sleep(0.2)
         first_call = False
         candles = _fetch_day_candles(idx, day_str)
-        if not candles:
-            # Single retry with longer backoff before giving up on this day
-            time.sleep(1.5)
-            candles = _fetch_day_candles(idx, day_str)
         if candles:
             all_candles = candles + all_candles
             days_found += 1
@@ -833,7 +853,6 @@ def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[d
             logger.info("Warmup day %d: %d candles from %s", days_found, len(candles), day_str)
         else:
             log_parts.append(f"{day_str}: no data")
-            logger.info("Warmup: no data for %s, trying earlier", day_str)
         current -= timedelta(days=1)
     if not all_candles:
         logger.warning("Warmup: no trading data found between %s and %s", from_day, to_day)
@@ -1611,18 +1630,21 @@ async function loadChart() {{
     document.getElementById('ivl').textContent=d.interval||'--';
     if(d.warmup_log) console.log('[warmup]', d.warmup_log);
     if (candles.length) {{
-      // All candles (including warmup) go into indicators for warmup calculation.
+      // All candles (including warmup) stay in `candles` for indicator warmup.
       // Only display today + the single immediately-preceding trading day with data
       // so there are no visible date gaps in the chart.
       var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
       var _prevDay=candles.filter(function(c){{return c.time<_cut;}});
       var _showFrom=_cut;
       if(_prevDay.length){{
+        // Find midnight (UTC) of the day the last warmup candle belongs to.
+        // Use epoch arithmetic (no new Date()) to stay timezone-safe.
         var _lastPrevTs=_prevDay[_prevDay.length-1].time;
-        var _prevDt=new Date(_lastPrevTs*1000).toISOString().slice(0,10);
-        _showFrom=Date.UTC(+_prevDt.slice(0,4),+_prevDt.slice(5,7)-1,+_prevDt.slice(8,10))/1000;
+        _showFrom=Math.floor(_lastPrevTs/86400)*86400;
       }}
-      series.setData(candles.filter(function(c){{return c.time>=_showFrom;}}));
+      var _displayCandles=candles.filter(function(c){{return c.time>=_showFrom;}});
+      // Safety: if filter produced nothing, show all candles rather than blank chart
+      series.setData(_displayCandles.length?_displayCandles:candles);
       hideChartMsg();
       updateIndicators();
       // Pin visible window to today's trading hours (9:00–15:35 IST).
