@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v61"
+APP_VERSION = "v62"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1043,7 +1043,7 @@ def _option_chart_page() -> str:
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
-body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
+body{{background:#0d0d0d;color:#ccc;font:13px/1.4 ‘Segoe UI’,sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
 #hdr{{display:flex;align-items:center;gap:12px;padding:6px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;}}
 #hdr a{{color:#555;text-decoration:none;font-size:11px;}}
 #hdr a:hover{{color:#aaa;}}
@@ -1051,13 +1051,11 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
 .badge{{font-size:10px;color:#555;}}
 .ivl-btn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
 .ivl-btn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
-/* chart */
 #chartArea{{flex:1;min-height:0;position:relative;border-bottom:1px solid #1e1e1e;}}
 #chartEl{{width:100%;height:100%;}}
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
 #errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
-/* trades pane */
 #tradesPane{{flex:0 0 255px;display:flex;flex-direction:column;min-height:0;}}
 #tp-hdr{{padding:5px 12px;border-bottom:1px solid #1e1e1e;display:flex;align-items:center;gap:8px;flex-shrink:0;background:#080808;}}
 .nbtn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:12px;}}
@@ -1066,7 +1064,6 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
 #tcount{{font-size:11px;color:#555;}}
 .mbtn{{margin-left:auto;background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;white-space:nowrap;}}
 .mbtn:hover{{border-color:#555;color:#bbb;}}
-/* manual form */
 #manualForm{{padding:8px 12px;border-bottom:1px solid #1e1e1e;background:#060606;display:none;flex-shrink:0;}}
 .mrow{{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;}}
 .mf{{display:flex;flex-direction:column;gap:3px;}}
@@ -1074,7 +1071,6 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
 .mf input,.mf select{{background:#111;border:1px solid #2a2a2a;color:#ccc;padding:4px 6px;border-radius:3px;font-size:12px;}}
 .gobtn{{background:#1a2a1a;border:1px solid #3a6a3a;color:#4fc3f7;padding:5px 14px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;align-self:flex-end;}}
 .gobtn:hover{{background:#224422;}}
-/* table */
 #tp-body{{flex:1;overflow-y:auto;}}
 table{{width:100%;border-collapse:collapse;font-size:12px;}}
 thead th{{position:sticky;top:0;background:#0a0a0a;color:#555;font-weight:500;padding:5px 10px;text-align:left;border-bottom:1px solid #1e1e1e;font-size:11px;white-space:nowrap;}}
@@ -1129,8 +1125,8 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
         <input type="number" id="mf-strike" placeholder="24500" step="50" style="width:78px;">
       </div>
       <div class="mf">
-        <label>Expiry</label>
-        <input type="date" id="mf-expiry" style="width:128px;" title="Required — sets the to-date for the chart">
+        <label>Expiry (required)</label>
+        <input type="date" id="mf-expiry" style="width:128px;">
       </div>
       <button class="gobtn" onclick="loadManualChart()">Load</button>
     </div>
@@ -1147,163 +1143,234 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
   </div>
 </div>
 <script>
-var _chart=null,_series=null,_curIvl=1,_selRow=null;
-var TODAY='{today}';
+var _chart=null, _series=null, _markersPlugin=null, _curIvl=1, _selRow=null;
+var _tradeDates=[], TODAY=’{today}’;
 
+// ── Chart init ───────────────────────────────────────────────────────────────
 (function initChart(){{
-  var el=document.getElementById('chartEl');
+  var el=document.getElementById(‘chartEl’);
   _chart=LightweightCharts.createChart(el,{{
-    layout:{{background:{{color:'#0d0d0d'}},textColor:'#aaa'}},
-    grid:{{vertLines:{{color:'#1a1a1a'}},horzLines:{{color:'#1a1a1a'}}}},
-    crosshair:{{mode:1}},
-    rightPriceScale:{{borderColor:'#2a2a2a'}},
-    timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false}},
+    layout:{{background:{{color:’#0d0d0d’}},textColor:’#aaa’}},
+    grid:{{vertLines:{{color:’#1a1a1a’}},horzLines:{{color:’#1a1a1a’}}}},
+    crosshair:{{mode:0}},   // 0=Normal in LWC v5 (1=Magnet)
+    rightPriceScale:{{borderColor:’#2a2a2a’}},
+    timeScale:{{borderColor:’#2a2a2a’,timeVisible:true,secondsVisible:false}},
   }});
   _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
-    upColor:'#3fb950',downColor:'#f85149',
-    borderUpColor:'#3fb950',borderDownColor:'#f85149',
-    wickUpColor:'#3fb950',wickDownColor:'#f85149',
+    upColor:’#3fb950’,downColor:’#f85149’,
+    borderUpColor:’#3fb950’,borderDownColor:’#f85149’,
+    wickUpColor:’#3fb950’,wickDownColor:’#f85149’,
   }});
+  _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
   new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
 }})();
 
+// ── Interval ─────────────────────────────────────────────────────────────────
 function setIvl(n){{
   _curIvl=n;
   [1,3,5,15].forEach(function(v){{
-    var b=document.getElementById('ivl'+v);
-    if(b) b.className='ivl-btn'+(v===n?' on':'');
+    var b=document.getElementById(‘ivl’+v);
+    if(b) b.className=’ivl-btn’+(v===n?’ on’:’’);
   }});
   if(_selRow) _selRow._load();
 }}
 
-function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
-function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
-function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
+function showMsg(m){{var e=document.getElementById(‘msgEl’);e.style.display=’’;e.textContent=m;}}
+function hideMsg(){{document.getElementById(‘msgEl’).style.display=’none’;}}
+function showErr(m){{var e=document.getElementById(‘errBanner’);e.style.display=m?’’:’none’;e.textContent=m||’’;}}
 
-function shiftDay(d){{
-  var cur=document.getElementById('dateIn').value;
+// ── Date nav (jumps between trading days with trades) ─────────────────────────
+async function loadDates(){{
+  try{{
+    var r=await fetch(‘/api/dates’);
+    _tradeDates=await r.json(); // newest first
+  }}catch(e){{}}
+}}
+
+function shiftDay(dir){{
+  var cur=document.getElementById(‘dateIn’).value;
+  if(_tradeDates.length){{
+    var idx=_tradeDates.indexOf(cur);
+    var next;
+    if(dir<0){{ next=idx<0?_tradeDates[0]:_tradeDates[Math.min(idx+1,_tradeDates.length-1)]; }}
+    else      {{ next=idx<0?_tradeDates[_tradeDates.length-1]:_tradeDates[Math.max(idx-1,0)]; }}
+    if(next){{loadDate(next);return;}}
+  }}
   if(!cur) return;
-  var p=cur.split('-');
+  var p=cur.split(‘-’);
   var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
-  dt.setUTCDate(dt.getUTCDate()+d);
+  dt.setUTCDate(dt.getUTCDate()+dir);
   loadDate(dt.toISOString().slice(0,10));
 }}
 
+// ── Load trades for a date ────────────────────────────────────────────────────
 async function loadDate(d){{
-  document.getElementById('dateIn').value=d;
-  if(_selRow){{_selRow.classList.remove('sel');_selRow=null;}}
-  var tbody=document.getElementById('tbody');
-  var no=document.getElementById('noTrades');
-  no.textContent='Loading…';no.style.display='';
-  document.getElementById('tbl').style.display='none';
+  document.getElementById(‘dateIn’).value=d;
+  if(_selRow){{_selRow.classList.remove(‘sel’);_selRow=null;}}
+  var tbody=document.getElementById(‘tbody’);
+  var no=document.getElementById(‘noTrades’);
+  no.textContent=’Loading…’;no.style.display=’’;
+  document.getElementById(‘tbl’).style.display=’none’;
   try{{
-    var resp=await fetch('/api/trades?date='+d);
+    var resp=await fetch(‘/api/trades?date=’+d);
     var trades=await resp.json();
-    document.getElementById('tcount').textContent=
-      trades.length ? trades.length+' trade'+(trades.length>1?'s':'') : '';
-    if(!trades.length){{no.textContent='No trades on this date';return;}}
-    tbody.innerHTML='';
+    document.getElementById(‘tcount’).textContent=
+      trades.length?trades.length+’ trade’+(trades.length>1?’s’:’’):’’;
+    if(!trades.length){{no.textContent=’No trades on this date’;return;}}
+    tbody.innerHTML=’’;
     trades.forEach(function(t){{
-      var tr=document.createElement('tr');
-      var oc=t.option_type==='CE'?'ce':'pe';
-      var pc=t.pnl>0?'g':t.pnl<0?'r':'';
-      var pstr=t.pnl!=null?'₹'+(t.pnl>=0?'+':'')+Math.round(t.pnl):'—';
-      var exp=(t.expiry||'').slice(0,10);
+      var tr=document.createElement(‘tr’);
+      var oc=t.option_type===’CE’?’ce’:’pe’;
+      var pc=t.pnl>0?’g’:t.pnl<0?’r’:’’;
+      var pstr=t.pnl!=null?’₹’+(t.pnl>=0?’+’:’’)+Math.round(t.pnl):’—‘;
+      var exp=(t.expiry||’’).slice(0,10);
       tr.innerHTML=
-        '<td>'+(t.entry_time||'').slice(0,5)+'</td>'+
-        '<td class="'+oc+'">'+t.option_type+'</td>'+
-        '<td>'+t.strike+'</td>'+
-        '<td style="color:#555">'+exp+'</td>'+
-        '<td>'+fp(t.entry_price)+'</td>'+
-        '<td>'+fp(t.exit_price)+'</td>'+
-        '<td class="'+pc+'">'+pstr+'</td>'+
-        '<td><span class="dtag">'+(t.direction||'SHORT').charAt(0)+'</span></td>';
-      tr._t=t;
+        ‘<td>’+(t.entry_time||’’).slice(0,5)+’</td>’+
+        ‘<td class="’+oc+’">’+t.option_type+’</td>’+
+        ‘<td>’+t.strike+’</td>’+
+        ‘<td style="color:#555">’+exp+’</td>’+
+        ‘<td>’+fp(t.entry_price)+’</td>’+
+        ‘<td>’+fp(t.exit_price)+’</td>’+
+        ‘<td class="’+pc+’">’+pstr+’</td>’+
+        ‘<td><span class="dtag">’+(t.direction||’SHORT’).charAt(0)+’</span></td>’;
       tr._load=function(){{loadTradeChart(t,tr);}};
       tr.onclick=function(){{
-        if(_selRow)_selRow.classList.remove('sel');
-        _selRow=tr;tr.classList.add('sel');
+        if(_selRow)_selRow.classList.remove(‘sel’);
+        _selRow=tr;tr.classList.add(‘sel’);
         tr._load();
       }};
       tbody.appendChild(tr);
     }});
-    no.style.display='none';document.getElementById('tbl').style.display='';
-  }}catch(e){{no.textContent='Error loading trades';}}
+    no.style.display=’none’;document.getElementById(‘tbl’).style.display=’’;
+  }}catch(e){{no.textContent=’Error loading trades’;}}
 }}
 
-function fp(v){{return v!=null?v.toFixed(1):'—';}}
+function fp(v){{return v!=null?v.toFixed(1):’—‘;}}
 
+// ── Timestamp helpers ─────────────────────────────────────────────────────────
+// IST-as-UTC: treat IST string as UTC so TradingView displays IST clock time
+function tradeTs(dateStr,timeStr){{
+  var d=dateStr.split(‘-’),t=(timeStr||’00:00:00’).split(‘:’);
+  return Date.UTC(+d[0],+d[1]-1,+d[2],+t[0]||0,+t[1]||0,+t[2]||0)/1000;
+}}
+function snapTs(ts,candles){{
+  var best=candles[0].time,bestDiff=Math.abs(candles[0].time-ts);
+  for(var i=1;i<candles.length;i++){{
+    var diff=Math.abs(candles[i].time-ts);
+    if(diff<bestDiff){{bestDiff=diff;best=candles[i].time;}}
+    if(candles[i].time>ts+120) break;
+  }}
+  return best;
+}}
+
+// ── Entry/exit markers ────────────────────────────────────────────────────────
+function putMarkers(t,candles){{
+  if(!_markersPlugin||!candles.length) return;
+  var markers=[];
+  var optColor=t.option_type===’CE’?’#4fc3f7’:’#ffb74d’;
+  if(t.entry_time){{
+    markers.push({{
+      time:snapTs(tradeTs(t.date,t.entry_time),candles),
+      position:’aboveBar’,shape:’arrowDown’,color:optColor,
+      text:’E ’+fp(t.entry_price),
+    }});
+  }}
+  if(t.exit_time&&t.exit_price!=null){{
+    var xc=t.pnl>0?’#3fb950’:’#f85149’;
+    markers.push({{
+      time:snapTs(tradeTs(t.date,t.exit_time),candles),
+      position:’belowBar’,shape:’arrowUp’,color:xc,
+      text:’X ’+fp(t.exit_price),
+    }});
+  }}
+  markers.sort(function(a,b){{return a.time-b.time;}});
+  _markersPlugin.setMarkers(markers);
+}}
+
+// ── Load option chart for a clicked trade ─────────────────────────────────────
 async function loadTradeChart(t,row){{
-  showMsg('Loading…');showErr('');
-  var expDate=(t.expiry||'').slice(0,10);
-  // from_date = trade date (when we entered), to_date = expiry date of the option
-  var fromDate=t.date||TODAY;
+  showMsg(‘Loading…’);showErr(‘’);
+  var expDate=(t.expiry||’’).slice(0,10);
   var toDate=expDate||TODAY;
-  var url='/api/option-candles'
-    +'?security_id='+encodeURIComponent(t.security_id||'')
-    +'&exchange_segment='+encodeURIComponent(t.exchange_segment||'')
-    +'&underlying='+encodeURIComponent(t.underlying||'')
-    +'&option_type='+encodeURIComponent(t.option_type||'')
-    +'&strike='+encodeURIComponent(t.strike||'')
-    +'&expiry='+encodeURIComponent(expDate)
-    +'&from_date='+encodeURIComponent(fromDate)
-    +'&to_date='+encodeURIComponent(toDate)
-    +'&interval='+_curIvl;
-  try{{
-    var r=await fetch(url);var d=await r.json();
-    if(d.error){{showMsg('');showErr(d.error);return;}}
-    var c=d.candles||[];
-    if(!c.length){{showMsg('No data — option may have expired outside Dhan’s rolling window');return;}}
-    _series.setData(c);
-    _chart.timeScale().fitContent();
-    hideMsg();
-    document.getElementById('chartTitle').textContent=
-      t.underlying+' '+t.strike+' '+t.option_type
-      +(expDate?' · exp:'+expDate:'')
-      +' · '+_curIvl+'m · '+c.length+' bars';
-  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
-}}
-
-function toggleManual(){{
-  var f=document.getElementById('manualForm');
-  var open=f.style.display==='block';
-  f.style.display=open?'none':'block';
-  document.getElementById('mtoggle').textContent=open?'+ Manual':'✕ Manual';
-}}
-
-async function loadManualChart(){{
-  var ul=document.getElementById('mf-ul').value;
-  var ot=document.getElementById('mf-ot').value;
-  var strike=document.getElementById('mf-strike').value;
-  var expiry=document.getElementById('mf-expiry').value;
-  if(!strike){{showErr('Enter a strike price');return;}}
-  if(!expiry){{showErr('Enter expiry date (sets the end of the chart range)');return;}}
-  showMsg('Loading…');showErr('');
-  if(_selRow){{_selRow.classList.remove('sel');_selRow=null;}}
-  // from_date = 30 days before expiry (covers the option's typical life)
-  // to_date   = expiry date
-  var p=expiry.split('-');
+  // Widen from_date: 30 days before expiry to cover weekly options fully
+  var p=(expDate||TODAY).split(‘-’);
   var expDt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
   expDt.setUTCDate(expDt.getUTCDate()-30);
   var fromDate=expDt.toISOString().slice(0,10);
-  var url='/api/option-candles'
-    +'?underlying='+ul+'&option_type='+ot+'&strike='+strike
-    +'&expiry='+expiry+'&from_date='+fromDate+'&to_date='+expiry
-    +'&interval='+_curIvl;
+  var url=’/api/option-candles’
+    +’?security_id=’+encodeURIComponent(t.security_id||’’)
+    +’&exchange_segment=’+encodeURIComponent(t.exchange_segment||’’)
+    +’&underlying=’+encodeURIComponent(t.underlying||’’)
+    +’&option_type=’+encodeURIComponent(t.option_type||’’)
+    +’&strike=’+encodeURIComponent(t.strike||’’)
+    +’&expiry=’+encodeURIComponent(expDate)
+    +’&from_date=’+encodeURIComponent(fromDate)
+    +’&to_date=’+encodeURIComponent(toDate)
+    +’&interval=’+_curIvl;
   try{{
     var r=await fetch(url);var d=await r.json();
-    if(d.error){{showMsg('');showErr(d.error);return;}}
+    if(d.error){{showMsg(‘’);showErr(d.error);return;}}
     var c=d.candles||[];
-    if(!c.length){{showMsg('No data returned for this option');return;}}
+    if(!c.length){{
+      showMsg(‘No data — option may have expired outside Dhan’s rolling window’);
+      return;
+    }}
     _series.setData(c);
     _chart.timeScale().fitContent();
+    putMarkers(t,c);
     hideMsg();
-    document.getElementById('chartTitle').textContent=
-      ul+' '+strike+' '+ot+' · exp:'+expiry+' · '+_curIvl+'m · '+c.length+' bars';
-  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
+    document.getElementById(‘chartTitle’).textContent=
+      t.underlying+’ ‘+t.strike+’ ‘+t.option_type
+      +(expDate?’ · exp:’+expDate:’’)
+      +’ · ‘+_curIvl+’m · ‘+c.length+’ bars’;
+  }}catch(e){{showMsg(‘’);showErr(‘Error: ‘+e.message);}}
 }}
 
-loadDate(TODAY);
+// ── Manual lookup ─────────────────────────────────────────────────────────────
+function toggleManual(){{
+  var f=document.getElementById(‘manualForm’);
+  var open=f.style.display===’block’;
+  f.style.display=open?’none’:’block’;
+  document.getElementById(‘mtoggle’).textContent=open?’+ Manual’:’✕ Manual’;
+}}
+
+async function loadManualChart(){{
+  var ul=document.getElementById(‘mf-ul’).value;
+  var ot=document.getElementById(‘mf-ot’).value;
+  var strike=document.getElementById(‘mf-strike’).value;
+  var expiry=document.getElementById(‘mf-expiry’).value;
+  if(!strike){{showErr(‘Enter a strike price’);return;}}
+  if(!expiry){{showErr(‘Enter expiry date — sets the end of the chart range’);return;}}
+  showMsg(‘Loading…’);showErr(‘’);
+  if(_selRow){{_selRow.classList.remove(‘sel’);_selRow=null;}}
+  // from_date = 30 days before expiry, to_date = expiry
+  var p=expiry.split(‘-’);
+  var expDt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
+  expDt.setUTCDate(expDt.getUTCDate()-30);
+  var fromDate=expDt.toISOString().slice(0,10);
+  var url=’/api/option-candles’
+    +’?underlying=’+ul+’&option_type=’+ot+’&strike=’+strike
+    +’&expiry=’+expiry+’&from_date=’+fromDate+’&to_date=’+expiry
+    +’&interval=’+_curIvl;
+  try{{
+    var r=await fetch(url);var d=await r.json();
+    if(d.error){{showMsg(‘’);showErr(d.error);return;}}
+    var c=d.candles||[];
+    if(!c.length){{showMsg(‘No data returned for this option’);return;}}
+    _series.setData(c);
+    _chart.timeScale().fitContent();
+    _markersPlugin.setMarkers([]);
+    hideMsg();
+    document.getElementById(‘chartTitle’).textContent=
+      ul+’ ‘+strike+’ ‘+ot+’ · exp:’+expiry+’ · ‘+_curIvl+’m · ‘+c.length+’ bars’;
+  }}catch(e){{showMsg(‘’);showErr(‘Error: ‘+e.message);}}
+}}
+
+// ── Init: load dates then jump to most recent trading day ─────────────────────
+loadDates().then(function(){{
+  var startDate=_tradeDates.length?_tradeDates[0]:TODAY;
+  loadDate(startDate);
+}});
 </script>
 </body>
 </html>"""
