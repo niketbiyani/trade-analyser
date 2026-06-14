@@ -9,6 +9,7 @@ import random
 import socket
 import sqlite3
 import threading
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v54"
+APP_VERSION = "v55"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -804,15 +805,27 @@ def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[d
 
     Returns (candles, summary_log) where summary_log is a human-readable string
     describing which days were fetched and which were skipped (and why).
+
+    Uses 0.5s inter-call sleep + 1 retry (1.5s backoff) to avoid Dhan rate-limiting
+    that causes every-other-call failures in rapid sequential warmup loops.
     """
     current   = datetime.strptime(to_day, "%Y-%m-%d")
     cutoff    = datetime.strptime(from_day, "%Y-%m-%d")
     all_candles: list[dict] = []
     days_found = 0
     log_parts: list[str] = []
+    first_call = True
     while current >= cutoff and days_found < 3:
         day_str = current.strftime("%Y-%m-%d")
+        # Small pause between calls to avoid Dhan rate-limiting
+        if not first_call:
+            time.sleep(0.5)
+        first_call = False
         candles = _fetch_day_candles(idx, day_str)
+        if not candles:
+            # Single retry with longer backoff before giving up on this day
+            time.sleep(1.5)
+            candles = _fetch_day_candles(idx, day_str)
         if candles:
             all_candles = candles + all_candles
             days_found += 1
@@ -1597,10 +1610,19 @@ async function loadChart() {{
     candles=d.candles||[]; curInterval=d.interval||'1m';
     document.getElementById('ivl').textContent=d.interval||'--';
     if(d.warmup_log) console.log('[warmup]', d.warmup_log);
-    // Show all candles (warmup days + trade date) — warmup is off-screen left by default.
-    // Visible range is pinned to today's trading hours; user can scroll left for context.
-    series.setData(candles);
     if (candles.length) {{
+      // All candles (including warmup) go into indicators for warmup calculation.
+      // Only display today + the single immediately-preceding trading day with data
+      // so there are no visible date gaps in the chart.
+      var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
+      var _prevDay=candles.filter(function(c){{return c.time<_cut;}});
+      var _showFrom=_cut;
+      if(_prevDay.length){{
+        var _lastPrevTs=_prevDay[_prevDay.length-1].time;
+        var _prevDt=new Date(_lastPrevTs*1000).toISOString().slice(0,10);
+        _showFrom=Date.UTC(+_prevDt.slice(0,4),+_prevDt.slice(5,7)-1,+_prevDt.slice(8,10))/1000;
+      }}
+      series.setData(candles.filter(function(c){{return c.time>=_showFrom;}}));
       hideChartMsg();
       updateIndicators();
       // Pin visible window to today's trading hours (9:00–15:35 IST).
