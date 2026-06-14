@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v53"
+APP_VERSION = "v54"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1232,7 +1232,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 ::-webkit-scrollbar {{ width: 5px; height: 5px }}
 ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px }}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <div id="bar">
@@ -1338,7 +1338,7 @@ window.onerror = function(msg, src, line, col, err) {{
   d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#b71c1c;color:#fff;' +
     'font:11px monospace;padding:8px 12px;z-index:9999;white-space:pre-wrap;word-break:break-all;';
   d.textContent = 'JS ERROR (line ' + line + '): ' + msg +
-    (err && err.stack ? '\n' + err.stack.slice(0, 400) : '');
+    (err && err.stack ? '\\n' + err.stack.slice(0, 400) : '');
   document.body.appendChild(d);
   return false;
 }};
@@ -1428,13 +1428,11 @@ function initChart() {{
       color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false
     }}, 2);
 
-    // Pane proportions: main=5, RSI=1.2, MACD=1.2
-    try {{
-      var panes = _chartInst.panes();
-      if (panes[0]) panes[0].setStretchFactor(_PANE_FACTORS[0]);
-      if (panes[1]) panes[1].setStretchFactor(_PANE_FACTORS[1]);
-      if (panes[2]) panes[2].setStretchFactor(_PANE_FACTORS[2]);
-    }} catch(x) {{ console.warn('Pane stretch not available:', x.message); }}
+    // Pane proportions: main=5, RSI=1.2, MACD=1.2  (setStretchFactor available in v5.2+)
+    var _initPanes = _chartInst.panes();
+    if (_initPanes[0]) _initPanes[0].setStretchFactor(_PANE_FACTORS[0]);
+    if (_initPanes[1]) _initPanes[1].setStretchFactor(_PANE_FACTORS[1]);
+    if (_initPanes[2]) _initPanes[2].setStretchFactor(_PANE_FACTORS[2]);
 
     // Pane buttons (HTML overlays) call togglePaneExpand(n) directly — no canvas event needed.
 
