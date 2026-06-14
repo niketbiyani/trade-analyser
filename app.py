@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v64"
+APP_VERSION = "v65"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2592,14 +2592,15 @@ function putMarkers(trades){{
     var t=list[i];
     var col=t.option_type==='CE'?'#4fc3f7':'#ffb74d';
     var ets=tsFor(curDate,t.entry_time);
-    if(ets)markers.push({{time:snapTs(ets),position:'aboveBar',color:col,shape:'arrowDown',text:'E '+fp(t.entry_price),id:'e'+t.id}});
+    var lbl=t.option_type+' '+(t.strike?t.strike.toLocaleString('en-IN'):'');
+    if(ets)markers.push({{time:snapTs(ets),position:'aboveBar',color:col,shape:'arrowDown',text:'E '+lbl,id:'e'+t.id}});
     if(t.exit_time&&t.exit_price!=null){{
       var xts=tsFor(curDate,t.exit_time);
       if(xts)markers.push({{
         time:snapTs(xts),position:'belowBar',
         color:(t.pnl!=null&&t.pnl>=0)?'#4caf50':'#ef5350',
         shape:'arrowUp',
-        text:'X '+fp(t.exit_price),
+        text:'X '+(t.pnl!=null?(t.pnl>=0?'+':'')+Math.round(t.pnl):t.exit_price.toFixed(0)),
         id:'x'+t.id
       }});
     }}
