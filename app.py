@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v56"
+APP_VERSION = "v57"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1630,21 +1630,9 @@ async function loadChart() {{
     document.getElementById('ivl').textContent=d.interval||'--';
     if(d.warmup_log) console.log('[warmup]', d.warmup_log);
     if (candles.length) {{
-      // All candles (including warmup) stay in `candles` for indicator warmup.
-      // Only display today + the single immediately-preceding trading day with data
-      // so there are no visible date gaps in the chart.
-      var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
-      var _prevDay=candles.filter(function(c){{return c.time<_cut;}});
-      var _showFrom=_cut;
-      if(_prevDay.length){{
-        // Find midnight (UTC) of the day the last warmup candle belongs to.
-        // Use epoch arithmetic (no new Date()) to stay timezone-safe.
-        var _lastPrevTs=_prevDay[_prevDay.length-1].time;
-        _showFrom=Math.floor(_lastPrevTs/86400)*86400;
-      }}
-      var _displayCandles=candles.filter(function(c){{return c.time>=_showFrom;}});
-      // Safety: if filter produced nothing, show all candles rather than blank chart
-      series.setData(_displayCandles.length?_displayCandles:candles);
+      // Show all loaded candles (warmup days + trade date).
+      // Batch warmup ensures consecutive trading days so no gaps.
+      series.setData(candles);
       hideChartMsg();
       updateIndicators();
       // Pin visible window to today's trading hours (9:00–15:35 IST).
