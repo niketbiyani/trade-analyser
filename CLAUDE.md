@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v58`
+**Current version:** `v63`
 
 ---
 
@@ -238,6 +238,40 @@ Dashboard: `http://YOUR_VPS_IP:5556`
 
 ---
 
+## Option Chart page (`/option-chart`)
+
+Added in v60–v63. Separate page from the main index chart.
+
+**Layout:** Chart on top (TradingView LWC v5.2.0), trades pane at bottom (265px).
+
+**Bottom pane — two tabs:**
+
+1. **By Date** — date nav (◀ date ▶, trade count, Manual button). Click any trade row → loads that option's premium chart with entry/exit markers. Date navigation uses `/api/dates` to jump between actual trading days.
+
+2. **By Expiry** — cascading dropdowns: Underlying → Expiry (shows "19 Jun 2026" format, sorted desc) → CE/PE toggle → Strike → auto-loads chart. Uses `/api/option-list` client-side (no extra routes). Covers expired options from imported trade data.
+
+**`from_date` strategy:** 30 days before expiry date (`fromDateFor(expDate)` in JS). Covers weekly options. For same-day expiry (0DTE), Dhan only returns that 1 day anyway.
+
+**LWC v5.2.0 differences from main page (v4.1.3):**
+- `crosshair: { mode: 0 }` = Normal (mode:1 = Magnet in v5, opposite of v4!)
+- Markers: `LightweightCharts.createSeriesMarkers(series, [])` → plugin with `.setMarkers(markers)`
+- Loaded from `cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.mjs`
+
+**Key JS functions:**
+- `fetchAndDraw(qs, markerTrade, label)` — core fetch/render used by all load paths
+- `fromDateFor(expDate)` — returns 30 days before expiry
+- `tradeTs(dateStr, timeStr)` — IST string → Unix epoch (IST-as-UTC convention)
+- `snapTs(ts, candles)` — snaps trade timestamp to nearest candle (120s window)
+- `putMarkers(t, candles)` — entry (arrowDown, option colour) + exit (arrowUp, green/red)
+- `initExpiry()` — lazy-loads `/api/option-list` on first By Expiry tab switch
+- `switchTab(tab)` — shows/hides `#pane-d` / `#pane-e`
+
+**`/api/option-candles`** — accepts `security_id`+`exchange_segment` directly (from trade row) or does DB lookup by (underlying, option_type, strike, expiry). Supports `interval=1/3/5/15`; 3m is server-side aggregated via `_aggregate_candles()`.
+
+**`/api/option-list`** — returns up to 500 distinct options from trades DB, deduplicated by (underlying, option_type, strike, expiry). Used by By Expiry tab.
+
+---
+
 ## Pending / next work
 
 - **Spread grouping** — detect and visually group the sell leg + hedge leg of a credit spread (same underlying, same timestamp cluster, opposite strikes). Show as a bracketed pair on the chart with the net credit.
@@ -245,7 +279,8 @@ Dashboard: `http://YOUR_VPS_IP:5556`
 - **Session summary** — daily stats card: total trades, win rate, gross P&L, best/worst trade.
 - **Export** — CSV export of trade history for a date range.
 - **Open positions indicator** — trades with OPEN status (no exit) show entry marker only. Consider adding a "still open" visual indicator.
-- **SENSEX chart** — `^BSESN` on yfinance was removed; Dhan historical data for SENSEX needs the correct security_id verified in production.
+- **SENSEX chart** — Dhan historical data for SENSEX needs the correct security_id verified in production.
+- **By Expiry: verify expired options** — Dhan `/charts/intraday` may not return data for options expired more than 5 trading days ago. Need to test with real expired contracts.
 
 ---
 
