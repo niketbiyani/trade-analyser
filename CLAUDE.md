@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v15`
+**Current version:** `v58`
 
 ---
 
@@ -53,7 +53,9 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **`import_from_dhan()`** — wraps `_do_import` with auto-refresh-on-auth-error retry.
 
-**`_raw_dhan_chart(security_id, exchange_segment, instrument_type, to_date, from_date)`** — fetches 1-minute OHLCV candles from Dhan `intraday_minute_data`. Always `interval=1`. Supports up to 90 days per call; the app passes `from_date = previous trading day` and `to_date = trade_date` so there is data for EMA warmup.
+**`_raw_dhan_chart(security_id, exchange_segment, instrument_type, day, from_date)`** — fetches 1-minute OHLCV candles for a single day (or range if `from_date` given). Tries `/charts/historical` first (but that returns **daily** candles, not 1-minute — only useful for fallback), then `/charts/intraday` which reliably returns 1-minute candles for the last 5+ trading days.
+
+**`_fetch_warmup_candles(idx, from_day, to_day)`** — fetches warmup data via a **single batch call** to `intraday_minute_data` spanning the full warmup range. Groups parsed candles by trading date, keeps the 3 most recent days. Falls back to per-day calls (0.3s inter-call sleep) if batch returns nothing. **Do NOT use `/charts/historical` for 1-minute warmup** — that endpoint returns daily candles regardless of `type` parameter.
 
 **`chart_candles(underlying, trade_date)`** — main chart data function:
 - Looks up security_id/exchange_segment for NIFTY/SENSEX/BANKNIFTY
@@ -176,7 +178,13 @@ Dhan `createTime` is IST string `"YYYY-MM-DD HH:MM:SS"`. Strip timezone → naiv
 `LightweightCharts.CrosshairMode` and `LightweightCharts.LineStyle` are NOT reliably exported from the v4.1.3 standalone bundle. Referencing them throws silently inside try/catch, killing the entire chart init. Always use numeric values: `CrosshairMode.Normal = 1`, `LineStyle.Dashed = 1`, `LineStyle.Solid = 0`.
 
 ### Chart data always from Dhan
-yfinance has been removed entirely. All chart data comes from `dhan.intraday_minute_data()` which supports 5 years of 1m history. The app fetches `(prev_day, trade_date)` to give indicators enough warmup data.
+yfinance has been removed entirely. All chart data comes from `dhan.intraday_minute_data()` (endpoint: `/charts/intraday`).
+
+### Dhan endpoint distinction — CRITICAL
+- `/charts/intraday` (`intraday_minute_data`) → 1-minute candles, covers last 5+ trading days. **Use this for all 1-minute chart data.**
+- `/charts/historical` (`historical_daily_data`) → **daily candles only** (1 per day), regardless of any `type` parameter you add. Do NOT use for 1-minute warmup.
+
+Warmup batch: one `intraday_minute_data` call with `from_date=warmup_from 09:00, to_date=warmup_to 15:30` returns all 1-minute candles across the range. Group by date, keep 3 most recent trading days.
 
 ---
 
