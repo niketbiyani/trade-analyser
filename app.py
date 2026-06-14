@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v62"
+APP_VERSION = "v63"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1056,20 +1056,26 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 ‘Segoe UI’,sans-serif;disp
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
 #errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
-#tradesPane{{flex:0 0 255px;display:flex;flex-direction:column;min-height:0;}}
-#tp-hdr{{padding:5px 12px;border-bottom:1px solid #1e1e1e;display:flex;align-items:center;gap:8px;flex-shrink:0;background:#080808;}}
+/* bottom pane */
+#tradesPane{{flex:0 0 265px;display:flex;flex-direction:column;min-height:0;}}
+#tp-tabs{{display:flex;align-items:stretch;border-bottom:1px solid #1e1e1e;flex-shrink:0;background:#080808;}}
+.ptab{{flex:0 0 auto;background:none;border:none;border-bottom:2px solid transparent;color:#555;padding:6px 16px;cursor:pointer;font-size:12px;font-weight:500;}}
+.ptab.on{{color:#ccc;border-bottom-color:#4fc3f7;}}
+/* by-date pane */
+#pane-d{{display:flex;flex-direction:column;flex:1;min-height:0;}}
+#tp-hdr{{padding:5px 10px;border-bottom:1px solid #0f0f0f;display:flex;align-items:center;gap:7px;flex-shrink:0;}}
 .nbtn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:12px;}}
 .nbtn:hover{{border-color:#444;color:#ccc;}}
-#dateIn{{width:122px;background:#111;border:1px solid #2a2a2a;color:#ccc;padding:3px 6px;border-radius:3px;font-size:12px;}}
+#dateIn{{width:118px;background:#111;border:1px solid #2a2a2a;color:#ccc;padding:3px 6px;border-radius:3px;font-size:12px;}}
 #tcount{{font-size:11px;color:#555;}}
 .mbtn{{margin-left:auto;background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;white-space:nowrap;}}
 .mbtn:hover{{border-color:#555;color:#bbb;}}
-#manualForm{{padding:8px 12px;border-bottom:1px solid #1e1e1e;background:#060606;display:none;flex-shrink:0;}}
-.mrow{{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;}}
+#manualForm{{padding:8px 10px;border-bottom:1px solid #1e1e1e;background:#060606;display:none;flex-shrink:0;}}
+.mrow{{display:flex;gap:7px;align-items:flex-end;flex-wrap:wrap;}}
 .mf{{display:flex;flex-direction:column;gap:3px;}}
 .mf label{{font-size:10px;color:#666;}}
-.mf input,.mf select{{background:#111;border:1px solid #2a2a2a;color:#ccc;padding:4px 6px;border-radius:3px;font-size:12px;}}
-.gobtn{{background:#1a2a1a;border:1px solid #3a6a3a;color:#4fc3f7;padding:5px 14px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;align-self:flex-end;}}
+.mf input,.mf select,.mf2 select{{background:#111;border:1px solid #2a2a2a;color:#ccc;padding:4px 6px;border-radius:3px;font-size:12px;}}
+.gobtn{{background:#1a2a1a;border:1px solid #3a6a3a;color:#4fc3f7;padding:5px 12px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;align-self:flex-end;}}
 .gobtn:hover{{background:#224422;}}
 #tp-body{{flex:1;overflow-y:auto;}}
 table{{width:100%;border-collapse:collapse;font-size:12px;}}
@@ -1082,6 +1088,13 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
 .g{{color:#3fb950;}}.r{{color:#f85149;}}
 .dtag{{font-size:10px;color:#555;border:1px solid #222;padding:1px 4px;border-radius:2px;}}
 #noTrades{{padding:28px;text-align:center;color:#444;font-size:12px;}}
+/* by-expiry pane */
+#pane-e{{display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:12px 14px;gap:10px;}}
+.mf2{{display:flex;flex-direction:column;gap:4px;}}
+.mf2 label{{font-size:10px;color:#666;}}
+.mf2 select{{width:100%;}}
+.type-row{{display:flex;gap:6px;}}
+#e-err{{color:#f85149;font-size:11px;display:none;padding-top:2px;}}
 </style>
 </head>
 <body>
@@ -1103,154 +1116,203 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
   <div id="errBanner"></div>
 </div>
 <div id="tradesPane">
-  <div id="tp-hdr">
-    <button class="nbtn" onclick="shiftDay(-1)">&#9664;</button>
-    <input type="date" id="dateIn" value="{today}" onchange="loadDate(this.value)">
-    <button class="nbtn" onclick="shiftDay(1)">&#9654;</button>
-    <span id="tcount"></span>
-    <button class="mbtn" id="mtoggle" onclick="toggleManual()">&#43; Manual</button>
+  <div id="tp-tabs">
+    <button class="ptab on" id="tab-d" onclick="switchTab(‘d’)">By Date</button>
+    <button class="ptab"    id="tab-e" onclick="switchTab(‘e’)">By Expiry</button>
   </div>
-  <div id="manualForm">
-    <div class="mrow">
-      <div class="mf">
-        <label>Underlying</label>
-        <select id="mf-ul" style="width:95px;"><option>NIFTY</option><option>SENSEX</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option></select>
+
+  <!-- ── By Date ── -->
+  <div id="pane-d">
+    <div id="tp-hdr">
+      <button class="nbtn" onclick="shiftDay(-1)">&#9664;</button>
+      <input type="date" id="dateIn" value="{today}" onchange="loadDate(this.value)">
+      <button class="nbtn" onclick="shiftDay(1)">&#9654;</button>
+      <span id="tcount"></span>
+      <button class="mbtn" id="mtoggle" onclick="toggleManual()">&#43; Manual</button>
+    </div>
+    <div id="manualForm">
+      <div class="mrow">
+        <div class="mf">
+          <label>Underlying</label>
+          <select id="mf-ul" style="width:90px;"><option>NIFTY</option><option>SENSEX</option><option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option></select>
+        </div>
+        <div class="mf">
+          <label>Type</label>
+          <select id="mf-ot" style="width:52px;"><option>CE</option><option>PE</option></select>
+        </div>
+        <div class="mf">
+          <label>Strike</label>
+          <input type="number" id="mf-strike" placeholder="24500" step="50" style="width:75px;">
+        </div>
+        <div class="mf">
+          <label>Expiry (required)</label>
+          <input type="date" id="mf-expiry" style="width:124px;">
+        </div>
+        <button class="gobtn" onclick="loadManualChart()">Load</button>
       </div>
-      <div class="mf">
-        <label>Type</label>
-        <select id="mf-ot" style="width:55px;"><option>CE</option><option>PE</option></select>
-      </div>
-      <div class="mf">
-        <label>Strike</label>
-        <input type="number" id="mf-strike" placeholder="24500" step="50" style="width:78px;">
-      </div>
-      <div class="mf">
-        <label>Expiry (required)</label>
-        <input type="date" id="mf-expiry" style="width:128px;">
-      </div>
-      <button class="gobtn" onclick="loadManualChart()">Load</button>
+    </div>
+    <div id="tp-body">
+      <div id="noTrades">Loading&#8230;</div>
+      <table id="tbl" style="display:none">
+        <thead><tr>
+          <th>Time</th><th>Opt</th><th>Strike</th><th>Expiry</th>
+          <th>Entry &#8377;</th><th>Exit &#8377;</th><th>P&amp;L</th><th>Dir</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
     </div>
   </div>
-  <div id="tp-body">
-    <div id="noTrades">Loading&#8230;</div>
-    <table id="tbl" style="display:none">
-      <thead><tr>
-        <th>Time</th><th>Opt</th><th>Strike</th><th>Expiry</th>
-        <th>Entry &#8377;</th><th>Exit &#8377;</th><th>P&amp;L</th><th>Dir</th>
-      </tr></thead>
-      <tbody id="tbody"></tbody>
-    </table>
+
+  <!-- ── By Expiry ── -->
+  <div id="pane-e">
+    <div class="mf2">
+      <label>Underlying</label>
+      <select id="e-ul" onchange="populateExpiries()">
+        <option value="">All</option>
+        <option>NIFTY</option><option>SENSEX</option>
+        <option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option>
+      </select>
+    </div>
+    <div class="mf2">
+      <label>Expiry</label>
+      <select id="e-expiry" onchange="populateStrikes()">
+        <option value="">— select expiry —</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:10px;color:#666;display:block;margin-bottom:4px;">Type</label>
+      <div class="type-row">
+        <button class="ivl-btn on" id="e-ce" onclick="setExpType(‘CE’)">CE</button>
+        <button class="ivl-btn"    id="e-pe" onclick="setExpType(‘PE’)">PE</button>
+      </div>
+    </div>
+    <div class="mf2">
+      <label>Strike</label>
+      <select id="e-strike" onchange="onStrikeChange()">
+        <option value="">— select strike —</option>
+      </select>
+    </div>
+    <div id="e-err"></div>
   </div>
 </div>
 <script>
-var _chart=null, _series=null, _markersPlugin=null, _curIvl=1, _selRow=null;
-var _tradeDates=[], TODAY=’{today}’;
+var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_selRow=null;
+var _tradeDates=[],_optList=[],_eType='CE',TODAY='{today}';
 
-// ── Chart init ───────────────────────────────────────────────────────────────
+// ── Chart init ────────────────────────────────────────────────────────────────
 (function initChart(){{
-  var el=document.getElementById(‘chartEl’);
+  var el=document.getElementById('chartEl');
   _chart=LightweightCharts.createChart(el,{{
-    layout:{{background:{{color:’#0d0d0d’}},textColor:’#aaa’}},
-    grid:{{vertLines:{{color:’#1a1a1a’}},horzLines:{{color:’#1a1a1a’}}}},
-    crosshair:{{mode:0}},   // 0=Normal in LWC v5 (1=Magnet)
-    rightPriceScale:{{borderColor:’#2a2a2a’}},
-    timeScale:{{borderColor:’#2a2a2a’,timeVisible:true,secondsVisible:false}},
+    layout:{{background:{{color:'#0d0d0d'}},textColor:'#aaa'}},
+    grid:{{vertLines:{{color:'#1a1a1a'}},horzLines:{{color:'#1a1a1a'}}}},
+    crosshair:{{mode:0}},
+    rightPriceScale:{{borderColor:'#2a2a2a'}},
+    timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false}},
   }});
   _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
-    upColor:’#3fb950’,downColor:’#f85149’,
-    borderUpColor:’#3fb950’,borderDownColor:’#f85149’,
-    wickUpColor:’#3fb950’,wickDownColor:’#f85149’,
+    upColor:'#3fb950',downColor:'#f85149',
+    borderUpColor:'#3fb950',borderDownColor:'#f85149',
+    wickUpColor:'#3fb950',wickDownColor:'#f85149',
   }});
   _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
   new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
 }})();
 
-// ── Interval ─────────────────────────────────────────────────────────────────
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(tab){{
+  ['d','e'].forEach(function(t){{
+    document.getElementById('tab-'+t).className='ptab'+(t===tab?' on':'');
+    document.getElementById('pane-'+t).style.display=t===tab?'flex':'none';
+  }});
+  if(tab==='e'&&!_optList.length) initExpiry();
+}}
+
+// ── Interval ──────────────────────────────────────────────────────────────────
 function setIvl(n){{
   _curIvl=n;
   [1,3,5,15].forEach(function(v){{
-    var b=document.getElementById(‘ivl’+v);
-    if(b) b.className=’ivl-btn’+(v===n?’ on’:’’);
+    var b=document.getElementById('ivl'+v);
+    if(b) b.className='ivl-btn'+(v===n?' on':'');
   }});
   if(_selRow) _selRow._load();
 }}
 
-function showMsg(m){{var e=document.getElementById(‘msgEl’);e.style.display=’’;e.textContent=m;}}
-function hideMsg(){{document.getElementById(‘msgEl’).style.display=’none’;}}
-function showErr(m){{var e=document.getElementById(‘errBanner’);e.style.display=m?’’:’none’;e.textContent=m||’’;}}
+function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
+function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
+function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
+function fp(v){{return v!=null?v.toFixed(1):'—';}}
 
-// ── Date nav (jumps between trading days with trades) ─────────────────────────
-async function loadDates(){{
-  try{{
-    var r=await fetch(‘/api/dates’);
-    _tradeDates=await r.json(); // newest first
-  }}catch(e){{}}
+function fromDateFor(expDate){{
+  var p=(expDate||TODAY).split('-');
+  var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
+  dt.setUTCDate(dt.getUTCDate()-30);
+  return dt.toISOString().slice(0,10);
 }}
 
+// ── Date nav ──────────────────────────────────────────────────────────────────
+async function loadDates(){{
+  try{{var r=await fetch('/api/dates');_tradeDates=await r.json();}}catch(e){{}}
+}}
 function shiftDay(dir){{
-  var cur=document.getElementById(‘dateIn’).value;
+  var cur=document.getElementById('dateIn').value;
   if(_tradeDates.length){{
-    var idx=_tradeDates.indexOf(cur);
-    var next;
-    if(dir<0){{ next=idx<0?_tradeDates[0]:_tradeDates[Math.min(idx+1,_tradeDates.length-1)]; }}
-    else      {{ next=idx<0?_tradeDates[_tradeDates.length-1]:_tradeDates[Math.max(idx-1,0)]; }}
+    var idx=_tradeDates.indexOf(cur),next;
+    if(dir<0){{next=idx<0?_tradeDates[0]:_tradeDates[Math.min(idx+1,_tradeDates.length-1)];}}
+    else     {{next=idx<0?_tradeDates[_tradeDates.length-1]:_tradeDates[Math.max(idx-1,0)];}}
     if(next){{loadDate(next);return;}}
   }}
   if(!cur) return;
-  var p=cur.split(‘-’);
+  var p=cur.split('-');
   var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
   dt.setUTCDate(dt.getUTCDate()+dir);
   loadDate(dt.toISOString().slice(0,10));
 }}
 
-// ── Load trades for a date ────────────────────────────────────────────────────
+// ── By Date: load trades table ────────────────────────────────────────────────
 async function loadDate(d){{
-  document.getElementById(‘dateIn’).value=d;
-  if(_selRow){{_selRow.classList.remove(‘sel’);_selRow=null;}}
-  var tbody=document.getElementById(‘tbody’);
-  var no=document.getElementById(‘noTrades’);
-  no.textContent=’Loading…’;no.style.display=’’;
-  document.getElementById(‘tbl’).style.display=’none’;
+  document.getElementById('dateIn').value=d;
+  if(_selRow){{_selRow.classList.remove('sel');_selRow=null;}}
+  var no=document.getElementById('noTrades');
+  no.textContent='Loading…';no.style.display='';
+  document.getElementById('tbl').style.display='none';
   try{{
-    var resp=await fetch(‘/api/trades?date=’+d);
+    var resp=await fetch('/api/trades?date='+d);
     var trades=await resp.json();
-    document.getElementById(‘tcount’).textContent=
-      trades.length?trades.length+’ trade’+(trades.length>1?’s’:’’):’’;
-    if(!trades.length){{no.textContent=’No trades on this date’;return;}}
-    tbody.innerHTML=’’;
+    document.getElementById('tcount').textContent=
+      trades.length?trades.length+' trade'+(trades.length>1?'s':''):'';
+    if(!trades.length){{no.textContent='No trades on this date';return;}}
+    var tbody=document.getElementById('tbody');
+    tbody.innerHTML='';
     trades.forEach(function(t){{
-      var tr=document.createElement(‘tr’);
-      var oc=t.option_type===’CE’?’ce’:’pe’;
-      var pc=t.pnl>0?’g’:t.pnl<0?’r’:’’;
-      var pstr=t.pnl!=null?’₹’+(t.pnl>=0?’+’:’’)+Math.round(t.pnl):’—‘;
-      var exp=(t.expiry||’’).slice(0,10);
+      var tr=document.createElement('tr');
+      var oc=t.option_type==='CE'?'ce':'pe';
+      var pc=t.pnl>0?'g':t.pnl<0?'r':'';
+      var pstr=t.pnl!=null?'₹'+(t.pnl>=0?'+':'')+Math.round(t.pnl):'—';
+      var exp=(t.expiry||'').slice(0,10);
       tr.innerHTML=
-        ‘<td>’+(t.entry_time||’’).slice(0,5)+’</td>’+
-        ‘<td class="’+oc+’">’+t.option_type+’</td>’+
-        ‘<td>’+t.strike+’</td>’+
-        ‘<td style="color:#555">’+exp+’</td>’+
-        ‘<td>’+fp(t.entry_price)+’</td>’+
-        ‘<td>’+fp(t.exit_price)+’</td>’+
-        ‘<td class="’+pc+’">’+pstr+’</td>’+
-        ‘<td><span class="dtag">’+(t.direction||’SHORT’).charAt(0)+’</span></td>’;
+        '<td>'+(t.entry_time||'').slice(0,5)+'</td>'+
+        '<td class="'+oc+'">'+t.option_type+'</td>'+
+        '<td>'+t.strike+'</td>'+
+        '<td style="color:#555">'+exp+'</td>'+
+        '<td>'+fp(t.entry_price)+'</td>'+
+        '<td>'+fp(t.exit_price)+'</td>'+
+        '<td class="'+pc+'">'+pstr+'</td>'+
+        '<td><span class="dtag">'+(t.direction||'SHORT').charAt(0)+'</span></td>';
       tr._load=function(){{loadTradeChart(t,tr);}};
       tr.onclick=function(){{
-        if(_selRow)_selRow.classList.remove(‘sel’);
-        _selRow=tr;tr.classList.add(‘sel’);
+        if(_selRow)_selRow.classList.remove('sel');
+        _selRow=tr;tr.classList.add('sel');
         tr._load();
       }};
       tbody.appendChild(tr);
     }});
-    no.style.display=’none’;document.getElementById(‘tbl’).style.display=’’;
-  }}catch(e){{no.textContent=’Error loading trades’;}}
+    no.style.display='none';document.getElementById('tbl').style.display='';
+  }}catch(e){{no.textContent='Error loading trades';}}
 }}
 
-function fp(v){{return v!=null?v.toFixed(1):’—‘;}}
-
 // ── Timestamp helpers ─────────────────────────────────────────────────────────
-// IST-as-UTC: treat IST string as UTC so TradingView displays IST clock time
 function tradeTs(dateStr,timeStr){{
-  var d=dateStr.split(‘-’),t=(timeStr||’00:00:00’).split(‘:’);
+  var d=dateStr.split('-'),t=(timeStr||'00:00:00').split(':');
   return Date.UTC(+d[0],+d[1]-1,+d[2],+t[0]||0,+t[1]||0,+t[2]||0)/1000;
 }}
 function snapTs(ts,candles){{
@@ -1266,110 +1328,154 @@ function snapTs(ts,candles){{
 // ── Entry/exit markers ────────────────────────────────────────────────────────
 function putMarkers(t,candles){{
   if(!_markersPlugin||!candles.length) return;
-  var markers=[];
-  var optColor=t.option_type===’CE’?’#4fc3f7’:’#ffb74d’;
-  if(t.entry_time){{
-    markers.push({{
-      time:snapTs(tradeTs(t.date,t.entry_time),candles),
-      position:’aboveBar’,shape:’arrowDown’,color:optColor,
-      text:’E ’+fp(t.entry_price),
-    }});
-  }}
-  if(t.exit_time&&t.exit_price!=null){{
-    var xc=t.pnl>0?’#3fb950’:’#f85149’;
-    markers.push({{
-      time:snapTs(tradeTs(t.date,t.exit_time),candles),
-      position:’belowBar’,shape:’arrowUp’,color:xc,
-      text:’X ’+fp(t.exit_price),
-    }});
-  }}
+  var markers=[],optColor=t.option_type==='CE'?'#4fc3f7':'#ffb74d';
+  if(t.entry_time)
+    markers.push({{time:snapTs(tradeTs(t.date,t.entry_time),candles),
+      position:'aboveBar',shape:'arrowDown',color:optColor,text:'E '+fp(t.entry_price)}});
+  if(t.exit_time&&t.exit_price!=null)
+    markers.push({{time:snapTs(tradeTs(t.date,t.exit_time),candles),
+      position:'belowBar',shape:'arrowUp',color:t.pnl>0?'#3fb950':'#f85149',
+      text:'X '+fp(t.exit_price)}});
   markers.sort(function(a,b){{return a.time-b.time;}});
   _markersPlugin.setMarkers(markers);
 }}
 
-// ── Load option chart for a clicked trade ─────────────────────────────────────
-async function loadTradeChart(t,row){{
-  showMsg(‘Loading…’);showErr(‘’);
-  var expDate=(t.expiry||’’).slice(0,10);
-  var toDate=expDate||TODAY;
-  // Widen from_date: 30 days before expiry to cover weekly options fully
-  var p=(expDate||TODAY).split(‘-’);
-  var expDt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
-  expDt.setUTCDate(expDt.getUTCDate()-30);
-  var fromDate=expDt.toISOString().slice(0,10);
-  var url=’/api/option-candles’
-    +’?security_id=’+encodeURIComponent(t.security_id||’’)
-    +’&exchange_segment=’+encodeURIComponent(t.exchange_segment||’’)
-    +’&underlying=’+encodeURIComponent(t.underlying||’’)
-    +’&option_type=’+encodeURIComponent(t.option_type||’’)
-    +’&strike=’+encodeURIComponent(t.strike||’’)
-    +’&expiry=’+encodeURIComponent(expDate)
-    +’&from_date=’+encodeURIComponent(fromDate)
-    +’&to_date=’+encodeURIComponent(toDate)
-    +’&interval=’+_curIvl;
+// ── Core chart fetcher ────────────────────────────────────────────────────────
+async function fetchAndDraw(qs,markerTrade,label){{
+  showMsg('Loading…');showErr('');
   try{{
-    var r=await fetch(url);var d=await r.json();
-    if(d.error){{showMsg(‘’);showErr(d.error);return;}}
+    var r=await fetch('/api/option-candles?'+qs+'&interval='+_curIvl);
+    var d=await r.json();
+    if(d.error){{showMsg('');showErr(d.error);return;}}
     var c=d.candles||[];
-    if(!c.length){{
-      showMsg(‘No data — option may have expired outside Dhan’s rolling window’);
-      return;
-    }}
+    if(!c.length){{showMsg('No data — option may be outside Dhan’s rolling window');return;}}
     _series.setData(c);
     _chart.timeScale().fitContent();
-    putMarkers(t,c);
+    if(markerTrade) putMarkers(markerTrade,c); else _markersPlugin.setMarkers([]);
     hideMsg();
-    document.getElementById(‘chartTitle’).textContent=
-      t.underlying+’ ‘+t.strike+’ ‘+t.option_type
-      +(expDate?’ · exp:’+expDate:’’)
-      +’ · ‘+_curIvl+’m · ‘+c.length+’ bars’;
-  }}catch(e){{showMsg(‘’);showErr(‘Error: ‘+e.message);}}
+    document.getElementById('chartTitle').textContent=
+      (label||'')+' · '+_curIvl+'m · '+c.length+' bars';
+  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
 }}
 
-// ── Manual lookup ─────────────────────────────────────────────────────────────
+// ── By Date: click a trade row ────────────────────────────────────────────────
+function loadTradeChart(t){{
+  var expDate=(t.expiry||'').slice(0,10),toDate=expDate||TODAY;
+  var qs='security_id='+encodeURIComponent(t.security_id||'')
+    +'&exchange_segment='+encodeURIComponent(t.exchange_segment||'')
+    +'&underlying='+encodeURIComponent(t.underlying||'')
+    +'&option_type='+encodeURIComponent(t.option_type||'')
+    +'&strike='+encodeURIComponent(t.strike||'')
+    +'&expiry='+encodeURIComponent(expDate)
+    +'&from_date='+encodeURIComponent(fromDateFor(expDate))
+    +'&to_date='+encodeURIComponent(toDate);
+  fetchAndDraw(qs,t,t.underlying+' '+t.strike+' '+t.option_type+(expDate?' exp:'+expDate:''));
+}}
+
+// ── By Date: manual lookup ────────────────────────────────────────────────────
 function toggleManual(){{
-  var f=document.getElementById(‘manualForm’);
-  var open=f.style.display===’block’;
-  f.style.display=open?’none’:’block’;
-  document.getElementById(‘mtoggle’).textContent=open?’+ Manual’:’✕ Manual’;
+  var f=document.getElementById('manualForm');
+  var open=f.style.display==='block';
+  f.style.display=open?'none':'block';
+  document.getElementById('mtoggle').textContent=open?'+ Manual':'✕ Manual';
+}}
+function loadManualChart(){{
+  var ul=document.getElementById('mf-ul').value;
+  var ot=document.getElementById('mf-ot').value;
+  var strike=document.getElementById('mf-strike').value;
+  var expiry=document.getElementById('mf-expiry').value;
+  if(!strike){{showErr('Enter a strike price');return;}}
+  if(!expiry){{showErr('Enter expiry date');return;}}
+  if(_selRow){{_selRow.classList.remove('sel');_selRow=null;}}
+  var qs='underlying='+ul+'&option_type='+ot+'&strike='+strike
+    +'&expiry='+expiry+'&from_date='+fromDateFor(expiry)+'&to_date='+expiry;
+  fetchAndDraw(qs,null,ul+' '+strike+' '+ot+' exp:'+expiry);
 }}
 
-async function loadManualChart(){{
-  var ul=document.getElementById(‘mf-ul’).value;
-  var ot=document.getElementById(‘mf-ot’).value;
-  var strike=document.getElementById(‘mf-strike’).value;
-  var expiry=document.getElementById(‘mf-expiry’).value;
-  if(!strike){{showErr(‘Enter a strike price’);return;}}
-  if(!expiry){{showErr(‘Enter expiry date — sets the end of the chart range’);return;}}
-  showMsg(‘Loading…’);showErr(‘’);
-  if(_selRow){{_selRow.classList.remove(‘sel’);_selRow=null;}}
-  // from_date = 30 days before expiry, to_date = expiry
-  var p=expiry.split(‘-’);
-  var expDt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
-  expDt.setUTCDate(expDt.getUTCDate()-30);
-  var fromDate=expDt.toISOString().slice(0,10);
-  var url=’/api/option-candles’
-    +’?underlying=’+ul+’&option_type=’+ot+’&strike=’+strike
-    +’&expiry=’+expiry+’&from_date=’+fromDate+’&to_date=’+expiry
-    +’&interval=’+_curIvl;
+// ── By Expiry: init (lazy) ────────────────────────────────────────────────────
+async function initExpiry(){{
   try{{
-    var r=await fetch(url);var d=await r.json();
-    if(d.error){{showMsg(‘’);showErr(d.error);return;}}
-    var c=d.candles||[];
-    if(!c.length){{showMsg(‘No data returned for this option’);return;}}
-    _series.setData(c);
-    _chart.timeScale().fitContent();
-    _markersPlugin.setMarkers([]);
-    hideMsg();
-    document.getElementById(‘chartTitle’).textContent=
-      ul+’ ‘+strike+’ ‘+ot+’ · exp:’+expiry+’ · ‘+_curIvl+’m · ‘+c.length+’ bars’;
-  }}catch(e){{showMsg(‘’);showErr(‘Error: ‘+e.message);}}
+    var r=await fetch('/api/option-list');
+    _optList=await r.json();
+    populateExpiries();
+  }}catch(e){{
+    var el=document.getElementById('e-err');
+    el.textContent='Could not load option list';el.style.display='';
+  }}
 }}
 
-// ── Init: load dates then jump to most recent trading day ─────────────────────
+function fmtExp(s){{
+  if(!s) return s;
+  var p=s.slice(0,10).split('-');
+  var mn=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return p[2]+' '+mn[+p[1]-1]+' '+p[0];
+}}
+
+function populateExpiries(){{
+  var ul=document.getElementById('e-ul').value;
+  var seen={{}},exps=[];
+  _optList.forEach(function(t){{
+    if(ul&&t.underlying!==ul) return;
+    var exp=(t.expiry||'').slice(0,10);
+    if(exp&&!seen[exp]){{seen[exp]=true;exps.push(exp);}}
+  }});
+  exps.sort(function(a,b){{return b.localeCompare(a);}});
+  var sel=document.getElementById('e-expiry');
+  sel.innerHTML='<option value="">— select expiry —</option>';
+  exps.forEach(function(e){{
+    var o=document.createElement('option');
+    o.value=e;o.textContent=fmtExp(e);sel.appendChild(o);
+  }});
+  populateStrikes();
+}}
+
+function populateStrikes(){{
+  var expiry=document.getElementById('e-expiry').value;
+  var ul=document.getElementById('e-ul').value;
+  var seen={{}},strikes=[],tmap={{}};
+  _optList.forEach(function(t){{
+    if(ul&&t.underlying!==ul) return;
+    if(expiry&&(t.expiry||'').slice(0,10)!==expiry) return;
+    if(t.option_type!==_eType) return;
+    if(!seen[t.strike]){{seen[t.strike]=true;strikes.push(t.strike);tmap[t.strike]=t;}}
+  }});
+  strikes.sort(function(a,b){{return a-b;}});
+  var sel=document.getElementById('e-strike');
+  sel.innerHTML='<option value="">— select strike —</option>';
+  strikes.forEach(function(sk){{
+    var o=document.createElement('option');
+    o.value=sk;o.textContent=sk;o.dataset.t=JSON.stringify(tmap[sk]);sel.appendChild(o);
+  }});
+}}
+
+function setExpType(type){{
+  _eType=type;
+  ['CE','PE'].forEach(function(v){{
+    document.getElementById('e-'+v.toLowerCase()).className='ivl-btn'+(v===type?' on':'');
+  }});
+  populateStrikes();
+}}
+
+function onStrikeChange(){{
+  var sel=document.getElementById('e-strike');
+  var opt=sel.options[sel.selectedIndex];
+  if(!opt||!opt.value||!opt.dataset.t) return;
+  var t=JSON.parse(opt.dataset.t);
+  var expDate=(t.expiry||'').slice(0,10),toDate=expDate||TODAY;
+  var qs='security_id='+encodeURIComponent(t.security_id||'')
+    +'&exchange_segment='+encodeURIComponent(t.exchange_segment||'')
+    +'&underlying='+encodeURIComponent(t.underlying||'')
+    +'&option_type='+encodeURIComponent(t.option_type||'')
+    +'&strike='+encodeURIComponent(t.strike||'')
+    +'&expiry='+encodeURIComponent(expDate)
+    +'&from_date='+encodeURIComponent(fromDateFor(expDate))
+    +'&to_date='+encodeURIComponent(toDate);
+  fetchAndDraw(qs,null,t.underlying+' '+t.strike+' '+t.option_type+(expDate?' exp:'+expDate:''));
+}}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
 loadDates().then(function(){{
-  var startDate=_tradeDates.length?_tradeDates[0]:TODAY;
-  loadDate(startDate);
+  loadDate(_tradeDates.length?_tradeDates[0]:TODAY);
 }});
 </script>
 </body>
