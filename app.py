@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v58"
+APP_VERSION = "v59"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -34,25 +34,24 @@ LOT_SIZES = {
 }
 
 DHAN_INDEX_IDS = {
-    "NIFTY":  {"security_id": "13", "exchange_segment": "IDX_I",  "instrument_type": "INDEX"},
-    "SENSEX": {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
+    "NIFTY":     {"security_id": "13",  "exchange_segment": "IDX_I", "instrument_type": "INDEX"},
+    "BANKNIFTY": {"security_id": "25",  "exchange_segment": "IDX_I", "instrument_type": "INDEX"},
+    "FINNIFTY":  {"security_id": "27",  "exchange_segment": "IDX_I", "instrument_type": "INDEX"},
+    "MIDCPNIFTY":{"security_id": "442", "exchange_segment": "IDX_I", "instrument_type": "INDEX"},
+    "SENSEX":    {"security_id": "51",  "exchange_segment": "IDX_I", "instrument_type": "INDEX"},
 }
 
-# Fallback candidates for NIFTY tried in order when primary returns empty data.
+# Fallback candidates tried in order when primary returns empty data.
+# All indices live in the IDX_I segment (segment "I" in the Dhan instrument CSV).
 NIFTY_FALLBACKS = [
     {"security_id": "13", "exchange_segment": "IDX_I",  "instrument_type": "INDEX"},
     {"security_id": "13", "exchange_segment": "NSE_EQ", "instrument_type": "INDEX"},
-    {"security_id": "13", "exchange_segment": "NSE",    "instrument_type": "INDEX"},
 ]
 
-# Fallback candidates tried in order when SENSEX returns empty data.
 SENSEX_FALLBACKS = [
-    {"security_id": "51", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
-    {"security_id": "1",  "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
-    {"security_id": "51", "exchange_segment": "BSE",     "instrument_type": "INDEX"},
-    {"security_id": "1",  "exchange_segment": "BSE",     "instrument_type": "INDEX"},
-    {"security_id": "19", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
-    {"security_id": "16", "exchange_segment": "BSE_EQ",  "instrument_type": "INDEX"},
+    {"security_id": "51", "exchange_segment": "IDX_I",  "instrument_type": "INDEX"},
+    {"security_id": "51", "exchange_segment": "BSE_EQ", "instrument_type": "INDEX"},
+    {"security_id": "51", "exchange_segment": "BSE",    "instrument_type": "INDEX"},
 ]
 
 
