@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v57"
+APP_VERSION = "v58"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -801,41 +801,70 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
 
 
 def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[dict], str]:
-    """Fetch warmup candles for EMA/RSI/MACD convergence.
+    """Fetch up to 3 previous trading days of 1-minute warmup candles.
 
-    Primary path: single /charts/historical batch call for the full date range —
-    one API call, no rate-limit risk, fast.
+    Uses a single batch call to /charts/intraday for the full warmup date range —
+    one API call, no rate-limit loops, correct 1-minute candle granularity.
 
-    Fallback: individual intraday calls per day with a short inter-call pause.
+    /charts/historical is intentionally NOT used here: that endpoint returns
+    daily candles (one per day), not 1-minute candles, which breaks indicators.
+
+    Falls back to per-day intraday calls (with inter-call sleep) if batch fails.
     """
-    # Primary: batch historical call covering the full warmup range
-    raw_resp, dhan_err = _raw_dhan_chart(
-        idx["security_id"], idx["exchange_segment"], idx["instrument_type"],
-        to_day, from_date=from_day
-    )
-    if not dhan_err:
-        batch_candles = _parse_dhan_candles(raw_resp, to_day)
-        if batch_candles:
-            # Group by trading date, keep 3 most recent days
-            day_groups: dict[str, list] = {}
-            for c in batch_candles:
-                dt = datetime.utcfromtimestamp(c["time"]).strftime("%Y-%m-%d")
-                day_groups.setdefault(dt, []).append(c)
-            trading_days = sorted(day_groups.keys())
-            keep_days = trading_days[-3:] if len(trading_days) > 3 else trading_days
-            result: list[dict] = []
-            for d in keep_days:
-                result.extend(day_groups[d])
-            summary = " | ".join(f"{d}: {len(day_groups[d])} candles" for d in keep_days)
-            logger.info("Warmup batch: %d days, %d candles (%s..%s)",
-                        len(keep_days), len(result), from_day, to_day)
-            return result, summary
+    # Primary: single batch intraday call for the full warmup range
+    batch: list[dict] = []
+    try:
+        dhan = _dhan_client()
+        resp = _with_timeout(
+            dhan.intraday_minute_data,
+            security_id=idx["security_id"],
+            exchange_segment=idx["exchange_segment"],
+            instrument_type=idx["instrument_type"],
+            from_date=f"{from_day} 09:00:00",
+            to_date=f"{to_day} 15:30:00",
+        )
+        logger.info("Warmup batch [%s %s→%s]: %s",
+                    idx["security_id"], from_day, to_day, str(resp)[:150])
+        if _is_auth_error(resp):
+            try:
+                import token_manager  # noqa: PLC0415
+                if token_manager.refresh_token():
+                    dhan = _dhan_client()
+                    resp = _with_timeout(
+                        dhan.intraday_minute_data,
+                        security_id=idx["security_id"],
+                        exchange_segment=idx["exchange_segment"],
+                        instrument_type=idx["instrument_type"],
+                        from_date=f"{from_day} 09:00:00",
+                        to_date=f"{to_day} 15:30:00",
+                    )
+            except Exception as e:
+                logger.warning("Token refresh failed during warmup: %s", e)
+        batch = _parse_dhan_candles(resp, to_day)
+    except Exception as e:
+        logger.warning("Warmup batch error: %s", e)
 
-    # Fallback: individual intraday calls per day
-    logger.info("Warmup batch returned nothing (%s) — falling back to per-day calls",
-                dhan_err or "0 candles")
-    current = datetime.strptime(to_day, "%Y-%m-%d")
-    cutoff  = datetime.strptime(from_day, "%Y-%m-%d")
+    if batch:
+        # Group parsed candles by trading date, keep 3 most recent days.
+        # Use utcfromtimestamp: candle["time"] is IST-as-UTC epoch so UTC
+        # datetime == IST clock time, giving the correct trading date.
+        day_groups: dict[str, list] = {}
+        for c in batch:
+            dt = datetime.utcfromtimestamp(c["time"]).strftime("%Y-%m-%d")
+            day_groups.setdefault(dt, []).append(c)
+        trading_days = sorted(day_groups.keys())
+        keep_days = trading_days[-3:]
+        result: list[dict] = []
+        for d in keep_days:
+            result.extend(day_groups[d])
+        summary = " | ".join(f"{d}: {len(day_groups[d])} candles" for d in keep_days)
+        logger.info("Warmup batch OK: %d days, %d candles", len(keep_days), len(result))
+        return result, summary
+
+    # Fallback: individual per-day calls with inter-call pause to avoid rate-limiting
+    logger.info("Warmup batch returned 0 candles — falling back to per-day calls")
+    current   = datetime.strptime(to_day, "%Y-%m-%d")
+    cutoff    = datetime.strptime(from_day, "%Y-%m-%d")
     all_candles: list[dict] = []
     days_found = 0
     log_parts: list[str] = []
@@ -843,21 +872,21 @@ def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[d
     while current >= cutoff and days_found < 3:
         day_str = current.strftime("%Y-%m-%d")
         if not first_call:
-            time.sleep(0.2)
+            time.sleep(0.3)
         first_call = False
         candles = _fetch_day_candles(idx, day_str)
         if candles:
             all_candles = candles + all_candles
             days_found += 1
             log_parts.append(f"{day_str}: {len(candles)} candles")
-            logger.info("Warmup day %d: %d candles from %s", days_found, len(candles), day_str)
+            logger.info("Warmup fallback day %d: %d candles from %s",
+                        days_found, len(candles), day_str)
         else:
             log_parts.append(f"{day_str}: no data")
         current -= timedelta(days=1)
     if not all_candles:
-        logger.warning("Warmup: no trading data found between %s and %s", from_day, to_day)
-    summary = " | ".join(log_parts) if log_parts else "no warmup data"
-    return all_candles, summary
+        logger.warning("Warmup: no data found between %s and %s", from_day, to_day)
+    return all_candles, " | ".join(log_parts) if log_parts else "no warmup data"
 
 
 def chart_candles(underlying: str, trade_date: str) -> tuple[list[dict], str, str, str]:
