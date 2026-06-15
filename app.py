@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v65"
+APP_VERSION = "v66"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -100,6 +100,18 @@ def _init_db(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_date ON trades(date);
             CREATE INDEX IF NOT EXISTS idx_underlying ON trades(underlying);
+            CREATE TABLE IF NOT EXISTS option_instruments (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                security_id      TEXT NOT NULL,
+                exchange_segment TEXT NOT NULL,
+                underlying       TEXT NOT NULL,
+                option_type      TEXT NOT NULL,
+                strike           REAL NOT NULL,
+                expiry           TEXT NOT NULL,
+                refreshed_at     REAL DEFAULT 0,
+                UNIQUE(security_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_oi_lookup ON option_instruments(underlying, option_type, strike, expiry);
             CREATE TABLE IF NOT EXISTS trade_notes (
                 date         TEXT NOT NULL,
                 underlying   TEXT NOT NULL,
@@ -1417,7 +1429,7 @@ def _option_expiry_page() -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>By Expiry — Trade Analyser {ver}</title>
+<title>Historical Options — Trade Analyser {ver}</title>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
@@ -1427,75 +1439,77 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
 #hdr a:hover{{color:#aaa;}}
 .htitle{{font-weight:600;font-size:14px;color:#ccc;}}
 .badge{{font-size:10px;color:#555;}}
-.ivl-btn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
-.ivl-btn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
+.ibtn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
+.ibtn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
 #ctrlBar{{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;flex-wrap:wrap;}}
 .cf{{display:flex;flex-direction:column;gap:3px;}}
 .cf label{{font-size:10px;color:#555;}}
-.cf select{{background:#111;border:1px solid #2a2a2a;color:#ccc;padding:4px 6px;border-radius:3px;font-size:12px;}}
+.cf select,.cf input{{background:#111;border:1px solid #2a2a2a;color:#ccc;padding:4px 6px;border-radius:3px;font-size:12px;}}
+.cf input::placeholder{{color:#444;}}
 .type-row{{display:flex;gap:4px;}}
+.ldbtn{{background:#1a2a1a;border:1px solid #3a6a3a;color:#4fc3f7;padding:4px 14px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;align-self:flex-end;margin-top:14px;}}
+.ldbtn:hover{{background:#224422;}}
+.rfbtn{{background:#111;border:1px solid #2a2a2a;color:#555;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:11px;align-self:flex-end;margin-top:14px;}}
+.rfbtn:hover{{border-color:#555;color:#aaa;}}
+#rfStatus{{font-size:11px;color:#555;align-self:flex-end;margin-top:16px;}}
 #chartArea{{flex:1;min-height:0;position:relative;}}
 #chartEl{{width:100%;height:100%;}}
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
-#errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
-#e-err{{color:#f85149;font-size:11px;padding:2px 4px;display:none;}}
+#errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:90%;text-align:center;}}
 </style>
 </head>
 <body>
 <div id="hdr">
   <a href="/">&#8592; Main</a>
-  <a href="/option-chart">&#8592; Option Chart</a>
-  <span class="htitle">By Expiry</span>
+  <a href="/option-chart">Option Chart</a>
+  <span class="htitle">Historical Options</span>
   <span class="badge">{ver}</span>
   <div style="margin-left:auto;display:flex;gap:4px;">
-    <button class="ivl-btn on" id="ivl1"  onclick="setIvl(1)">1m</button>
-    <button class="ivl-btn"    id="ivl3"  onclick="setIvl(3)">3m</button>
-    <button class="ivl-btn"    id="ivl5"  onclick="setIvl(5)">5m</button>
-    <button class="ivl-btn"    id="ivl15" onclick="setIvl(15)">15m</button>
+    <button class="ibtn on" id="ivl1"  onclick="setIvl(1)">1m</button>
+    <button class="ibtn"    id="ivl3"  onclick="setIvl(3)">3m</button>
+    <button class="ibtn"    id="ivl5"  onclick="setIvl(5)">5m</button>
+    <button class="ibtn"    id="ivl15" onclick="setIvl(15)">15m</button>
   </div>
 </div>
 <div id="ctrlBar">
   <div class="cf">
     <label>Underlying</label>
-    <select id="e-ul" onchange="populateExpiries()" style="width:110px;">
-      <option value="">All</option>
+    <select id="f-ul" style="width:110px;">
       <option>NIFTY</option><option>SENSEX</option>
       <option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option>
     </select>
   </div>
   <div class="cf">
-    <label>Expiry</label>
-    <select id="e-expiry" onchange="populateStrikes()" style="width:120px;">
-      <option value="">— select —</option>
-    </select>
-  </div>
-  <div class="cf">
-    <label>Type</label>
-    <div class="type-row">
-      <button class="ivl-btn on" id="e-ce" onclick="setExpType('CE')">CE</button>
-      <button class="ivl-btn"    id="e-pe" onclick="setExpType('PE')">PE</button>
-    </div>
+    <label>Expiry date</label>
+    <input type="date" id="f-expiry" style="width:130px;">
   </div>
   <div class="cf">
     <label>Strike</label>
-    <select id="e-strike" onchange="onStrikeChange()" style="width:90px;">
-      <option value="">— select —</option>
-    </select>
+    <input type="number" id="f-strike" placeholder="e.g. 25000" step="50" style="width:100px;">
   </div>
-  <div id="e-err"></div>
+  <div class="cf">
+    <label>Type</label>
+    <div class="type-row" style="margin-top:4px;">
+      <button class="ibtn on" id="t-ce" onclick="setType('CE')">CE</button>
+      <button class="ibtn"    id="t-pe" onclick="setType('PE')">PE</button>
+    </div>
+  </div>
+  <button class="ldbtn" onclick="loadChart()">Load</button>
+  <button class="rfbtn" id="rfBtn" onclick="refreshInstruments()" title="Download Dhan instrument master to find security IDs for options not yet traded">&#8635; Refresh Instruments</button>
+  <span id="rfStatus"></span>
 </div>
 <div id="chartArea">
-  <div id="chartTitle">Select underlying → expiry → strike to load chart</div>
+  <div id="chartTitle">Enter underlying, expiry date, and strike above then click Load</div>
   <div id="chartEl"></div>
   <div id="msgEl" style="display:none"></div>
   <div id="errBanner"></div>
 </div>
 <script>
-var _chart=null,_series=null,_markersPlugin=null,_curIvl=1;
+var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_optType='CE';
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
-var _optList=[],_eType='CE',TODAY='{today}';
+var TODAY='{today}';
 
 (function initChart(){{
   var el=document.getElementById('chartEl');
@@ -1575,17 +1589,18 @@ function setIvl(n){{
   _curIvl=n;
   [1,3,5,15].forEach(function(v){{
     var b=document.getElementById('ivl'+v);
-    if(b)b.className='ivl-btn'+(v===n?' on':'');
+    if(b)b.className='ibtn'+(v===n?' on':'');
   }});
-  var sel=document.getElementById('e-strike');
-  var opt=sel.options[sel.selectedIndex];
-  if(opt&&opt.value&&opt.dataset.t) onStrikeChange();
 }}
-
+function setType(t){{
+  _optType=t;
+  ['CE','PE'].forEach(function(v){{
+    document.getElementById('t-'+v.toLowerCase()).className='ibtn'+(v===t?' on':'');
+  }});
+}}
 function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
 function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
 function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
-function fp(v){{return v!=null?v.toFixed(1):'—';}}
 
 function fromDateFor(expDate){{
   var p=(expDate||TODAY).split('-');
@@ -1594,101 +1609,51 @@ function fromDateFor(expDate){{
   return dt.toISOString().slice(0,10);
 }}
 
-function fmtExp(s){{
-  if(!s)return s;
-  var p=s.slice(0,10).split('-');
-  var mn=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return p[2]+' '+mn[+p[1]-1]+' '+p[0];
-}}
-
-async function initExpiry(){{
-  try{{
-    var r=await fetch('/api/option-list');
-    _optList=await r.json();
-    populateExpiries();
-  }}catch(e){{
-    var el=document.getElementById('e-err');
-    el.textContent='Could not load option list';el.style.display='';
-  }}
-}}
-
-function populateExpiries(){{
-  var ul=document.getElementById('e-ul').value;
-  var seen={{}},exps=[];
-  _optList.forEach(function(t){{
-    if(ul&&t.underlying!==ul)return;
-    var exp=(t.expiry||'').slice(0,10);
-    if(exp&&!seen[exp]){{seen[exp]=true;exps.push(exp);}}
-  }});
-  exps.sort(function(a,b){{return b.localeCompare(a);}});
-  var sel=document.getElementById('e-expiry');
-  sel.innerHTML='<option value="">— select —</option>';
-  exps.forEach(function(e){{
-    var o=document.createElement('option');
-    o.value=e;o.textContent=fmtExp(e);sel.appendChild(o);
-  }});
-  populateStrikes();
-}}
-
-function populateStrikes(){{
-  var expiry=document.getElementById('e-expiry').value;
-  var ul=document.getElementById('e-ul').value;
-  var seen={{}},strikes=[],tmap={{}};
-  _optList.forEach(function(t){{
-    if(ul&&t.underlying!==ul)return;
-    if(expiry&&(t.expiry||'').slice(0,10)!==expiry)return;
-    if(t.option_type!==_eType)return;
-    if(!seen[t.strike]){{seen[t.strike]=true;strikes.push(t.strike);tmap[t.strike]=t;}}
-  }});
-  strikes.sort(function(a,b){{return a-b;}});
-  var sel=document.getElementById('e-strike');
-  sel.innerHTML='<option value="">— select —</option>';
-  strikes.forEach(function(sk){{
-    var o=document.createElement('option');
-    o.value=sk;o.textContent=sk;o.dataset.t=JSON.stringify(tmap[sk]);sel.appendChild(o);
-  }});
-}}
-
-function setExpType(type){{
-  _eType=type;
-  ['CE','PE'].forEach(function(v){{
-    document.getElementById('e-'+v.toLowerCase()).className='ivl-btn'+(v===type?' on':'');
-  }});
-  populateStrikes();
-}}
-
-async function onStrikeChange(){{
-  var sel=document.getElementById('e-strike');
-  var opt=sel.options[sel.selectedIndex];
-  if(!opt||!opt.value||!opt.dataset.t)return;
-  var t=JSON.parse(opt.dataset.t);
-  var expDate=(t.expiry||'').slice(0,10),toDate=expDate||TODAY;
-  var qs='security_id='+encodeURIComponent(t.security_id||'')
-    +'&exchange_segment='+encodeURIComponent(t.exchange_segment||'')
-    +'&underlying='+encodeURIComponent(t.underlying||'')
-    +'&option_type='+encodeURIComponent(t.option_type||'')
-    +'&strike='+encodeURIComponent(t.strike||'')
-    +'&expiry='+encodeURIComponent(expDate)
-    +'&from_date='+encodeURIComponent(fromDateFor(expDate))
-    +'&to_date='+encodeURIComponent(toDate);
+async function loadChart(){{
+  var ul=document.getElementById('f-ul').value;
+  var expiry=document.getElementById('f-expiry').value;
+  var strike=document.getElementById('f-strike').value;
+  if(!expiry){{showErr('Select an expiry date');return;}}
+  if(!strike){{showErr('Enter a strike price');return;}}
   showMsg('Loading…');showErr('');
+  var qs='underlying='+encodeURIComponent(ul)
+    +'&option_type='+encodeURIComponent(_optType)
+    +'&strike='+encodeURIComponent(strike)
+    +'&expiry='+encodeURIComponent(expiry)
+    +'&from_date='+encodeURIComponent(fromDateFor(expiry))
+    +'&to_date='+encodeURIComponent(expiry)
+    +'&interval='+_curIvl;
   try{{
-    var r=await fetch('/api/option-candles?'+qs+'&interval='+_curIvl);
+    var r=await fetch('/api/option-candles?'+qs);
     var d=await r.json();
     if(d.error){{showMsg('');showErr(d.error);return;}}
     var c=d.candles||[];
-    if(!c.length){{showMsg('No data — option may be outside Dhan rolling window');return;}}
+    if(!c.length){{showMsg('No data returned — option may be outside Dhan rolling window');return;}}
     _series.setData(c);
     updateIndicators(c);
     _markersPlugin.setMarkers([]);
     _chart.timeScale().fitContent();
     hideMsg();
     document.getElementById('chartTitle').textContent=
-      t.underlying+' '+t.strike+' '+t.option_type+(expDate?' exp:'+expDate:'')+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
+      ul+' '+strike+' '+_optType+' exp:'+expiry+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
   }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
 }}
 
-initExpiry();
+async function refreshInstruments(){{
+  var btn=document.getElementById('rfBtn');
+  var st=document.getElementById('rfStatus');
+  btn.disabled=true;btn.textContent='Downloading…';st.textContent='';
+  try{{
+    var r=await fetch('/api/refresh-instruments',{{method:'POST'}});
+    var d=await r.json();
+    if(d.ok){{st.textContent='Cached '+d.count+' contracts';st.style.color='#3fb950';}}
+    else{{st.textContent=d.error||'Failed';st.style.color='#f85149';}}
+  }}catch(e){{st.textContent='Error: '+e.message;st.style.color='#f85149';}}
+  btn.disabled=false;btn.textContent='↻ Refresh Instruments';
+}}
+
+// Pressing Enter in any input triggers load
+document.addEventListener('keydown',function(e){{if(e.key==='Enter')loadChart();}});
 </script>
 </body>
 </html>"""
@@ -1950,6 +1915,52 @@ def api_option_list():
     return jsonify(result)
 
 
+@app.route("/api/refresh-instruments", methods=["POST"])
+def api_refresh_instruments():
+    """Download Dhan's instrument master CSV and cache NSE_FNO/BSE_FNO options locally."""
+    import urllib.request, csv, io as _io, time as _time
+    url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "TradeAnalyser/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            content = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Download failed: {e}"}), 500
+
+    reader = csv.DictReader(_io.StringIO(content))
+    now = _time.time()
+    db = get_db()
+    count = 0
+    with _db_lock:
+        for row in reader:
+            seg  = (row.get("SEM_SEGMENT") or "").strip()
+            inst = (row.get("SEM_INSTRUMENT_NAME") or "").strip()
+            if seg not in ("NSE_FNO", "BSE_FNO") or inst not in ("OPTIDX", "OPTSTK"):
+                continue
+            sec_id   = (row.get("SEM_SMST_SECURITY_ID") or "").strip()
+            symbol   = (row.get("SEM_TRADING_SYMBOL") or "").strip()
+            opt_type = (row.get("SEM_OPTION_TYPE") or "").strip().upper()
+            expiry   = (row.get("SM_EXPIRY_DATE") or "").strip()
+            strike_s = (row.get("SEM_STRIKE_PRICE") or "0").strip()
+            if not sec_id or opt_type not in ("CE", "PE"):
+                continue
+            try:
+                strike_f = float(strike_s)
+            except ValueError:
+                continue
+            underlying = _underlying(symbol, seg)
+            db.execute(
+                "INSERT OR REPLACE INTO option_instruments"
+                " (security_id, exchange_segment, underlying, option_type, strike, expiry, refreshed_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (sec_id, seg, underlying, opt_type, strike_f, expiry, now),
+            )
+            count += 1
+        db.commit()
+    logger.info("Instrument refresh: cached %d FNO options", count)
+    return jsonify({"ok": True, "count": count})
+
+
 @app.route("/api/option-candles")
 def api_option_candles():
     # security_id may be passed directly (from trade row) or looked up via symbol fields
@@ -1983,12 +1994,21 @@ def api_option_candles():
             (underlying, option_type, strike, f"%{expiry[:10]}%", expiry),
         ).fetchone()
         if not row:
+            # fall back to instrument master cache
+            row = db.execute(
+                "SELECT security_id, exchange_segment FROM option_instruments"
+                " WHERE underlying=? AND option_type=? AND strike=?"
+                " AND (expiry LIKE ? OR ?='')"
+                " ORDER BY expiry DESC LIMIT 1",
+                (underlying, option_type, strike, f"%{expiry[:10]}%", expiry),
+            ).fetchone()
+        if not row:
             return jsonify({
                 "candles": [],
                 "error": (
                     f"No security_id found for {underlying} {strike} {option_type}"
                     + (f" expiry {expiry}" if expiry else "")
-                    + ". Import trades for this option first."
+                    + ". Try Refresh Instruments or import trades for this option."
                 ),
             })
         security_id      = row["security_id"]
@@ -2148,6 +2168,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <a href="/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
+  <a href="/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
 </div>
 <div id="main">
   <div id="chartsArea">
