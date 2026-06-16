@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v67"
+APP_VERSION = "v68"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -112,6 +112,13 @@ def _init_db(conn: sqlite3.Connection) -> None:
                 UNIQUE(security_id)
             );
             CREATE INDEX IF NOT EXISTS idx_oi_lookup ON option_instruments(underlying, option_type, strike, expiry);
+            CREATE TABLE IF NOT EXISTS tick_data (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                security_id TEXT NOT NULL,
+                ts          INTEGER NOT NULL,
+                price       REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tick_lookup ON tick_data(security_id, ts);
             CREATE TABLE IF NOT EXISTS trade_notes (
                 date         TEXT NOT NULL,
                 underlying   TEXT NOT NULL,
@@ -165,6 +172,80 @@ def _dhan_client():
 
 def _to_dhan_date(d: str) -> str:
     return datetime.strptime(d, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+
+# ── Tick capture (15-second / 30-second charts) ────────────────────────────────
+
+_EXC_SEG_INT = {"NSE_FNO": 2, "BSE_FNO": 8, "NSE_EQ": 3, "BSE_EQ": 4, "IDX_I": 0}
+_tick_lock       = threading.Lock()
+_tick_subscribed: dict[str, int] = {}   # security_id → exchange_segment_int
+_tick_feed       = None
+
+
+def _tick_on_data(data):
+    if not isinstance(data, dict):
+        return
+    try:
+        sec_id = str(data.get("security_id") or "")
+        ltp    = data.get("LTP") or data.get("ltp") or data.get("last_price")
+        if not sec_id or ltp is None:
+            return
+        price = float(ltp)
+        ts    = int(time.time()) + 19800   # IST-as-UTC epoch
+        with _db_lock:
+            db = get_db()
+            db.execute("INSERT INTO tick_data (security_id, ts, price) VALUES (?,?,?)",
+                       (sec_id, ts, price))
+            db.commit()
+    except Exception as e:
+        logger.debug("tick_on_data error: %s", e)
+
+
+def _start_tick_feed(instruments: list) -> None:
+    global _tick_feed
+    try:
+        from dhanhq import MarketFeed, DhanContext  # noqa: PLC0415
+        load_dotenv(override=True)
+        client_id    = os.getenv("DHAN_CLIENT_ID", "")
+        access_token = os.getenv("DHAN_ACCESS_TOKEN", "")
+        if not client_id or not access_token:
+            logger.warning("Tick feed: Dhan credentials not set, skipping")
+            return
+        if _tick_feed is not None:
+            try:
+                _tick_feed.disconnect()
+            except Exception:
+                pass
+        ctx  = DhanContext(client_id, access_token)
+        feed = MarketFeed(ctx, instruments, on_ticks=_tick_on_data)
+        feed.start()
+        _tick_feed = feed
+        logger.info("Tick feed (re)started with %d instruments", len(instruments))
+    except Exception as e:
+        logger.warning("Tick feed start failed: %s", e)
+
+
+def subscribe_ticks(pairs: list[tuple[str, str]]) -> int:
+    """Subscribe to tick data. pairs = [(security_id, exchange_segment), ...]"""
+    global _tick_subscribed
+    added = 0
+    with _tick_lock:
+        for sec_id, exc_seg in pairs:
+            if not sec_id or sec_id in _tick_subscribed:
+                continue
+            _tick_subscribed[sec_id] = _EXC_SEG_INT.get(exc_seg, 2)
+            added += 1
+        if added > 0:
+            try:
+                from dhanhq import MarketFeed  # noqa: PLC0415
+                instruments = [
+                    (seg_int, sid, MarketFeed.Ticker)
+                    for sid, seg_int in _tick_subscribed.items()
+                ]
+                _start_tick_feed(instruments)
+            except Exception as e:
+                logger.warning("subscribe_ticks import error: %s", e)
+    return added
 
 
 def _extract_batch(resp) -> list[dict]:
@@ -1112,6 +1193,9 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
   <a href="/option-expiry" style="margin-left:6px;background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;font-size:11px;text-decoration:none;">By Expiry &#8599;</a>
   <span class="badge">{ver}</span>
   <div style="margin-left:auto;display:flex;gap:4px;">
+    <button class="ivl-btn" id="tick15s" onclick="setTick(15)" title="15-second tick chart (today only)">15s</button>
+    <button class="ivl-btn" id="tick30s" onclick="setTick(30)" title="30-second tick chart (today only)">30s</button>
+    <span style="width:1px;background:#2a2a2a;margin:2px 2px;"></span>
     <button class="ivl-btn on" id="ivl1"  onclick="setIvl(1)">1m</button>
     <button class="ivl-btn"    id="ivl3"  onclick="setIvl(3)">3m</button>
     <button class="ivl-btn"    id="ivl5"  onclick="setIvl(5)">5m</button>
@@ -1165,52 +1249,56 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
   </div>
 </div>
 <script>
-var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_selRow=null;
+var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_curTick=0,_selRow=null;
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
 var _tradeDates=[],TODAY=’{today}’;
 
 // ── Chart init ────────────────────────────────────────────────────────────────
 (function initChart(){{
-  var el=document.getElementById(‘chartEl’);
-  _chart=LightweightCharts.createChart(el,{{
-    layout:{{background:{{color:’#0d0d0d’}},textColor:’#aaa’}},
-    grid:{{vertLines:{{color:’#1a1a1a’}},horzLines:{{color:’#1a1a1a’}}}},
-    crosshair:{{mode:0}},
-    rightPriceScale:{{borderColor:’#2a2a2a’}},
-    timeScale:{{borderColor:’#2a2a2a’,timeVisible:true,secondsVisible:false}},
-  }});
-  _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
-    upColor:’#3fb950’,downColor:’#f85149’,
-    borderUpColor:’#3fb950’,borderDownColor:’#f85149’,
-    wickUpColor:’#3fb950’,wickDownColor:’#f85149’,
-  }});
-  _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
-  _ema20s=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:’#2196F3’,lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
-  }});
-  _ema50s=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:’#FF9800’,lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
-  }});
-  _rsiSeries=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:’#58a6ff’,lineWidth:1,lastValueVisible:true,priceLineVisible:false
-  }},1);
-  _rsiSeries.createPriceLine({{price:70,color:’#2a2a2a’,lineWidth:1,lineStyle:1,axisLabelVisible:false}});
-  _rsiSeries.createPriceLine({{price:30,color:’#2a2a2a’,lineWidth:1,lineStyle:1,axisLabelVisible:false}});
-  _macdHist=_chart.addSeries(LightweightCharts.HistogramSeries,{{
-    color:’#555’,lastValueVisible:false,priceLineVisible:false
-  }},2);
-  _macdLine=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:’#2196F3’,lineWidth:1,lastValueVisible:false,priceLineVisible:false
-  }},2);
-  _macdSignal=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:’#FF5722’,lineWidth:1,lastValueVisible:false,priceLineVisible:false
-  }},2);
-  var panes=_chart.panes();
-  if(panes[0])panes[0].setStretchFactor(5);
-  if(panes[1])panes[1].setStretchFactor(1.2);
-  if(panes[2])panes[2].setStretchFactor(1.2);
-  new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
+  try{{
+    var el=document.getElementById(‘chartEl’);
+    _chart=LightweightCharts.createChart(el,{{
+      layout:{{background:{{color:’#0d0d0d’}},textColor:’#aaa’}},
+      grid:{{vertLines:{{color:’#1a1a1a’}},horzLines:{{color:’#1a1a1a’}}}},
+      crosshair:{{mode:0}},
+      rightPriceScale:{{borderColor:’#2a2a2a’}},
+      timeScale:{{borderColor:’#2a2a2a’,timeVisible:true,secondsVisible:true}},
+    }});
+    _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
+      upColor:’#3fb950’,downColor:’#f85149’,
+      borderUpColor:’#3fb950’,borderDownColor:’#f85149’,
+      wickUpColor:’#3fb950’,wickDownColor:’#f85149’,
+    }});
+    _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
+    _ema20s=_chart.addSeries(LightweightCharts.LineSeries,{{
+      color:’#2196F3’,lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    }});
+    _ema50s=_chart.addSeries(LightweightCharts.LineSeries,{{
+      color:’#FF9800’,lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    }});
+    _rsiSeries=_chart.addSeries(LightweightCharts.LineSeries,{{
+      color:’#58a6ff’,lineWidth:1,lastValueVisible:true,priceLineVisible:false
+    }},1);
+    _rsiSeries.createPriceLine({{price:70,color:’#2a2a2a’,lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+    _rsiSeries.createPriceLine({{price:30,color:’#2a2a2a’,lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+    _macdHist=_chart.addSeries(LightweightCharts.HistogramSeries,{{
+      color:’#555’,lastValueVisible:false,priceLineVisible:false
+    }},2);
+    _macdLine=_chart.addSeries(LightweightCharts.LineSeries,{{
+      color:’#2196F3’,lineWidth:1,lastValueVisible:false,priceLineVisible:false
+    }},2);
+    _macdSignal=_chart.addSeries(LightweightCharts.LineSeries,{{
+      color:’#FF5722’,lineWidth:1,lastValueVisible:false,priceLineVisible:false
+    }},2);
+    try{{
+      var panes=_chart.panes();
+      if(panes[0])panes[0].setStretchFactor(5);
+      if(panes[1])panes[1].setStretchFactor(1.2);
+      if(panes[2])panes[2].setStretchFactor(1.2);
+    }}catch(pe){{console.warn(‘Pane stretch failed:’,pe);}}
+    new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
+  }}catch(e){{console.error(‘Chart init failed:’,e);}}
 }})();
 
 // ── Indicator math ─────────────────────────────────────────────────────────────
@@ -1248,10 +1336,22 @@ function updateIndicators(data){{
 
 // ── Interval ──────────────────────────────────────────────────────────────────
 function setIvl(n){{
-  _curIvl=n;
+  _curIvl=n; _curTick=0;
   [1,3,5,15].forEach(function(v){{
     var b=document.getElementById(‘ivl’+v);
     if(b) b.className=’ivl-btn’+(v===n?’ on’:’’);
+  }});
+  document.getElementById(‘tick15s’).className=’ivl-btn’;
+  document.getElementById(‘tick30s’).className=’ivl-btn’;
+  if(_selRow) _selRow._load();
+}}
+function setTick(s){{
+  _curTick=s;
+  document.getElementById(‘tick15s’).className=’ivl-btn’+(s===15?’ on’:’’);
+  document.getElementById(‘tick30s’).className=’ivl-btn’+(s===30?’ on’:’’);
+  [1,3,5,15].forEach(function(v){{
+    var b=document.getElementById(‘ivl’+v);
+    if(b) b.className=’ivl-btn’;
   }});
   if(_selRow) _selRow._load();
 }}
@@ -1335,11 +1435,12 @@ function tradeTs(dateStr,timeStr){{
   return Date.UTC(+d[0],+d[1]-1,+d[2],+t[0]||0,+t[1]||0,+t[2]||0)/1000;
 }}
 function snapTs(ts,candles){{
+  var window=_curTick>0?_curTick*2:120;
   var best=candles[0].time,bestDiff=Math.abs(candles[0].time-ts);
   for(var i=1;i<candles.length;i++){{
     var diff=Math.abs(candles[i].time-ts);
     if(diff<bestDiff){{bestDiff=diff;best=candles[i].time;}}
-    if(candles[i].time>ts+120) break;
+    if(candles[i].time>ts+window) break;
   }}
   return best;
 }}
@@ -1359,8 +1460,34 @@ function putMarkers(t,candles){{
   _markersPlugin.setMarkers(markers);
 }}
 
+// ── Tick chart fetcher ────────────────────────────────────────────────────────
+async function fetchTickAndDraw(t,label){{
+  if(!t||!t.security_id){{showErr(‘Select a trade row to use tick charts’);return;}}
+  if(t.date!==TODAY){{showErr(‘Tick charts only capture live intraday data — not available for historical dates’);return;}}
+  showMsg(‘Loading…’);showErr(‘’);
+  try{{
+    var r=await fetch(‘/api/tick-candles?security_id=’+encodeURIComponent(t.security_id)
+      +’&seconds=’+_curTick+’&date=’+t.date);
+    var d=await r.json();
+    if(d.error){{showMsg(‘’);showErr(d.error);return;}}
+    var c=d.candles||[];
+    if(!c.length){{showMsg(‘No tick data yet — ticks start accumulating when the market feed connects after import’);return;}}
+    _series.setData(c);
+    updateIndicators(c);
+    putMarkers(t,c);
+    var dp=t.date.split(‘-’);
+    var dayStart=Date.UTC(+dp[0],+dp[1]-1,+dp[2],9,15,0)/1000;
+    var dayEnd=Date.UTC(+dp[0],+dp[1]-1,+dp[2],15,30,0)/1000;
+    _chart.timeScale().setVisibleRange({{from:dayStart,to:dayEnd}});
+    hideMsg();
+    document.getElementById(‘chartTitle’).textContent=
+      (label||’’)+’ \xb7 ‘+_curTick+’s \xb7 ‘+c.length+’ bars’;
+  }}catch(e){{showMsg(‘’);showErr(‘Error: ‘+e.message);}}
+}}
+
 // ── Core chart fetcher ────────────────────────────────────────────────────────
 async function fetchAndDraw(qs,markerTrade,label){{
+  if(_curTick>0){{fetchTickAndDraw(markerTrade,label);return;}}
   showMsg(‘Loading…’);showErr(‘’);
   try{{
     var r=await fetch(‘/api/option-candles?’+qs+’&interval=’+_curIvl);
@@ -1755,12 +1882,26 @@ def api_debug_dhan():
 
 @app.route("/api/import", methods=["POST"])
 def api_import():
-    data = request.json or {}
+    data      = request.json or {}
+    from_date = data.get("from_date") or str(date.today())
+    to_date   = data.get("to_date")   or str(date.today())
     try:
-        result = import_from_dhan(
-            data.get("from_date") or str(date.today()),
-            data.get("to_date")   or str(date.today()),
-        )
+        result = import_from_dhan(from_date, to_date)
+        # Auto-subscribe tick feed for today's freshly imported options
+        today = str(date.today())
+        if from_date <= today <= to_date:
+            try:
+                db   = get_db()
+                rows = db.execute(
+                    "SELECT DISTINCT security_id, exchange_segment FROM trades"
+                    " WHERE date=? AND security_id != ''", (today,)
+                ).fetchall()
+                if rows:
+                    n = subscribe_ticks([(r["security_id"], r["exchange_segment"]) for r in rows])
+                    if n:
+                        logger.info("Auto-subscribed %d new tick instruments for today", n)
+            except Exception as e:
+                logger.warning("Auto-subscribe ticks failed: %s", e)
         return jsonify({"ok": True, **result})
     except Exception as e:
         logger.error("import: %s", e)
@@ -2039,6 +2180,68 @@ def api_option_candles():
                 underlying, strike, option_type, from_date, to_date, interval, len(candles))
     return jsonify({"candles": candles, "error": "", "security_id": security_id,
                     "exchange_segment": exchange_segment})
+
+
+@app.route("/api/tick-subscribe", methods=["POST"])
+def api_tick_subscribe():
+    pairs = []
+    for item in (request.json or {}).get("instruments") or []:
+        sid  = str(item.get("security_id") or "")
+        seg  = str(item.get("exchange_segment") or "NSE_FNO")
+        if sid:
+            pairs.append((sid, seg))
+    added = subscribe_ticks(pairs)
+    return jsonify({"ok": True, "added": added, "total": len(_tick_subscribed)})
+
+
+@app.route("/api/tick-candles")
+def api_tick_candles():
+    security_id = request.args.get("security_id") or ""
+    try:
+        seconds = int(request.args.get("seconds") or 15)
+    except ValueError:
+        seconds = 15
+    trade_date = request.args.get("date") or str(date.today())
+    if not security_id:
+        return jsonify({"candles": [], "error": "security_id required"}), 400
+    # Day boundaries as IST-as-UTC epoch (same convention as stored ticks)
+    try:
+        dp = [int(x) for x in trade_date.split("-")]
+        day_start = int(datetime(dp[0], dp[1], dp[2], 9, 15, 0).timestamp()) + 19800
+        day_end   = int(datetime(dp[0], dp[1], dp[2], 15, 30, 0).timestamp()) + 19800
+    except Exception:
+        return jsonify({"candles": [], "error": "Invalid date"}), 400
+    rows = get_db().execute(
+        "SELECT ts, price FROM tick_data WHERE security_id=? AND ts>=? AND ts<=? ORDER BY ts",
+        (security_id, day_start, day_end),
+    ).fetchall()
+    if not rows:
+        return jsonify({
+            "candles": [],
+            "error": "No tick data for this instrument. Import today's trades to start capturing.",
+        })
+    # Aggregate ticks into N-second OHLCV candles
+    candles: list[dict] = []
+    b_time = b_o = b_h = b_l = b_c = None
+    for row in rows:
+        ts    = row["ts"]
+        price = row["price"]
+        bkt   = (ts // seconds) * seconds
+        if bkt != b_time:
+            if b_time is not None:
+                candles.append({"time": b_time, "open": b_o, "high": b_h,
+                                "low": b_l, "close": b_c})
+            b_time = bkt
+            b_o = b_h = b_l = b_c = price
+        else:
+            if price > b_h: b_h = price
+            if price < b_l: b_l = price
+            b_c = price
+    if b_time is not None:
+        candles.append({"time": b_time, "open": b_o, "high": b_h,
+                        "low": b_l, "close": b_c})
+    logger.info("Tick candles: %s %s %ds → %d candles", security_id, trade_date, seconds, len(candles))
+    return jsonify({"candles": candles, "error": ""})
 
 
 # ── HTML page ─────────────────────────────────────────────────────────────────────────────────
