@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v66"
+APP_VERSION = "v67"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -475,6 +475,14 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
             pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
             status     = "CLOSED" if exit_t else "OPEN"
+            # Auto-close options that expired worthless: no BUY exists because Dhan
+            # doesn't generate a closing transaction for worthless expiry. If the trade
+            # date is on or after the option's expiry date, it settled at zero.
+            if exit_t is None and expiry and trade_date >= expiry[:10]:
+                exit_time  = "15:30:00"
+                exit_price = 0.0
+                pnl        = round(entry_price * qty, 2)  # full premium retained (SHORT)
+                status     = "CLOSED"
             # For LONG (hedge): exit_t is the opening BUY, sell is the closing SELL.
             # Swap so entry = opening BUY (earlier), exit = closing SELL (later).
             if direction == "LONG" and exit_t:
@@ -1822,7 +1830,9 @@ def api_delete_trade(tid: int):
 def api_delete_date(trade_date: str):
     with _db_lock:
         db = get_db()
-        db.execute("DELETE FROM trades WHERE date=?", (trade_date,))
+        # Only delete Dhan-imported trades (dhan_order_id set).
+        # Manually entered trades (empty dhan_order_id) survive the wipe.
+        db.execute("DELETE FROM trades WHERE date=? AND dhan_order_id != ''", (trade_date,))
         db.commit()
     return jsonify({"ok": True})
 
