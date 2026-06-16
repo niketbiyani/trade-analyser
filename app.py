@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v68"
+APP_VERSION = "v69"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -529,6 +529,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
 
             direction = "SHORT"
+            # 1. Try exact-quantity match: first BUY after this SELL with the same qty
             exit_t = next(
                 (
                     b for b in buys
@@ -537,8 +538,37 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 ),
                 None,
             )
-            # Fallback: if no BUY after this SELL, check for unpaired BUY before it.
-            # Handles hedge legs that were bought first and sold to unwind.
+            # 2. Partial-fill fallback: accumulate BUYs after this SELL until qty covered
+            if exit_t is None:
+                after_buys = [
+                    b for b in buys
+                    if (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str
+                ]
+                after_total = sum(int(b.get("tradedQuantity") or b.get("quantity") or 0)
+                                  for b in after_buys)
+                if after_buys and after_total >= qty:
+                    running = 0
+                    total_val = 0.0
+                    used_buys = []
+                    for b in after_buys:
+                        if running >= qty:
+                            break
+                        bqty = int(b.get("tradedQuantity") or b.get("quantity") or 0)
+                        take = min(bqty, qty - running)
+                        total_val += float(b.get("tradedPrice") or b.get("price") or 0) * take
+                        running += take
+                        used_buys.append(b)
+                    last_b = used_buys[-1]
+                    exit_t = {
+                        "createTime":     last_b.get("createTime") or last_b.get("orderCreateTime") or "",
+                        "tradedPrice":    round(total_val / qty, 4) if qty else 0,
+                        "tradedQuantity": qty,
+                    }
+                    for b in used_buys:
+                        if b in buys:
+                            buys.remove(b)
+            # 3. Fallback: if no BUY after this SELL, check for unpaired BUY before it.
+            #    Handles hedge legs that were bought first and sold to unwind.
             if exit_t is None:
                 before = [
                     b for b in buys
@@ -548,7 +578,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 if before:
                     exit_t = max(before, key=lambda b: b.get("createTime") or b.get("orderCreateTime") or "")
                     direction = "LONG"
-            if exit_t:
+            if exit_t and exit_t in buys:
                 buys.remove(exit_t)
 
             exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
@@ -556,14 +586,19 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
             pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
             status     = "CLOSED" if exit_t else "OPEN"
-            # Auto-close options that expired worthless: no BUY exists because Dhan
-            # doesn't generate a closing transaction for worthless expiry. If the trade
-            # date is on or after the option's expiry date, it settled at zero.
-            if exit_t is None and expiry and trade_date >= expiry[:10]:
+            worthless  = False
+            # Auto-close options that expired worthless: Dhan doesn't generate a closing
+            # BUY when an option expires at zero. Safe to apply ONLY when today is AFTER
+            # the expiry date (not on the same day — 0DTE may still be open intraday).
+            # Validates expiry looks like YYYY-MM-DD before comparing.
+            expiry_date = expiry[:10] if len(expiry) >= 10 else ""
+            if (exit_t is None and expiry_date and expiry_date[:4].isdigit()
+                    and today_str > expiry_date):
                 exit_time  = "15:30:00"
                 exit_price = 0.0
-                pnl        = round(entry_price * qty, 2)  # full premium retained (SHORT)
+                pnl        = round(entry_price * qty, 2)
                 status     = "CLOSED"
+                worthless  = True
             # For LONG (hedge): exit_t is the opening BUY, sell is the closing SELL.
             # Swap so entry = opening BUY (earlier), exit = closing SELL (later).
             if direction == "LONG" and exit_t:
@@ -588,7 +623,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                     ).fetchone()
                 if existing:
                     updates = {}
-                    if existing["status"] == "OPEN" and exit_t:
+                    if existing["status"] == "OPEN" and (exit_t or worthless):
                         updates = dict(exit_time=exit_time, exit_price=exit_price,
                                        pnl=pnl, status="CLOSED", direction=direction)
                     elif (existing["direction"] or "SHORT") != direction:
