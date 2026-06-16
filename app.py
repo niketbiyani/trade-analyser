@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v73"
+APP_VERSION = "v74"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -929,18 +929,21 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
     candles = []
     for i, ts_raw in enumerate(timestamps):
         try:
-            # Handle integer Unix epoch (Dhan intraday returns actual UTC)
-            # Add 19800s (5.5h IST offset) to match the IST-as-UTC convention
-            # used by tsFor() in the frontend (Date.UTC treating IST times as UTC)
+            # Produce IST-as-UTC epoch regardless of VPS timezone:
+            # Integer (Dhan intraday = true UTC) → add 5.5h to shift into IST-as-UTC.
+            # String (IST time string) → parse then force UTC interpretation so the
+            # IST hour value becomes the epoch hour (timezone.utc avoids .timestamp()
+            # treating the naive datetime as local time on IST-timezone servers).
             if isinstance(ts_raw, (int, float)):
-                ts = datetime.fromtimestamp(int(ts_raw) + 19800)
+                ts_epoch = int(ts_raw) + 19800
             else:
                 ts_str = str(ts_raw).strip()
                 if len(ts_str) <= 8:
                     ts_str = f"{trade_date} {ts_str}"
-                ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+                dt = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+                ts_epoch = int(dt.replace(tzinfo=timezone.utc).timestamp())
             candles.append({
-                "time":  int(ts.timestamp()),
+                "time":  ts_epoch,
                 "open":  round(float(opens[i]),  2),
                 "high":  round(float(highs[i]),  2),
                 "low":   round(float(lows[i]),   2),
