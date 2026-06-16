@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v69"
+APP_VERSION = "v70"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -508,6 +508,28 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             [t for t in group if _tx_type(t) == "BUY"],
             key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
         )
+        # Track remaining quantity per BUY so one large order can be split
+        # across multiple partial-close SELLs (e.g. BUY 130 closes two SELL 65s).
+        for b in buys:
+            b["_rem"] = int(b.get("tradedQuantity") or b.get("quantity") or 0)
+
+        def _consume_buy(qty, after_ts="", before_ts=""):
+            """Find first BUY with _rem >= qty in the given time window and deduct."""
+            for b in buys:
+                if b["_rem"] < qty:
+                    continue
+                bt = b.get("createTime") or b.get("orderCreateTime") or ""
+                if after_ts and bt <= after_ts:
+                    continue
+                if before_ts and bt >= before_ts:
+                    continue
+                b["_rem"] -= qty
+                return {
+                    "createTime":    bt,
+                    "tradedPrice":   float(b.get("tradedPrice") or b.get("price") or 0),
+                    "tradedQuantity": qty,
+                }
+            return None
 
         for sell in sells:
             ts_str      = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
@@ -529,57 +551,14 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
             order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
 
             direction = "SHORT"
-            # 1. Try exact-quantity match: first BUY after this SELL with the same qty
-            exit_t = next(
-                (
-                    b for b in buys
-                    if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
-                    and (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str
-                ),
-                None,
-            )
-            # 2. Partial-fill fallback: accumulate BUYs after this SELL until qty covered
+            # 1. Find a BUY after this SELL with enough remaining qty (may be partial of a
+            #    larger order split across multiple SELLs — deducts from _rem counter).
+            exit_t = _consume_buy(qty, after_ts=ts_str)
+            # 2. Fallback: BUY before this SELL with enough remaining qty (LONG/hedge leg).
             if exit_t is None:
-                after_buys = [
-                    b for b in buys
-                    if (b.get("createTime") or b.get("orderCreateTime") or "") > ts_str
-                ]
-                after_total = sum(int(b.get("tradedQuantity") or b.get("quantity") or 0)
-                                  for b in after_buys)
-                if after_buys and after_total >= qty:
-                    running = 0
-                    total_val = 0.0
-                    used_buys = []
-                    for b in after_buys:
-                        if running >= qty:
-                            break
-                        bqty = int(b.get("tradedQuantity") or b.get("quantity") or 0)
-                        take = min(bqty, qty - running)
-                        total_val += float(b.get("tradedPrice") or b.get("price") or 0) * take
-                        running += take
-                        used_buys.append(b)
-                    last_b = used_buys[-1]
-                    exit_t = {
-                        "createTime":     last_b.get("createTime") or last_b.get("orderCreateTime") or "",
-                        "tradedPrice":    round(total_val / qty, 4) if qty else 0,
-                        "tradedQuantity": qty,
-                    }
-                    for b in used_buys:
-                        if b in buys:
-                            buys.remove(b)
-            # 3. Fallback: if no BUY after this SELL, check for unpaired BUY before it.
-            #    Handles hedge legs that were bought first and sold to unwind.
-            if exit_t is None:
-                before = [
-                    b for b in buys
-                    if int(b.get("tradedQuantity") or b.get("quantity") or 0) == qty
-                    and (b.get("createTime") or b.get("orderCreateTime") or "") < ts_str
-                ]
-                if before:
-                    exit_t = max(before, key=lambda b: b.get("createTime") or b.get("orderCreateTime") or "")
+                exit_t = _consume_buy(qty, before_ts=ts_str)
+                if exit_t:
                     direction = "LONG"
-            if exit_t and exit_t in buys:
-                buys.remove(exit_t)
 
             exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
             exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
