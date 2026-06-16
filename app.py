@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v71"
+APP_VERSION = "v72"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2794,6 +2794,9 @@ async function loadChart() {{
       var _y=+curDate.slice(0,4),_m=+curDate.slice(5,7)-1,_dd=+curDate.slice(8,10);
       var _r={{from:Date.UTC(_y,_m,_dd,9,0,0)/1000, to:Date.UTC(_y,_m,_dd,15,35,0)/1000}};
       try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
+      // Re-place markers now that candles are loaded — loadTrades() may have
+      // run first (it's a fast DB call) and snapped to stale/empty candles.
+      putMarkers(_filtered());
     }}
     else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
   }} catch(e) {{
