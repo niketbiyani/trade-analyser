@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v72"
+APP_VERSION = "v73"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1473,7 +1473,7 @@ async function loadDate(d){{
       var pstr=t.pnl!=null?’₹’+(t.pnl>=0?’+’:’’)+Math.round(t.pnl):’—‘;
       var exp=(t.expiry||’’).slice(0,10);
       tr.innerHTML=
-        ‘<td>’+(t.entry_time||’’).slice(0,5)+’</td>’+
+        ‘<td>’+(t.entry_time||’’).slice(0,8)+’</td>’+
         ‘<td class="’+oc+’">’+t.option_type+’</td>’+
         ‘<td>’+t.strike+’</td>’+
         ‘<td style="color:#555">’+exp+’</td>’+
@@ -2857,7 +2857,7 @@ function renderTrades(trades) {{
     var sel=selId===t.id?' sel':'';
     var nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
-      '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,5):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,5):'')+'</td>' +
+      '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,8):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,8):'')+'</td>' +
       '<td><span class="tag '+tc+'">'+t.option_type+'</span></td>' +
       '<td>'+sk+'</td><td>'+t.entry_price.toFixed(2)+'</td><td>'+ep+'</td>' +
       '<td>'+lts+'</td><td>'+pl+'</td>' +
