@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v70"
+APP_VERSION = "v71"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -463,8 +463,111 @@ def _aggregate_partial_fills(trades: list[dict]) -> list[dict]:
     return result
 
 
+def _fifo_pair(group: list[dict]) -> list[dict]:
+    """FIFO position tracking for one (date, security_id) group.
+
+    Processes trades chronologically. Each BUY closes the oldest open SHORT
+    position first; any excess BUY quantity opens a new LONG. Vice versa for SELLs.
+    This matches how exchanges (and Dhan) calculate P&L — no quantity heuristics needed.
+
+    Returns list of dicts: direction, entry_time, entry_price, exit_time, exit_price,
+                           qty, order_id, status, pnl
+    """
+    sorted_t = sorted(
+        group,
+        key=lambda x: x.get("createTime") or x.get("orderCreateTime") or ""
+    )
+    long_q:  list[dict] = []   # open LONG legs (BUYs awaiting close)
+    short_q: list[dict] = []   # open SHORT legs (SELLs awaiting close)
+    done:    list[dict] = []
+
+    for t in sorted_t:
+        tx    = _tx_type(t)
+        ts    = t.get("createTime") or t.get("orderCreateTime") or ""
+        qty   = int(t.get("tradedQuantity") or t.get("quantity") or 0)
+        price = float(t.get("tradedPrice") or t.get("price") or 0)
+        oid   = str(t.get("orderId") or t.get("order_id") or "")
+        if qty <= 0:
+            continue
+
+        if tx == "SELL":
+            rem = qty
+            # Close oldest LONG positions first (FIFO)
+            while rem > 0 and long_q:
+                head = long_q[0]
+                take = min(head["qty"], rem)
+                done.append({
+                    "direction":   "LONG",
+                    "entry_time":  head["ts"][11:19] if len(head["ts"]) >= 19 else "",
+                    "entry_price": head["price"],
+                    "exit_time":   ts[11:19] if len(ts) >= 19 else "",
+                    "exit_price":  price,
+                    "qty":         take,
+                    "order_id":    head["oid"],
+                    "status":      "CLOSED",
+                    "pnl":         round((price - head["price"]) * take, 2),
+                })
+                rem          -= take
+                head["qty"]  -= take
+                if head["qty"] == 0:
+                    long_q.pop(0)
+            if rem > 0:
+                short_q.append({"qty": rem, "price": price, "ts": ts, "oid": oid})
+
+        elif tx == "BUY":
+            rem = qty
+            # Close oldest SHORT positions first (FIFO)
+            while rem > 0 and short_q:
+                head = short_q[0]
+                take = min(head["qty"], rem)
+                done.append({
+                    "direction":   "SHORT",
+                    "entry_time":  head["ts"][11:19] if len(head["ts"]) >= 19 else "",
+                    "entry_price": head["price"],
+                    "exit_time":   ts[11:19] if len(ts) >= 19 else "",
+                    "exit_price":  price,
+                    "qty":         take,
+                    "order_id":    head["oid"],
+                    "status":      "CLOSED",
+                    "pnl":         round((head["price"] - price) * take, 2),
+                })
+                rem          -= take
+                head["qty"]  -= take
+                if head["qty"] == 0:
+                    short_q.pop(0)
+            if rem > 0:
+                long_q.append({"qty": rem, "price": price, "ts": ts, "oid": oid})
+
+    # Remaining = still-open positions
+    for entry in short_q:
+        done.append({
+            "direction":   "SHORT",
+            "entry_time":  entry["ts"][11:19] if len(entry["ts"]) >= 19 else "",
+            "entry_price": entry["price"],
+            "exit_time":   "",
+            "exit_price":  None,
+            "qty":         entry["qty"],
+            "order_id":    entry["oid"],
+            "status":      "OPEN",
+            "pnl":         None,
+        })
+    for entry in long_q:
+        done.append({
+            "direction":   "LONG",
+            "entry_time":  entry["ts"][11:19] if len(entry["ts"]) >= 19 else "",
+            "entry_price": entry["price"],
+            "exit_time":   "",
+            "exit_price":  None,
+            "qty":         entry["qty"],
+            "order_id":    entry["oid"],
+            "status":      "OPEN",
+            "pnl":         None,
+        })
+    return done
+
+
 def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict:
-    """Dedup, filter options, pair SELL/BUY, insert into DB. Returns result dict."""
+    """Dedup, filter options, FIFO-pair SELL/BUY, insert into DB. Returns result dict."""
     diag: dict = dict(extra_diag or {})
     today_str = str(date.today())
 
@@ -500,117 +603,64 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
 
     for (trade_date, sid), group in groups.items():
         group = _aggregate_partial_fills(group)
-        sells = sorted(
-            [t for t in group if _tx_type(t) == "SELL"],
-            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
-        )
-        buys = sorted(
-            [t for t in group if _tx_type(t) == "BUY"],
-            key=lambda x: x.get("createTime") or x.get("orderCreateTime") or "",
-        )
-        # Track remaining quantity per BUY so one large order can be split
-        # across multiple partial-close SELLs (e.g. BUY 130 closes two SELL 65s).
-        for b in buys:
-            b["_rem"] = int(b.get("tradedQuantity") or b.get("quantity") or 0)
 
-        def _consume_buy(qty, after_ts="", before_ts=""):
-            """Find first BUY with _rem >= qty in the given time window and deduct."""
-            for b in buys:
-                if b["_rem"] < qty:
-                    continue
-                bt = b.get("createTime") or b.get("orderCreateTime") or ""
-                if after_ts and bt <= after_ts:
-                    continue
-                if before_ts and bt >= before_ts:
-                    continue
-                b["_rem"] -= qty
-                return {
-                    "createTime":    bt,
-                    "tradedPrice":   float(b.get("tradedPrice") or b.get("price") or 0),
-                    "tradedQuantity": qty,
-                }
-            return None
+        # Extract option metadata from group (all trades share the same option)
+        ref        = group[0]
+        opt_raw    = (ref.get("drvOptionType") or "").upper()
+        opt_type   = "CE" if opt_raw in ("CALL", "CE") else "PE"
+        if opt_raw not in ("CALL", "PUT", "CE", "PE"):
+            sym_u = (ref.get("tradingSymbol") or ref.get("customSymbol") or "").upper()
+            opt_type = "CE" if (sym_u.endswith("CE") or " CALL " in sym_u) else "PE"
+        sym        = ref.get("tradingSymbol") or ref.get("customSymbol") or ""
+        exseg      = ref.get("exchangeSegment") or "NSE_FNO"
+        underlying = _underlying(sym, exseg)
+        lot_size   = LOT_SIZES.get(underlying, 1)
+        expiry     = str(ref.get("drvExpiryDate") or ref.get("expiryDate") or "")
+        strike     = float(ref.get("drvStrikePrice") or ref.get("strikePrice") or 0)
+        expiry_date = expiry[:10] if len(expiry) >= 10 else ""
 
-        for sell in sells:
-            ts_str      = sell.get("createTime") or sell.get("exchangeTime") or sell.get("orderCreateTime") or ""
-            entry_time  = ts_str[11:19] if len(ts_str) >= 19 else ""
-            entry_price = float(sell.get("tradedPrice") or sell.get("price") or 0)
-            qty         = int(sell.get("tradedQuantity") or sell.get("quantity") or 0)
-            opt_raw     = (sell.get("drvOptionType") or "").upper()
-            opt_type    = "CE" if opt_raw in ("CALL", "CE") else "PE"
-            if opt_raw not in ("CALL", "PUT", "CE", "PE"):
-                sym_u = (sell.get("tradingSymbol") or sell.get("customSymbol") or "").upper()
-                opt_type = "CE" if (sym_u.endswith("CE") or " CALL " in sym_u) else "PE"
-            strike      = float(sell.get("drvStrikePrice") or sell.get("strikePrice") or 0)
-            expiry      = str(sell.get("drvExpiryDate") or sell.get("expiryDate") or "")
-            sym         = sell.get("tradingSymbol") or sell.get("customSymbol") or ""
-            exseg       = sell.get("exchangeSegment") or "NSE_FNO"
-            underlying  = _underlying(sym, exseg)
-            lot_size    = LOT_SIZES.get(underlying, 1)
+        for pair in _fifo_pair(group):
+            entry_time  = pair["entry_time"]
+            entry_price = pair["entry_price"]
+            exit_time   = pair["exit_time"] or ""
+            exit_price  = pair["exit_price"]
+            qty         = pair["qty"]
             lots        = round(qty / lot_size, 2) if lot_size else float(qty)
-            order_id    = str(sell.get("orderId") or sell.get("order_id") or "")
+            direction   = pair["direction"]
+            status      = pair["status"]
+            pnl         = pair["pnl"]
+            order_id    = pair["order_id"]
 
-            direction = "SHORT"
-            # 1. Find a BUY after this SELL with enough remaining qty (may be partial of a
-            #    larger order split across multiple SELLs — deducts from _rem counter).
-            exit_t = _consume_buy(qty, after_ts=ts_str)
-            # 2. Fallback: BUY before this SELL with enough remaining qty (LONG/hedge leg).
-            if exit_t is None:
-                exit_t = _consume_buy(qty, before_ts=ts_str)
-                if exit_t:
-                    direction = "LONG"
-
-            exit_ts    = (exit_t.get("createTime") or exit_t.get("exchangeTime") or "") if exit_t else ""
-            exit_time  = exit_ts[11:19] if len(exit_ts) >= 19 else ""
-            exit_price = float(exit_t.get("tradedPrice") or exit_t.get("price") or 0) if exit_t else None
-            pnl        = round((entry_price - (exit_price or 0)) * qty, 2) if exit_price is not None else None
-            status     = "CLOSED" if exit_t else "OPEN"
-            worthless  = False
-            # Auto-close options that expired worthless: Dhan doesn't generate a closing
-            # BUY when an option expires at zero. Safe to apply ONLY when today is AFTER
-            # the expiry date (not on the same day — 0DTE may still be open intraday).
-            # Validates expiry looks like YYYY-MM-DD before comparing.
-            expiry_date = expiry[:10] if len(expiry) >= 10 else ""
-            if (exit_t is None and expiry_date and expiry_date[:4].isdigit()
+            # Auto-close worthless expiry on next-day re-import.
+            # Only fires when today is strictly AFTER expiry (not intraday 0DTE).
+            if (status == "OPEN" and expiry_date and expiry_date[:4].isdigit()
                     and today_str > expiry_date):
                 exit_time  = "15:30:00"
                 exit_price = 0.0
                 pnl        = round(entry_price * qty, 2)
                 status     = "CLOSED"
-                worthless  = True
-            # For LONG (hedge): exit_t is the opening BUY, sell is the closing SELL.
-            # Swap so entry = opening BUY (earlier), exit = closing SELL (later).
-            if direction == "LONG" and exit_t:
-                entry_time, exit_time   = exit_time,  entry_time
-                entry_price, exit_price = exit_price, entry_price
-                pnl = round((exit_price - entry_price) * qty, 2) if exit_price is not None else None
 
             with _db_lock:
                 existing = db.execute(
-                    "SELECT id, status, direction FROM trades"
-                    " WHERE date=? AND security_id=? AND entry_time=?",
-                    (trade_date, sid, entry_time),
+                    "SELECT id, status FROM trades"
+                    " WHERE date=? AND security_id=? AND entry_time=? AND direction=?",
+                    (trade_date, sid, entry_time, direction),
                 ).fetchone()
                 if not existing:
-                    # fallback: match OPEN rows by trade identity when security_id differs
-                    # (e.g. first import from CSV uses symbol as ID, second from Dhan uses numeric ID)
+                    # Fallback for CSV imports where security_id is the symbol string
                     existing = db.execute(
-                        "SELECT id, status, direction FROM trades"
+                        "SELECT id, status FROM trades"
                         " WHERE date=? AND underlying=? AND option_type=? AND strike=?"
-                        " AND entry_time=? AND status='OPEN'",
-                        (trade_date, underlying, opt_type, strike, entry_time),
+                        " AND entry_time=? AND direction=? AND status='OPEN'",
+                        (trade_date, underlying, opt_type, strike, entry_time, direction),
                     ).fetchone()
                 if existing:
-                    updates = {}
-                    if existing["status"] == "OPEN" and (exit_t or worthless):
-                        updates = dict(exit_time=exit_time, exit_price=exit_price,
-                                       pnl=pnl, status="CLOSED", direction=direction)
-                    elif (existing["direction"] or "SHORT") != direction:
-                        updates = dict(direction=direction)
-                    if updates:
-                        cols = ", ".join(f"{k}=?" for k in updates)
-                        db.execute(f"UPDATE trades SET {cols} WHERE id=?",
-                                   (*updates.values(), existing["id"]))
+                    if existing["status"] == "OPEN" and status == "CLOSED":
+                        db.execute(
+                            "UPDATE trades SET exit_time=?,exit_price=?,pnl=?,status=?,"
+                            "quantity=?,lots=? WHERE id=?",
+                            (exit_time, exit_price, pnl, status, qty, lots, existing["id"]),
+                        )
                         db.commit()
                         imported += 1
                     else:
@@ -628,7 +678,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                     """,
                     (
                         trade_date, underlying, opt_type, strike, expiry,
-                        entry_time, entry_price, exit_time, exit_price,
+                        entry_time, entry_price, exit_time or "", exit_price,
                         qty, lot_size, lots, pnl, status,
                         sid, exseg, order_id, datetime.now().timestamp(), direction,
                     ),

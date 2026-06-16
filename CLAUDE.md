@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v70`
+**Current version:** `v71`
 
 ---
 
@@ -163,12 +163,16 @@ Dhan `createTime` is IST string `"YYYY-MM-DD HH:MM:SS"`. Strip timezone → naiv
 ### Dhan trade history date format
 `get_trade_history()` expects `DD-MM-YYYY`, not `YYYY-MM-DD`. The app converts internally.
 
-### SELL/BUY pairing
-- **SHORT direction**: each SELL is matched with the earliest BUY after it with equal quantity
-- **LONG direction**: each BUY is matched with the earliest SELL after it with equal quantity; then entry/exit are swapped so entry=opening BUY, exit=closing SELL
+### FIFO position tracking (`_fifo_pair`)
+Replaces all quantity/time heuristics. Processes trades chronologically:
+- **BUY** → closes oldest open SHORT first (FIFO); any excess opens a LONG
+- **SELL** → closes oldest open LONG first (FIFO); any excess opens a SHORT
+- One large order (e.g. BUY 130) can split across multiple positions (e.g. close SELL 65 + open LONG 65)
+- Re-entries, partial closes, and same-option multiple positions all handled correctly
+- This is how NSE/Dhan calculate P&L internally
 
 ### Partial fill aggregation
-`_aggregate_partial_fills()` must be called before SELL/BUY pairing. It merges records sharing the same `orderId` — summing quantities, weighted-averaging prices.
+`_aggregate_partial_fills()` runs before `_fifo_pair`. It merges records sharing the same `orderId` — summing quantities, weighted-averaging prices. This handles Dhan reporting one order as multiple fill notifications.
 
 ### Underlying detection
 - `BSE_FNO` → always `SENSEX`
