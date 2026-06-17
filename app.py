@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v83"
+APP_VERSION = "v84"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -738,7 +738,8 @@ def _is_option(trade: dict) -> bool:
     seg_ok = "FNO" in seg or "F&O" in seg or "FO" in seg
     opt = (trade.get("drvOptionType") or "").upper()
     opt_ok = opt in ("CALL", "PUT", "CE", "PE")
-    inst = (trade.get("instrumentType") or trade.get("drvInstrumentType") or "").upper()
+    inst = (trade.get("instrumentType") or trade.get("drvInstrumentType") or
+            trade.get("instrument") or "").upper()
     inst_ok = inst in ("OPTIDX", "OPTSTK")
     sym = (trade.get("tradingSymbol") or trade.get("customSymbol") or "").upper()
     sym_ok = (sym.endswith("CE") or sym.endswith("PE") or
@@ -794,8 +795,6 @@ def _do_import(from_date: str, to_date: str) -> dict:
                             diag["note"] = "No trades found on Dhan for this date range."
                 break
             raw.extend(batch)
-            if len(batch) < 50:
-                break
             page += 1
 
     if from_date <= today_str <= to_date:
