@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v79"
+APP_VERSION = "v80"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -757,10 +757,10 @@ def _do_import(from_date: str, to_date: str) -> dict:
         page = 0
         tried_p1_fallback = False
         while True:
-            # Dhan v2 API expects YYYY-MM-DD in the path; pass directly (no DD-MM-YYYY conversion)
+            # Dhan API requires DD-MM-YYYY in the path parameter (not YYYY-MM-DD)
             resp = dhan.get_trade_history(
-                from_date=from_date,
-                to_date=to_date,
+                from_date=_to_dhan_date(from_date),
+                to_date=_to_dhan_date(to_date),
                 page_number=page,
             )
             batch = _extract_batch(resp)
@@ -769,8 +769,8 @@ def _do_import(from_date: str, to_date: str) -> dict:
                 if page == 0 and not tried_p1_fallback:
                     tried_p1_fallback = True
                     resp1 = dhan.get_trade_history(
-                        from_date=from_date,
-                        to_date=to_date,
+                        from_date=_to_dhan_date(from_date),
+                        to_date=_to_dhan_date(to_date),
                         page_number=1,
                     )
                     batch1 = _extract_batch(resp1)
@@ -1931,8 +1931,8 @@ def api_debug_dhan():
     try:
         dhan  = _dhan_client()
         resp  = dhan.get_trade_history(
-            from_date=from_date,
-            to_date=to_date,
+            from_date=_to_dhan_date(from_date),
+            to_date=_to_dhan_date(to_date),
             page_number=0,
         )
         batch = _extract_batch(resp)
