@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v89"
+APP_VERSION = "v90"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2129,9 +2129,7 @@ def api_delete_trade(tid: int):
 def api_delete_date(trade_date: str):
     with _db_lock:
         db = get_db()
-        # Only delete Dhan-imported trades (dhan_order_id set).
-        # Manually entered trades (empty dhan_order_id) survive the wipe.
-        db.execute("DELETE FROM trades WHERE date=? AND dhan_order_id != ''", (trade_date,))
+        db.execute("DELETE FROM trades WHERE date=?", (trade_date,))
         db.commit()
     return jsonify({"ok": True})
 
