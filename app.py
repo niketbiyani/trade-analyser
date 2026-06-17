@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v86"
+APP_VERSION = "v87"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2020,22 +2020,6 @@ def api_debug_dhan():
     return jsonify(out)
 
 
-@app.route("/api/clear-date", methods=["POST"])
-def api_clear_date():
-    """Delete all trade records for a specific date so it can be re-imported cleanly."""
-    data = request.json or {}
-    d = (data.get("date") or "").strip()
-    if not d or len(d) != 10:
-        return jsonify({"ok": False, "error": "Provide date as YYYY-MM-DD"}), 400
-    db = get_db()
-    with _db_lock:
-        n = db.execute("SELECT COUNT(*) FROM trades WHERE date=?", (d,)).fetchone()[0]
-        db.execute("DELETE FROM trades WHERE date=?", (d,))
-        db.commit()
-    logger.info("clear-date %s: deleted %d records", d, n)
-    return jsonify({"ok": True, "date": d, "deleted": n})
-
-
 @app.route("/api/import", methods=["POST"])
 def api_import():
     data      = request.json or {}
@@ -2591,8 +2575,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <div id="mdiag"></div>
       <div class="mfooter">
         <button class="btn btns" onclick="closeImp()">Cancel</button>
-        <button class="btn" id="mBtnClear" onclick="doClearImport()" style="background:#b71c1c;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px" title="Delete all records for this date then re-import (single date only)">Clear &amp; Reimport</button>
-        <button class="btn btnp" id="mBtn" onclick="doImport()">Import</button>
+<button class="btn btnp" id="mBtn" onclick="doImport()">Import</button>
       </div>
     </div>
     <div id="mpanel-csv" style="display:none">
@@ -3104,28 +3087,6 @@ async function doImport(){{
     }}else{{res.style.color='#ef5350';res.textContent='Error: '+d.error;}}
   }}catch(e){{res.style.color='#ef5350';res.textContent='Network error: '+e.message;}}
   btn.disabled=false; btn.textContent='Import';
-}}
-async function doClearImport(){{
-  var from=document.getElementById('mFrom').value, to=document.getElementById('mTo').value;
-  var res=document.getElementById('mres');
-  if(from!==to){{res.style.color='#ef5350';res.textContent='Clear & Reimport only works for a single date (From = To).';return;}}
-  if(!confirm('Delete ALL trades for '+from+' and re-import from Dhan?'))return;
-  var btn=document.getElementById('mBtnClear'), btn2=document.getElementById('mBtn');
-  btn.disabled=true; btn2.disabled=true; res.style.color=''; res.textContent='Clearing '+from+'...';
-  try{{
-    var r=await fetch('/api/clear-date',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{date:from}})}});
-    var d=await r.json();
-    if(!d.ok){{res.style.color='#ef5350';res.textContent='Clear failed: '+d.error;return;}}
-    res.textContent='Cleared '+d.deleted+' records. Re-importing...';
-    var r2=await fetch('/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{from_date:from,to_date:to}})}});
-    var d2=await r2.json();
-    if(d2.ok){{
-      res.style.color='#4caf50';
-      res.textContent='Done: '+d2.imported+' new, '+d2.skipped+' stored ('+d2.total_options+' options)';
-      if(d2.imported>0)loadTrades();
-    }}else{{res.style.color='#ef5350';res.textContent='Import error: '+d2.error;}}
-  }}catch(e){{res.style.color='#ef5350';res.textContent='Network error: '+e.message;}}
-  btn.disabled=false; btn2.disabled=false;
 }}
 async function doImportCsv(){{
   var inp=document.getElementById('mCsvFile');
