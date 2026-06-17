@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v81"
+APP_VERSION = "v82"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1956,6 +1956,20 @@ def api_debug_dhan():
                 }
             except Exception as e:
                 out["trade_book"] = {"error": str(e)}
+        # Ledger report — may include INTRADAY P&L entries that trade_history misses
+        try:
+            resp_ledger  = dhan.ledger_report(from_date=from_date, to_date=to_date)
+            led_batch    = _extract_batch(resp_ledger)
+            out["ledger"] = {
+                "response_type":     type(resp_ledger).__name__,
+                "status":            resp_ledger.get("status") if isinstance(resp_ledger, dict) else None,
+                "record_count":      len(led_batch),
+                "first_record":      led_batch[0] if led_batch else None,
+                "first_record_keys": list(led_batch[0].keys()) if led_batch else None,
+                "raw_preview":       str(resp_ledger)[:800],
+            }
+        except Exception as e:
+            out["ledger"] = {"error": str(e)}
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "error_type": type(e).__name__})
     return jsonify(out)
