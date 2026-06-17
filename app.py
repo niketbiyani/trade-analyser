@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v77"
+APP_VERSION = "v78"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -463,6 +463,19 @@ def _aggregate_partial_fills(trades: list[dict]) -> list[dict]:
     return result
 
 
+def _ts_to_time(ts: str) -> str:
+    """Extract HH:MM:SS from a timestamp string.
+
+    Handles both full 'YYYY-MM-DD HH:MM:SS' (trade history) and
+    bare 'HH:MM:SS' (trade book — today only, no date prefix).
+    """
+    if len(ts) >= 19:
+        return ts[11:19]
+    if len(ts) >= 8:
+        return ts[:8]
+    return ""
+
+
 def _fifo_pair(group: list[dict]) -> list[dict]:
     """FIFO position tracking for one (date, security_id) group.
 
@@ -498,9 +511,9 @@ def _fifo_pair(group: list[dict]) -> list[dict]:
                 take = min(head["qty"], rem)
                 done.append({
                     "direction":   "LONG",
-                    "entry_time":  head["ts"][11:19] if len(head["ts"]) >= 19 else "",
+                    "entry_time":  _ts_to_time(head["ts"]),
                     "entry_price": head["price"],
-                    "exit_time":   ts[11:19] if len(ts) >= 19 else "",
+                    "exit_time":   _ts_to_time(ts),
                     "exit_price":  price,
                     "qty":         take,
                     "order_id":    head["oid"],
@@ -522,9 +535,9 @@ def _fifo_pair(group: list[dict]) -> list[dict]:
                 take = min(head["qty"], rem)
                 done.append({
                     "direction":   "SHORT",
-                    "entry_time":  head["ts"][11:19] if len(head["ts"]) >= 19 else "",
+                    "entry_time":  _ts_to_time(head["ts"]),
                     "entry_price": head["price"],
-                    "exit_time":   ts[11:19] if len(ts) >= 19 else "",
+                    "exit_time":   _ts_to_time(ts),
                     "exit_price":  price,
                     "qty":         take,
                     "order_id":    head["oid"],
@@ -542,7 +555,7 @@ def _fifo_pair(group: list[dict]) -> list[dict]:
     for entry in short_q:
         done.append({
             "direction":   "SHORT",
-            "entry_time":  entry["ts"][11:19] if len(entry["ts"]) >= 19 else "",
+            "entry_time":  _ts_to_time(entry["ts"]),
             "entry_price": entry["price"],
             "exit_time":   "",
             "exit_price":  None,
@@ -554,7 +567,7 @@ def _fifo_pair(group: list[dict]) -> list[dict]:
     for entry in long_q:
         done.append({
             "direction":   "LONG",
-            "entry_time":  entry["ts"][11:19] if len(entry["ts"]) >= 19 else "",
+            "entry_time":  _ts_to_time(entry["ts"]),
             "entry_price": entry["price"],
             "exit_time":   "",
             "exit_price":  None,

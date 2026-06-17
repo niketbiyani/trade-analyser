@@ -39,6 +39,14 @@ def _aggregate_partial_fills(trades):
     return result
 
 
+def _ts_to_time(ts):
+    if len(ts) >= 19:
+        return ts[11:19]
+    if len(ts) >= 8:
+        return ts[:8]
+    return ""
+
+
 def _fifo_pair(group):
     sorted_t = sorted(
         group,
@@ -64,9 +72,9 @@ def _fifo_pair(group):
                 take = min(head["qty"], rem)
                 done.append({
                     "direction":   "LONG",
-                    "entry_time":  head["ts"][11:19] if len(head["ts"]) >= 19 else "",
+                    "entry_time":  _ts_to_time(head["ts"]),
                     "entry_price": head["price"],
-                    "exit_time":   ts[11:19] if len(ts) >= 19 else "",
+                    "exit_time":   _ts_to_time(ts),
                     "exit_price":  price,
                     "qty":         take,
                     "order_id":    head["oid"],
@@ -87,9 +95,9 @@ def _fifo_pair(group):
                 take = min(head["qty"], rem)
                 done.append({
                     "direction":   "SHORT",
-                    "entry_time":  head["ts"][11:19] if len(head["ts"]) >= 19 else "",
+                    "entry_time":  _ts_to_time(head["ts"]),
                     "entry_price": head["price"],
-                    "exit_time":   ts[11:19] if len(ts) >= 19 else "",
+                    "exit_time":   _ts_to_time(ts),
                     "exit_price":  price,
                     "qty":         take,
                     "order_id":    head["oid"],
@@ -106,7 +114,7 @@ def _fifo_pair(group):
     for entry in short_q:
         done.append({
             "direction":   "SHORT",
-            "entry_time":  entry["ts"][11:19] if len(entry["ts"]) >= 19 else "",
+            "entry_time":  _ts_to_time(entry["ts"]),
             "entry_price": entry["price"],
             "exit_time":   "",
             "exit_price":  None,
@@ -118,7 +126,7 @@ def _fifo_pair(group):
     for entry in long_q:
         done.append({
             "direction":   "LONG",
-            "entry_time":  entry["ts"][11:19] if len(entry["ts"]) >= 19 else "",
+            "entry_time":  _ts_to_time(entry["ts"]),
             "entry_price": entry["price"],
             "exit_time":   "",
             "exit_price":  None,
