@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v88"
+APP_VERSION = "v89"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -707,7 +707,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                     existing = db.execute(
                         "SELECT id, status, entry_time FROM trades"
                         " WHERE date=? AND underlying=? AND option_type=? AND strike=?"
-                        " AND entry_time=? AND direction=? AND status='OPEN'",
+                        " AND entry_time=? AND direction=?",
                         (trade_date, underlying, opt_type, strike, entry_time, direction),
                     ).fetchone()
                 if existing:
