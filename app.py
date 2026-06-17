@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v87"
+APP_VERSION = "v88"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1975,18 +1975,36 @@ def api_debug_dhan():
     out: dict = {"ok": True}
     try:
         dhan  = _dhan_client()
-        resp  = dhan.get_trade_history(
-            from_date=from_date,
-            to_date=to_date,
-            page_number=0,
-        )
-        batch = _extract_batch(resp)
+        # Fetch ALL pages so we can spot pagination duplicates
+        all_records = []
+        pages_info  = []
+        for pg in range(5):  # max 5 pages for debug
+            resp  = dhan.get_trade_history(from_date=from_date, to_date=to_date, page_number=pg)
+            batch = _extract_batch(resp)
+            pages_info.append({"page": pg, "count": len(batch)})
+            if not batch:
+                break
+            all_records.extend(batch)
+        # Summarise: show each record's key fields to spot duplicates
+        summary = [
+            {
+                "orderId":         r.get("orderId"),
+                "transactionType": r.get("transactionType"),
+                "customSymbol":    r.get("customSymbol") or r.get("tradingSymbol"),
+                "tradedQuantity":  r.get("tradedQuantity"),
+                "tradedPrice":     r.get("tradedPrice"),
+                "exchangeTime":    r.get("exchangeTime"),
+                "createTime":      r.get("createTime"),
+                "securityId":      r.get("securityId"),
+            }
+            for r in all_records
+        ]
         out["history"] = {
-            "response_type":     type(resp).__name__,
-            "response_keys":     list(resp.keys()) if isinstance(resp, dict) else None,
-            "record_count":      len(batch),
-            "first_record":      batch[0] if batch else None,
-            "first_record_keys": list(batch[0].keys()) if batch else None,
+            "pages":             pages_info,
+            "total_records":     len(all_records),
+            "records_summary":   summary,
+            "first_record":      all_records[0] if all_records else None,
+            "first_record_keys": list(all_records[0].keys()) if all_records else None,
             "raw_preview":       str(resp)[:500],
         }
         if from_date <= today_str <= to_date:
