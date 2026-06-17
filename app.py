@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v84"
+APP_VERSION = "v85"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -155,6 +155,29 @@ def _init_db(conn: sqlite3.Connection) -> None:
             logger.info("Migrated %d LONG trades: corrected entry/exit time order", len(rows))
     except Exception:
         pass
+    # deduplicate: old imports stored entry_time="" (createTime="NA" bug); new imports store
+    # real times. Same dhan_order_id+direction now has two rows. Keep the one with real entry_time.
+    try:
+        dup_groups = conn.execute(
+            "SELECT dhan_order_id, direction FROM trades"
+            " WHERE dhan_order_id != ''"
+            " GROUP BY dhan_order_id, direction HAVING COUNT(*) > 1"
+        ).fetchall()
+        removed = 0
+        for g in dup_groups:
+            rows = conn.execute(
+                "SELECT id, entry_time FROM trades WHERE dhan_order_id=? AND direction=?"
+                " ORDER BY CASE WHEN entry_time != '' THEN 0 ELSE 1 END, id DESC",
+                (g["dhan_order_id"], g["direction"]),
+            ).fetchall()
+            for row in rows[1:]:  # keep first (has real entry_time or newest), delete rest
+                conn.execute("DELETE FROM trades WHERE id=?", (row["id"],))
+                removed += 1
+        if removed:
+            conn.commit()
+            logger.info("Dedup migration: removed %d duplicate trade records", removed)
+    except Exception as e:
+        logger.warning("Dedup migration failed: %s", e)
 
 
 # ── Dhan client ────────────────────────────────────────────────────────────────────
@@ -664,26 +687,40 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 status     = "CLOSED"
 
             with _db_lock:
-                existing = db.execute(
-                    "SELECT id, status FROM trades"
-                    " WHERE date=? AND security_id=? AND entry_time=? AND direction=?",
-                    (trade_date, sid, entry_time, direction),
-                ).fetchone()
-                if not existing:
-                    # Fallback for CSV imports where security_id is the symbol string
+                existing = None
+                # Primary dedup: dhan_order_id is stable across re-imports regardless of
+                # how timestamps were parsed. Use it when available (API imports always have it).
+                if order_id:
                     existing = db.execute(
-                        "SELECT id, status FROM trades"
+                        "SELECT id, status, entry_time FROM trades"
+                        " WHERE dhan_order_id=? AND direction=?",
+                        (order_id, direction),
+                    ).fetchone()
+                # Fallback: time-based dedup for CSV imports (no order ID)
+                if not existing and entry_time:
+                    existing = db.execute(
+                        "SELECT id, status, entry_time FROM trades"
+                        " WHERE date=? AND security_id=? AND entry_time=? AND direction=?",
+                        (trade_date, sid, entry_time, direction),
+                    ).fetchone()
+                if not existing:
+                    existing = db.execute(
+                        "SELECT id, status, entry_time FROM trades"
                         " WHERE date=? AND underlying=? AND option_type=? AND strike=?"
                         " AND entry_time=? AND direction=? AND status='OPEN'",
                         (trade_date, underlying, opt_type, strike, entry_time, direction),
                     ).fetchone()
                 if existing:
+                    updates, vals = [], []
+                    # Patch empty entry_time left by old imports (createTime="NA" bug)
+                    if not existing["entry_time"] and entry_time:
+                        updates.append("entry_time=?"); vals.append(entry_time)
                     if existing["status"] == "OPEN" and status == "CLOSED":
-                        db.execute(
-                            "UPDATE trades SET exit_time=?,exit_price=?,pnl=?,status=?,"
-                            "quantity=?,lots=? WHERE id=?",
-                            (exit_time, exit_price, pnl, status, qty, lots, existing["id"]),
-                        )
+                        updates += ["exit_time=?","exit_price=?","pnl=?","status=?","quantity=?","lots=?"]
+                        vals    += [exit_time, exit_price, pnl, status, qty, lots]
+                    if updates:
+                        vals.append(existing["id"])
+                        db.execute(f"UPDATE trades SET {','.join(updates)} WHERE id=?", vals)
                         db.commit()
                         imported += 1
                     else:
