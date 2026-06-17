@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v74`
+**Current version:** `v84`
 
 ---
 
@@ -39,21 +39,28 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **`_dhan_client()`** — builds fresh `dhanhq` client on every call, calling `load_dotenv(override=True)` first to pick up any token refresh.
 
+**`_real_ts(v)`** — filters out Dhan "NA" sentinel values. Trade history records have `createTime="NA"` and `updateTime="NA"` (literal strings, not null). Returns `""` for these so code falls through to `exchangeTime`.
+
+**`_ts_to_time(ts)`** — extracts `HH:MM:SS` from any timestamp format:
+- `"YYYY-MM-DD HH:MM:SS"` → `ts[11:19]`
+- `"YYYY-MM-DDTHH:MM:SS"` (ISO, from `exchangeTime` in trade history) → `ts[11:19]`
+- `"HH:MM:SS"` (trade book bare time) → `ts[:8]`
+
 **`_aggregate_partial_fills(trades)`** — merges same-`orderId` records before SELL→BUY pairing. Dhan records large orders as multiple partial fills; this sums quantities and weighted-averages prices per orderId.
 
 **`_process_raw_trades(raw)`** — core trade processing:
 1. Normalise `transactionType` → BUY/SELL
-2. Parse `tradingSymbol` → underlying, option_type, strike, expiry
-3. Group by `(date, securityId)`
+2. Parse `tradingSymbol`/`customSymbol` → underlying, option_type, strike, expiry
+3. Group by `(date, securityId)` — uses `_real_ts()` to skip "NA" createTime, falls through to `exchangeTime`
 4. Per group: call `_aggregate_partial_fills`, then pair SELLs→BUYs (SHORT) or BUYs→SELLs (LONG/hedge)
 5. For LONG direction: swap entry/exit so entry=opening BUY, exit=closing SELL
-6. Upsert into SQLite, skip duplicates by `(date, security_id, entry_time, dhan_order_id)`
+6. Upsert into SQLite, skip duplicates by `(date, security_id, entry_time, direction)`
 
-**`_do_import(from_date, to_date)`** — fetches paginated trade history from Dhan, filters to FNO options only, calls `_process_raw_trades`.
+**`_do_import(from_date, to_date)`** — fetches paginated trade history from Dhan, filters to FNO options only, calls `_process_raw_trades`. Paginates pages 0, 1, 2, ... until an empty response (no early break on batch size — Dhan's page size is ~20 records, not 50).
 
 **`import_from_dhan()`** — wraps `_do_import` with auto-refresh-on-auth-error retry.
 
-**`_raw_dhan_chart(security_id, exchange_segment, instrument_type, day, from_date)`** — fetches 1-minute OHLCV candles for a single day (or range if `from_date` given). Tries `/charts/historical` first (but that returns **daily** candles, not 1-minute — only useful for fallback), then `/charts/intraday` which reliably returns 1-minute candles for the last 5+ trading days.
+**`_raw_dhan_chart(security_id, exchange_segment, instrument_type, day, from_date)`** — fetches 1-minute OHLCV candles for a single day (or range if `from_date` given). Uses `/charts/intraday` which reliably returns 1-minute candles for the last 5+ trading days.
 
 **`_fetch_warmup_candles(idx, from_day, to_day)`** — fetches warmup data via a **single batch call** to `intraday_minute_data` spanning the full warmup range. Groups parsed candles by trading date, keeps the 3 most recent days. Falls back to per-day calls (0.3s inter-call sleep) if batch returns nothing. **Do NOT use `/charts/historical` for 1-minute warmup** — that endpoint returns daily candles regardless of `type` parameter.
 
@@ -139,6 +146,7 @@ DB migrations run in `_init_db()` on startup:
 | GET | `/api/chart` | `?underlying=&date=` → OHLCV candles |
 | GET | `/api/dates` | List of dates with trades (last 90) |
 | POST | `/api/refresh-token` | Trigger token refresh |
+| GET | `/api/debug-dhan` | `?from_date=&to_date=` → raw Dhan API responses (history + trade_book + ledger) |
 
 ---
 
@@ -146,8 +154,8 @@ DB migrations run in `_init_db()` on startup:
 
 ```python
 LOT_SIZES = {
-    "NIFTY": 75, "BANKNIFTY": 15, "SENSEX": 10,
-    "FINNIFTY": 40, "MIDCPNIFTY": 50,
+    "NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20,
+    "FINNIFTY": 65, "MIDCPNIFTY": 75,
 }
 ```
 
@@ -157,11 +165,34 @@ Update when SEBI revises lot sizes.
 
 ## Key technical gotchas
 
-### Timestamp handling
-Dhan `createTime` is IST string `"YYYY-MM-DD HH:MM:SS"`. Strip timezone → naive → `.timestamp()` gives "IST-as-UTC" Unix epoch. TradingView displays UTC, so it shows correct IST times. **Do not add timezone to TradingView timeScale** (v4 doesn't support it). **Do not use `new Date()` in JS** for converting trade times — use `Date.UTC()` to avoid browser timezone interference.
+### Dhan trade history vs trade book — field differences (CRITICAL)
 
-### Dhan trade history date format
-`get_trade_history()` expects `DD-MM-YYYY`, not `YYYY-MM-DD`. The app converts internally.
+The two Dhan endpoints return **different field names and formats**:
+
+| Field | Trade history (`/trades/{from}/{to}/{page}`) | Trade book (`/trades`) |
+|---|---|---|
+| Symbol | `customSymbol: "NIFTY 16 JUN 24050 CALL"` | `tradingSymbol: "NIFTY24JUN2424050CE"` |
+| Time | `createTime: "NA"` (literal NA!) | `createTime: "YYYY-MM-DD HH:MM:SS"` |
+| Real time | `exchangeTime: "2026-06-16T14:48:56"` (ISO) | same field exists but createTime is valid |
+| Instrument | `instrument: "OPTIDX"` | `instrumentType: "OPTIDX"` |
+| Option type | `drvOptionType: "CALL"/"PUT"` | same |
+
+**`_real_ts(v)`** — always use this before accessing createTime. Returns `""` for "NA" sentinels so fallback chain reaches `exchangeTime`.
+
+**`_ts_to_time(ts)`** — handles both `"YYYY-MM-DD HH:MM:SS"` and ISO `"YYYY-MM-DDTHH:MM:SS"` — both return `ts[11:19]` correctly.
+
+### Dhan trade history API — date format and pagination
+
+- URL: `GET /v2/trades/{from-date}/{to-date}/{page}` — dates **must be YYYY-MM-DD** (DD-MM-YYYY returns `TRADE_RESOURCE_ERROR`)
+- Covers **both INTRADAY and MARGIN** product types (confirmed from live data)
+- Page size is ~20 records — **do not break early when batch size < 50**, keep paginating until empty page
+- `TRADE_RESOURCE_ERROR` with empty error_message usually means **expired token**, not a date format issue
+
+### Timestamp handling
+Dhan `createTime` in trade book is IST string `"YYYY-MM-DD HH:MM:SS"`. Strip timezone → naive → `.timestamp()` gives "IST-as-UTC" Unix epoch. TradingView displays UTC, so it shows correct IST times. **Do not add timezone to TradingView timeScale** (v4 doesn't support it). **Do not use `new Date()` in JS** for converting trade times — use `Date.UTC()` to avoid browser timezone interference.
+
+### Dhan chart data — UTC integers need +19800 offset
+`/charts/intraday` returns **true UTC epoch integers**. Adding `+19800` (5.5 hours) converts to IST-as-UTC so TradingView shows "09:15" instead of "03:45". Do NOT remove this offset.
 
 ### FIFO position tracking (`_fifo_pair`)
 Replaces all quantity/time heuristics. Processes trades chronologically:
@@ -169,26 +200,25 @@ Replaces all quantity/time heuristics. Processes trades chronologically:
 - **SELL** → closes oldest open LONG first (FIFO); any excess opens a SHORT
 - One large order (e.g. BUY 130) can split across multiple positions (e.g. close SELL 65 + open LONG 65)
 - Re-entries, partial closes, and same-option multiple positions all handled correctly
-- This is how NSE/Dhan calculate P&L internally
+- Uses `_real_ts()` fallback chain: `createTime → orderCreateTime → exchangeTime → updateTime`
 
 ### Partial fill aggregation
 `_aggregate_partial_fills()` runs before `_fifo_pair`. It merges records sharing the same `orderId` — summing quantities, weighted-averaging prices. This handles Dhan reporting one order as multiple fill notifications.
 
 ### Underlying detection
 - `BSE_FNO` → always `SENSEX`
-- `NSE_FNO` → strip prefix from `tradingSymbol` (BANKNIFTY > MIDCPNIFTY > FINNIFTY > NIFTY)
+- `NSE_FNO` → strip prefix from symbol (BANKNIFTY > MIDCPNIFTY > FINNIFTY > NIFTY)
+- `_underlying()` strips spaces/dashes before prefix matching — handles both compact `"NIFTY24JUN..."` and spaced `"NIFTY 16 JUN ..."` formats
 
 ### TradingView enum crash
-`LightweightCharts.CrosshairMode` and `LightweightCharts.LineStyle` are NOT reliably exported from the v4.1.3 standalone bundle. Referencing them throws silently inside try/catch, killing the entire chart init. Always use numeric values: `CrosshairMode.Normal = 1`, `LineStyle.Dashed = 1`, `LineStyle.Solid = 0`.
-
-### Chart data always from Dhan
-yfinance has been removed entirely. All chart data comes from `dhan.intraday_minute_data()` (endpoint: `/charts/intraday`).
+`LightweightCharts.CrosshairMode` and `LightweightCharts.LineStyle` are NOT reliably exported from the v4.1.3 standalone bundle. Always use numeric values: `CrosshairMode.Normal = 1`, `LineStyle.Dashed = 1`, `LineStyle.Solid = 0`.
 
 ### Dhan endpoint distinction — CRITICAL
 - `/charts/intraday` (`intraday_minute_data`) → 1-minute candles, covers last 5+ trading days. **Use this for all 1-minute chart data.**
-- `/charts/historical` (`historical_daily_data`) → **daily candles only** (1 per day), regardless of any `type` parameter you add. Do NOT use for 1-minute warmup.
+- `/charts/historical` (`historical_daily_data`) → **daily candles only** (1 per day). Do NOT use for 1-minute data.
 
-Warmup batch: one `intraday_minute_data` call with `from_date=warmup_from 09:00, to_date=warmup_to 15:30` returns all 1-minute candles across the range. Group by date, keep 3 most recent trading days.
+### JS "Script error. line 0"
+Harmless cross-origin error from TradingView CDN script caught by global error handler. Does not affect functionality.
 
 ---
 
@@ -279,7 +309,6 @@ Added in v60–v63. Separate page from the main index chart.
 ## Pending / next work
 
 - **Spread grouping** — detect and visually group the sell leg + hedge leg of a credit spread (same underlying, same timestamp cluster, opposite strikes). Show as a bracketed pair on the chart with the net credit.
-- **P&L for re-entries** — if the same option is traded twice in a session with different quantities, the current SELL→BUY pairing may mismatch. Add quantity netting logic.
 - **Session summary** — daily stats card: total trades, win rate, gross P&L, best/worst trade.
 - **Export** — CSV export of trade history for a date range.
 - **Open positions indicator** — trades with OPEN status (no exit) show entry marker only. Consider adding a "still open" visual indicator.
