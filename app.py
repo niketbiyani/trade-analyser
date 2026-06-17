@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v74"
+APP_VERSION = "v75"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -929,13 +929,12 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
     candles = []
     for i, ts_raw in enumerate(timestamps):
         try:
-            # Produce IST-as-UTC epoch regardless of VPS timezone:
-            # Integer (Dhan intraday = true UTC) → add 5.5h to shift into IST-as-UTC.
-            # String (IST time string) → parse then force UTC interpretation so the
-            # IST hour value becomes the epoch hour (timezone.utc avoids .timestamp()
-            # treating the naive datetime as local time on IST-timezone servers).
+            # Produce IST-as-UTC epoch regardless of VPS timezone.
+            # Dhan /charts/intraday returns epoch integers already in IST-as-UTC
+            # (09:15 IST → epoch for 09:15 UTC). No offset needed.
+            # String path: parse as UTC so IST hour = epoch hour on any VPS locale.
             if isinstance(ts_raw, (int, float)):
-                ts_epoch = int(ts_raw) + 19800
+                ts_epoch = int(ts_raw)
             else:
                 ts_str = str(ts_raw).strip()
                 if len(ts_str) <= 8:
