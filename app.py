@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v82"
+APP_VERSION = "v83"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -463,11 +463,17 @@ def _aggregate_partial_fills(trades: list[dict]) -> list[dict]:
     return result
 
 
+def _real_ts(v) -> str:
+    """Return the string if it's a real timestamp; empty string if it's a Dhan 'NA' sentinel."""
+    s = str(v or "").strip()
+    return "" if not s or s.upper() in ("NA", "N/A", "-") else s
+
+
 def _ts_to_time(ts: str) -> str:
     """Extract HH:MM:SS from a timestamp string.
 
-    Handles both full 'YYYY-MM-DD HH:MM:SS' (trade history) and
-    bare 'HH:MM:SS' (trade book — today only, no date prefix).
+    Handles 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DDTHH:MM:SS' (trade history ISO),
+    and bare 'HH:MM:SS' (trade book — today only, no date prefix).
     """
     if len(ts) >= 19:
         return ts[11:19]
@@ -487,8 +493,9 @@ def _fifo_pair(group: list[dict]) -> list[dict]:
                            qty, order_id, status, pnl
     """
     def _trade_ts(t: dict) -> str:
-        return (t.get("createTime") or t.get("orderCreateTime") or
-                t.get("exchangeTime") or t.get("updateTime") or "")
+        # Trade history records have createTime="NA"; fall through to exchangeTime
+        return (_real_ts(t.get("createTime")) or _real_ts(t.get("orderCreateTime")) or
+                _real_ts(t.get("exchangeTime")) or _real_ts(t.get("updateTime")) or "")
 
     sorted_t = sorted(group, key=_trade_ts)
     long_q:  list[dict] = []   # open LONG legs (BUYs awaiting close)
@@ -607,7 +614,9 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
 
     groups: dict[tuple, list] = defaultdict(list)
     for t in opts:
-        ts  = t.get("createTime") or t.get("exchangeTime") or t.get("orderCreateTime") or ""
+        # createTime="NA" in trade history records; fall through to exchangeTime
+        ts  = (_real_ts(t.get("createTime")) or _real_ts(t.get("exchangeTime")) or
+               _real_ts(t.get("orderCreateTime")) or "")
         sid = str(t.get("securityId") or t.get("security_id") or "")
         trade_date = ts[:10] if len(ts) >= 10 else today_str
         groups[(trade_date, sid)].append(t)
