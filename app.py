@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v78"
+APP_VERSION = "v79"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -486,17 +486,18 @@ def _fifo_pair(group: list[dict]) -> list[dict]:
     Returns list of dicts: direction, entry_time, entry_price, exit_time, exit_price,
                            qty, order_id, status, pnl
     """
-    sorted_t = sorted(
-        group,
-        key=lambda x: x.get("createTime") or x.get("orderCreateTime") or ""
-    )
+    def _trade_ts(t: dict) -> str:
+        return (t.get("createTime") or t.get("orderCreateTime") or
+                t.get("exchangeTime") or t.get("updateTime") or "")
+
+    sorted_t = sorted(group, key=_trade_ts)
     long_q:  list[dict] = []   # open LONG legs (BUYs awaiting close)
     short_q: list[dict] = []   # open SHORT legs (SELLs awaiting close)
     done:    list[dict] = []
 
     for t in sorted_t:
         tx    = _tx_type(t)
-        ts    = t.get("createTime") or t.get("orderCreateTime") or ""
+        ts    = _trade_ts(t)
         qty   = int(t.get("tradedQuantity") or t.get("quantity") or 0)
         price = float(t.get("tradedPrice") or t.get("price") or 0)
         oid   = str(t.get("orderId") or t.get("order_id") or "")
