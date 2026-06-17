@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v76"
+APP_VERSION = "v77"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -743,9 +743,10 @@ def _do_import(from_date: str, to_date: str) -> dict:
         page = 0
         tried_p1_fallback = False
         while True:
+            # Dhan v2 API expects YYYY-MM-DD in the path; pass directly (no DD-MM-YYYY conversion)
             resp = dhan.get_trade_history(
-                from_date=_to_dhan_date(from_date),
-                to_date=_to_dhan_date(to_date),
+                from_date=from_date,
+                to_date=to_date,
                 page_number=page,
             )
             batch = _extract_batch(resp)
@@ -754,8 +755,8 @@ def _do_import(from_date: str, to_date: str) -> dict:
                 if page == 0 and not tried_p1_fallback:
                     tried_p1_fallback = True
                     resp1 = dhan.get_trade_history(
-                        from_date=_to_dhan_date(from_date),
-                        to_date=_to_dhan_date(to_date),
+                        from_date=from_date,
+                        to_date=to_date,
                         page_number=1,
                     )
                     batch1 = _extract_batch(resp1)
@@ -930,11 +931,11 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
     for i, ts_raw in enumerate(timestamps):
         try:
             # Produce IST-as-UTC epoch regardless of VPS timezone.
-            # Dhan /charts/intraday returns epoch integers already in IST-as-UTC
-            # (09:15 IST → epoch for 09:15 UTC). No offset needed.
-            # String path: parse as UTC so IST hour = epoch hour on any VPS locale.
+            # Dhan /charts/intraday returns true UTC integers; add 5.5h to get IST-as-UTC
+            # so TradingView shows IST times (it displays UTC, which then reads as IST).
+            # String path: force UTC interpretation so IST hour = epoch hour on any locale.
             if isinstance(ts_raw, (int, float)):
-                ts_epoch = int(ts_raw)
+                ts_epoch = int(ts_raw) + 19800
             else:
                 ts_str = str(ts_raw).strip()
                 if len(ts_str) <= 8:
@@ -1916,8 +1917,8 @@ def api_debug_dhan():
     try:
         dhan  = _dhan_client()
         resp  = dhan.get_trade_history(
-            from_date=_to_dhan_date(from_date),
-            to_date=_to_dhan_date(to_date),
+            from_date=from_date,
+            to_date=to_date,
             page_number=0,
         )
         batch = _extract_batch(resp)
