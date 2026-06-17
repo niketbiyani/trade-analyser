@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v90"
+APP_VERSION = "v91"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -727,7 +727,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                         skipped += 1
                     continue
 
-                db.execute(
+                cur = db.execute(
                     """
                     INSERT INTO trades
                         (date, underlying, option_type, strike, expiry,
@@ -744,6 +744,17 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                     ),
                 )
                 db.commit()
+                # Restore any note saved before this date was last wiped
+                if entry_time:
+                    note_row = db.execute(
+                        "SELECT notes FROM trade_notes"
+                        " WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                        (trade_date, underlying, opt_type, strike, entry_time),
+                    ).fetchone()
+                    if note_row and note_row["notes"]:
+                        db.execute("UPDATE trades SET notes=? WHERE id=?",
+                                   (note_row["notes"], cur.lastrowid))
+                        db.commit()
                 imported += 1
 
     return {
@@ -2129,6 +2140,17 @@ def api_delete_trade(tid: int):
 def api_delete_date(trade_date: str):
     with _db_lock:
         db = get_db()
+        # Persist notes to trade_notes before deleting so they survive wipe+reimport
+        db.execute(
+            """
+            INSERT OR REPLACE INTO trade_notes
+                (date, underlying, option_type, strike, entry_time, notes, updated_at)
+            SELECT date, underlying, option_type, strike, entry_time, notes, ?
+            FROM trades
+            WHERE date=? AND entry_time != '' AND notes != '' AND notes IS NOT NULL
+            """,
+            (datetime.now().timestamp(), trade_date),
+        )
         db.execute("DELETE FROM trades WHERE date=?", (trade_date,))
         db.commit()
     return jsonify({"ok": True})

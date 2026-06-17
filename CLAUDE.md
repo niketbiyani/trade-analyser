@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v84`
+**Current version:** `v91`
 
 ---
 
@@ -35,7 +35,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Config** — reads from `.env` via `load_dotenv`. Key vars: `DHAN_CLIENT_ID`, `DHAN_ACCESS_TOKEN`, `PORT`.
 
-**Database** — single SQLite file `analyser.db`, one table `trades`. Thread-safe via `_db_lock`. Connection is module-level singleton.
+**Database** — single SQLite file `analyser.db`. Tables: `trades`, `trade_notes`, `option_instruments`, `tick_data`. Thread-safe via `_db_lock`. Connection is module-level singleton.
 
 **`_dhan_client()`** — builds fresh `dhanhq` client on every call, calling `load_dotenv(override=True)` first to pick up any token refresh.
 
@@ -53,8 +53,8 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 2. Parse `tradingSymbol`/`customSymbol` → underlying, option_type, strike, expiry
 3. Group by `(date, securityId)` — uses `_real_ts()` to skip "NA" createTime, falls through to `exchangeTime`
 4. Per group: call `_aggregate_partial_fills`, then pair SELLs→BUYs (SHORT) or BUYs→SELLs (LONG/hedge)
-5. For LONG direction: swap entry/exit so entry=opening BUY, exit=closing SELL
-6. Upsert into SQLite, skip duplicates by `(date, security_id, entry_time, direction)`
+5. Upsert into SQLite — three dedup checks (see Dedup section below)
+6. After each INSERT: restore any saved note from `trade_notes` backup table
 
 **`_do_import(from_date, to_date)`** — fetches paginated trade history from Dhan, filters to FNO options only, calls `_process_raw_trades`. Paginates pages 0, 1, 2, ... until an empty response (no early break on batch size — Dhan's page size is ~20 records, not 50).
 
@@ -83,7 +83,9 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 - Markers must be sorted by time before calling `series.setMarkers()`
 - `snapTs(ts)` snaps a trade timestamp to nearest available candle
 - **Trade isolation**: clicking a row sets `isolateId`; `putMarkers` filters to that trade only. Clicking again clears isolation and shows all markers.
-- **Notes preservation**: client-side snapshot of `(underlying, option_type, strike, entry_time) → notes` before wipe; `_restoreNotes()` replays saves after reimport by matching those 4 fields.
+- **Notes preservation (two-layer)**:
+  - *Client-side*: `_savedNotes` snapshot taken in `wipeDate()` before DELETE; `_restoreNotes()` replays after import by matching `(underlying, option_type, strike, entry_time)`. Works within the same browser session.
+  - *Server-side*: `DELETE /api/trades/date/{date}` writes notes to `trade_notes` table before deleting. On each INSERT in `_process_raw_trades`, the backup is checked and restored automatically. Survives browser close, session change, or delayed reimport.
 - **Date navigation fix**: `shiftDay()` uses `Date.UTC()` to avoid IST browser timezone shifting the date. `DOMContentLoaded` calculates today as `new Date(Date.now() + 19800000).toISOString().slice(0,10)` (UTC+5:30 offset).
 - `_watchResize(inst, el)` — ResizeObserver that calls `inst.resize()` on each pane
 
@@ -127,11 +129,39 @@ CREATE TABLE trades (
     created_at      REAL,      -- Unix timestamp of import
     direction       TEXT       -- SHORT (default) or LONG (hedge leg)
 );
+
+CREATE TABLE trade_notes (
+    date         TEXT NOT NULL,
+    underlying   TEXT NOT NULL,
+    option_type  TEXT NOT NULL,
+    strike       REAL NOT NULL,
+    entry_time   TEXT NOT NULL,
+    notes        TEXT DEFAULT '',
+    updated_at   REAL DEFAULT 0,
+    PRIMARY KEY (date, underlying, option_type, strike, entry_time)
+);
 ```
+
+`trade_notes` is a persistent notes backup. Written by `DELETE /api/trades/date/{date}` before wiping, read back by `_process_raw_trades` after each INSERT. Notes survive wipes, session changes, and reimports.
 
 DB migrations run in `_init_db()` on startup:
 - Adds `direction` column if missing (existing rows default to `SHORT`)
 - Fixes LONG trades stored with swapped entry/exit times from older import logic
+- Deduplicates same `dhan_order_id+direction` pairs keeping the one with real entry_time
+
+---
+
+## Import dedup logic (three-level fallback in `_process_raw_trades`)
+
+For each FIFO-paired trade being inserted:
+
+1. **Primary** — `dhan_order_id + direction`: stable across reimports for API-imported trades (Dhan always returns orderId). Skip if match found; patch entry_time or close status if needed.
+
+2. **Secondary** — `(date, security_id, entry_time, direction)`: catches re-imports of the same CSV (same symbol-string security_id, same FIFO entry_time). Only checked if `entry_time` is non-empty.
+
+3. **Tertiary** — `(date, underlying, option_type, strike, entry_time, direction)`: cross-format bridge — catches CSV imported on top of API records (different security_id format but same trade identity). No status filter (v89 fix — previously `AND status='OPEN'` caused misses).
+
+**Important**: dedup is a safety net, not a primary workflow. Always wipe before reimporting a date to guarantee a clean slate.
 
 ---
 
@@ -141,12 +171,14 @@ DB migrations run in `_init_db()` on startup:
 |---|---|---|
 | GET | `/` | Main page |
 | POST | `/api/import` | `{from_date, to_date}` → import from Dhan |
+| POST | `/api/import-csv` | multipart file upload → parse CSV and import |
 | GET | `/api/trades` | `?date=&underlying=&option_type=` |
 | PUT | `/api/trade/<id>/notes` | `{notes}` |
+| DELETE | `/api/trades/date/<date>` | Wipe all trades for date; backs up notes to `trade_notes` first |
 | GET | `/api/chart` | `?underlying=&date=` → OHLCV candles |
 | GET | `/api/dates` | List of dates with trades (last 90) |
 | POST | `/api/refresh-token` | Trigger token refresh |
-| GET | `/api/debug-dhan` | `?from_date=&to_date=` → raw Dhan API responses (history + trade_book + ledger) |
+| GET | `/api/debug-dhan` | `?from_date=&to_date=` → raw Dhan API responses (all pages) |
 
 ---
 
@@ -187,6 +219,14 @@ The two Dhan endpoints return **different field names and formats**:
 - Covers **both INTRADAY and MARGIN** product types (confirmed from live data)
 - Page size is ~20 records — **do not break early when batch size < 50**, keep paginating until empty page
 - `TRADE_RESOURCE_ERROR` with empty error_message usually means **expired token**, not a date format issue
+
+### Wipe & reimport — notes are safe
+
+`DELETE /api/trades/date/{date}` (triggered by the 🗑️ Wipe & reimport button) backs up all notes to the `trade_notes` table before deleting. On the subsequent reimport, `_process_raw_trades` checks `trade_notes` after each INSERT and restores matching notes automatically. Notes are matched by `(date, underlying, option_type, strike, entry_time)` — as long as the FIFO produces the same entry_time (consistent for stable data), notes are fully preserved. Client-side `_savedNotes`/`_restoreNotes()` provides a second layer for within-session restores.
+
+### Wipe bug history (fixed in v90)
+
+The DELETE route previously had `AND dhan_order_id != ''` which silently left CSV-imported trades (empty dhan_order_id) in the DB across every wipe. This caused stale records to accumulate and conflict with subsequent imports. Fixed in v90: the route now deletes ALL trades for the date unconditionally.
 
 ### Timestamp handling
 Dhan `createTime` in trade book is IST string `"YYYY-MM-DD HH:MM:SS"`. Strip timezone → naive → `.timestamp()` gives "IST-as-UTC" Unix epoch. TradingView displays UTC, so it shows correct IST times. **Do not add timezone to TradingView timeScale** (v4 doesn't support it). **Do not use `new Date()` in JS** for converting trade times — use `Date.UTC()` to avoid browser timezone interference.
