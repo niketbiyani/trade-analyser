@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v91"
+APP_VERSION = "v92"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3177,4 +3177,18 @@ if __name__ == "__main__":
     if token_manager.is_token_refresh_configured():
         logger.info("Refreshing Dhan token at startup...")
         token_manager.refresh_token()
+    # Resume tick feed for today's already-imported trades (handles app restarts)
+    try:
+        today_str = str(date.today())
+        _startup_rows = get_db().execute(
+            "SELECT DISTINCT security_id, exchange_segment FROM trades"
+            " WHERE date=? AND security_id != '' AND security_id GLOB '[0-9]*'",
+            (today_str,),
+        ).fetchall()
+        if _startup_rows:
+            n = subscribe_ticks([(r["security_id"], r["exchange_segment"]) for r in _startup_rows])
+            if n:
+                logger.info("Startup: resumed tick feed for %d instruments (today's trades)", n)
+    except Exception as _e:
+        logger.warning("Startup tick resume failed: %s", _e)
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
