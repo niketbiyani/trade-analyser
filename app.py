@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v92"
+APP_VERSION = "v93"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -205,7 +205,7 @@ _tick_subscribed: dict[str, int] = {}   # security_id → exchange_segment_int
 _tick_feed       = None
 
 
-def _tick_on_data(data):
+def _tick_on_data(feed, data):
     if not isinstance(data, dict):
         return
     try:
