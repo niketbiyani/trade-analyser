@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v104"
+APP_VERSION = "v105"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3086,14 +3086,6 @@ function _buildStrikes(atm){{
   return s;
 }}
 
-function nearestThursday(dateStr){{
-  var dp=dateStr.split('-');
-  var d=new Date(Date.UTC(+dp[0],+dp[1]-1,+dp[2]));
-  var day=d.getUTCDay();  // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
-  var ahead=(4-day+7)%7;  // days until next Thursday (0 if already Thursday)
-  d.setUTCDate(d.getUTCDate()+ahead);
-  return d.toISOString().slice(0,10);
-}}
 
 function updateAtmForTime(){{
   var tv=document.getElementById('timeIn').value;
