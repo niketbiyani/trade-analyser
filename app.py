@@ -2790,6 +2790,9 @@ thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;pa
       <button class="ibtn"    id="ivl5"  onclick="setIvl(5)">5m</button>
       <button class="ibtn"    id="ivl15" onclick="setIvl(15)">15m</button>
     </div>
+    <div class="ctrl-row" style="margin-top:5px;">
+      <button class="ibtn" id="refBtn" onclick="refreshInstruments()" style="flex:1;font-size:10px;padding:3px 6px;">&#8635; Refresh Instruments</button>
+    </div>
   </div>
   <div id="lp-body">
     <table>
@@ -3001,40 +3004,29 @@ async function loadChart(offset,optType,strike){{
   showMsg('Loading '+offset+' '+optType+'…');showErr('');
   try{{
     var expiry=nearestThursday(date);
-    var d=null;
-    var usedRolling=false;
-
-    // Primary: look up specific security_id and use intraday API
-    if(strike){{
-      var url1='/api/option-candles?underlying=NIFTY'
-        +'&option_type='+optType
-        +'&strike='+strike
-        +'&expiry='+expiry
-        +'&from_date='+date
-        +'&to_date='+date
-        +'&interval='+_curIvl
-        +'&t='+Date.now();
-      var r1=await fetch(url1);
-      d=await r1.json();
-      if(d.error&&d.error.indexOf('No security_id')>=0){{
-        d=null;  // signal fallback needed; don't show this error
+    if(!strike){{hideMsg();showErr('ATM not loaded — click Load ATM first');return;}}
+    var url='/api/option-candles?underlying=NIFTY'
+      +'&option_type='+optType
+      +'&strike='+strike
+      +'&expiry='+expiry
+      +'&from_date='+date
+      +'&to_date='+date
+      +'&interval='+_curIvl
+      +'&t='+Date.now();
+    var r=await fetch(url);
+    var d=await r.json();
+    if(d.error){{
+      hideMsg();
+      if(d.error.indexOf('No security_id')>=0){{
+        showErr('Security ID not found for NIFTY '+strike+' '+optType+' (exp '+expiry+'). '
+          +'Click “Refresh Instruments” in the left panel then try again.');
+      }}else{{
+        showErr(d.error);
       }}
+      return;
     }}
-
-    // Fallback: rolling options API (may return wrong expiry for historical dates)
-    if(!d||d.error||!(d.candles||[]).length){{
-      usedRolling=true;
-      var r2=await fetch('/api/rolling-candles?date='+date
-        +'&offset='+encodeURIComponent(offset)
-        +'&option_type='+optType
-        +'&interval='+_curIvl
-        +'&t='+Date.now());
-      d=await r2.json();
-    }}
-
-    if(d.error){{hideMsg();showErr(d.error);return;}}
     var c=d.candles||[];
-    if(!c.length){{showMsg('No data for this strike on this date');return;}}
+    if(!c.length){{hideMsg();showErr('No candle data for this option on '+date+' (intraday API covers ~5 trading days)');return;}}
     _series.setData(c);
     updateIndicators(c);
     _markersPlugin.setMarkers([]);
@@ -3043,14 +3035,25 @@ async function loadChart(offset,optType,strike){{
     var dayEnd=Date.UTC(+dp[0],+dp[1]-1,+dp[2],15,30,0)/1000;
     _chart.timeScale().setVisibleRange({{from:dayStart,to:dayEnd}});
     hideMsg();
-    var strikeLabel=strike?strike:(_atmData?_atmData.atm+' ('+offset+')':offset);
-    var expiryLabel=usedRolling?'rolling':expiry.slice(5).replace('-','/');
     document.getElementById('chartTitle').textContent=
-      'NIFTY '+strikeLabel+' '+optType+' exp '+expiryLabel+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
-    if(usedRolling){{
-      showErr('Security ID not found for this strike/expiry — showing rolling API data (may be inaccurate). Refresh Instruments to fix.');
-    }}
+      'NIFTY '+strike+' '+optType+' exp '+expiry.slice(5).replace('-','/')+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
   }}catch(e){{hideMsg();showErr('Error: '+e.message);}}
+}}
+
+async function refreshInstruments(){{
+  var btn=document.getElementById('refBtn');
+  if(btn){{btn.textContent='Refreshing…';btn.disabled=true;}}
+  try{{
+    var r=await fetch('/api/refresh-instruments',{{method:'POST'}});
+    var d=await r.json();
+    if(btn){{
+      btn.textContent=d.ok?('✓ '+d.count+' instruments'):'Refresh failed';
+      btn.disabled=false;
+      setTimeout(function(){{if(btn)btn.textContent='↻ Refresh Instruments';}},4000);
+    }}
+  }}catch(e){{
+    if(btn){{btn.textContent='Refresh failed';btn.disabled=false;}}
+  }}
 }}
 
 loadDates().then(function(){{
