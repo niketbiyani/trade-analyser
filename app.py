@@ -2809,7 +2809,7 @@ thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;pa
 <script>
 var _chart=null,_series=null,_markersPlugin=null,_curIvl=1;
 var _ema20s=null,_ema50s=null;
-var _tradeDates=[],_atmData=null,_selOffset=null,_selType=null;
+var _tradeDates=[],_atmData=null,_selOffset=null,_selType=null,_selStrike=null;
 var _spotSeries=[];
 var TODAY='{today}';
 
@@ -2908,6 +2908,15 @@ function _buildStrikes(atm){{
   return s;
 }}
 
+function nearestThursday(dateStr){{
+  var dp=dateStr.split('-');
+  var d=new Date(Date.UTC(+dp[0],+dp[1]-1,+dp[2]));
+  var day=d.getUTCDay();  // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+  var ahead=(4-day+7)%7;  // days until next Thursday (0 if already Thursday)
+  d.setUTCDate(d.getUTCDate()+ahead);
+  return d.toISOString().slice(0,10);
+}}
+
 function updateAtmForTime(){{
   var tv=document.getElementById('timeIn').value;
   var entry=_spotAtTime(tv);
@@ -2966,8 +2975,10 @@ function renderLadder(strikes){{
     var peTd=tr.querySelector('.pe-td');
     ceTd.dataset.offset=s.offset;
     peTd.dataset.offset=s.offset;
-    ceTd.onclick=(function(off){{return function(){{loadChart(off,'CE');}};}})(s.offset);
-    peTd.onclick=(function(off){{return function(){{loadChart(off,'PE');}};}})(s.offset);
+    ceTd.dataset.strike=s.strike;
+    peTd.dataset.strike=s.strike;
+    ceTd.onclick=(function(off,sk){{return function(){{loadChart(off,'CE',sk);}};}})(s.offset,s.strike);
+    peTd.onclick=(function(off,sk){{return function(){{loadChart(off,'PE',sk);}};}})(s.offset,s.strike);
     tbody.appendChild(tr);
   }});
   // Restore selection highlight
@@ -2979,8 +2990,8 @@ function renderLadder(strikes){{
   }}
 }}
 
-async function loadChart(offset,optType){{
-  _selOffset=offset;_selType=optType;
+async function loadChart(offset,optType,strike){{
+  _selOffset=offset;_selType=optType;_selStrike=strike||0;
   document.querySelectorAll('.ce-td,.pe-td').forEach(function(td){{td.classList.remove('sel');}});
   var selCls=optType==='CE'?'.ce-td':'.pe-td';
   document.querySelectorAll(selCls).forEach(function(td){{
@@ -2989,14 +3000,41 @@ async function loadChart(offset,optType){{
   var date=document.getElementById('dateIn').value;
   showMsg('Loading '+offset+' '+optType+'…');showErr('');
   try{{
-    var r=await fetch('/api/rolling-candles?date='+date
-      +'&offset='+encodeURIComponent(offset)
-      +'&option_type='+optType
-      +'&interval='+_curIvl);
-    var d=await r.json();
+    var expiry=nearestThursday(date);
+    var d=null;
+    var usedRolling=false;
+
+    // Primary: look up specific security_id and use intraday API
+    if(strike){{
+      var url1='/api/option-candles?underlying=NIFTY'
+        +'&option_type='+optType
+        +'&strike='+strike
+        +'&expiry='+expiry
+        +'&from_date='+date
+        +'&to_date='+date
+        +'&interval='+_curIvl
+        +'&t='+Date.now();
+      var r1=await fetch(url1);
+      d=await r1.json();
+      if(d.error&&d.error.indexOf('No security_id')>=0){{
+        d=null;  // signal fallback needed; don't show this error
+      }}
+    }}
+
+    // Fallback: rolling options API (may return wrong expiry for historical dates)
+    if(!d||d.error||!(d.candles||[]).length){{
+      usedRolling=true;
+      var r2=await fetch('/api/rolling-candles?date='+date
+        +'&offset='+encodeURIComponent(offset)
+        +'&option_type='+optType
+        +'&interval='+_curIvl
+        +'&t='+Date.now());
+      d=await r2.json();
+    }}
+
     if(d.error){{hideMsg();showErr(d.error);return;}}
     var c=d.candles||[];
-    if(!c.length){{showMsg('No data — option may not have traded on this date');return;}}
+    if(!c.length){{showMsg('No data for this strike on this date');return;}}
     _series.setData(c);
     updateIndicators(c);
     _markersPlugin.setMarkers([]);
@@ -3005,10 +3043,13 @@ async function loadChart(offset,optType){{
     var dayEnd=Date.UTC(+dp[0],+dp[1]-1,+dp[2],15,30,0)/1000;
     _chart.timeScale().setVisibleRange({{from:dayStart,to:dayEnd}});
     hideMsg();
-    var atmNum=_atmData?_atmData.atm:0;
-    var strikeDisp=atmNum+(offset!=='ATM'?' ('+offset+')':'');
+    var strikeLabel=strike?strike:(_atmData?_atmData.atm+' ('+offset+')':offset);
+    var expiryLabel=usedRolling?'rolling':expiry.slice(5).replace('-','/');
     document.getElementById('chartTitle').textContent=
-      'NIFTY '+strikeDisp+' '+optType+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
+      'NIFTY '+strikeLabel+' '+optType+' exp '+expiryLabel+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
+    if(usedRolling){{
+      showErr('Security ID not found for this strike/expiry — showing rolling API data (may be inaccurate). Refresh Instruments to fix.');
+    }}
   }}catch(e){{hideMsg();showErr('Error: '+e.message);}}
 }}
 
