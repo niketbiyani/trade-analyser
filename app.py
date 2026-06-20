@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v105"
+APP_VERSION = "v106"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2442,10 +2442,70 @@ def api_option_list():
     return jsonify(result)
 
 
+def _refresh_via_option_chain(expiries_to_fetch: list) -> tuple[int, str]:
+    """Populate option_instruments for the given expiry list via Dhan option_chain API.
+    Returns (count, error). Uses INSERT OR REPLACE so safe to call repeatedly."""
+    import time as _time
+    dhan = _dhan_client()
+    now = _time.time()
+    db = get_db()
+    count = 0
+    with _db_lock:
+        for expiry in expiries_to_fetch:
+            try:
+                oc_resp = dhan.option_chain(13, "IDX_I", expiry)
+                oc_data = (((oc_resp.get("data") or {}).get("data") or {}).get("oc") or {})
+                if not oc_data:
+                    logger.warning("option_chain: empty oc for expiry %s", expiry)
+                    continue
+                for strike_str, sides in oc_data.items():
+                    try:
+                        strike_f = float(strike_str)
+                    except ValueError:
+                        continue
+                    for side_key, opt_type in [("ce", "CE"), ("pe", "PE")]:
+                        side = sides.get(side_key) or {}
+                        sec_id = side.get("security_id")
+                        if not sec_id:
+                            continue
+                        db.execute(
+                            "INSERT OR REPLACE INTO option_instruments"
+                            " (security_id, exchange_segment, underlying, option_type, strike, expiry, refreshed_at)"
+                            " VALUES (?,?,?,?,?,?,?)",
+                            (str(sec_id), "NSE_FNO", "NIFTY", opt_type, strike_f, expiry, now),
+                        )
+                        count += 1
+                db.commit()
+                if len(expiries_to_fetch) > 1:
+                    _time.sleep(0.3)
+            except Exception as oe:
+                logger.warning("option_chain fetch failed for expiry %s: %s", expiry, oe)
+                continue
+    logger.info("option_chain refresh: cached %d NIFTY options for %d expiries", count, len(expiries_to_fetch))
+    return count, ""
+
+
 @app.route("/api/refresh-instruments", methods=["POST"])
 def api_refresh_instruments():
-    """Populate option_instruments. Tries Dhan CSV first; falls back to option_chain API."""
+    """Populate option_instruments. Tries Dhan CSV first; falls back to option_chain API.
+
+    Optional query param ?expiry=YYYY-MM-DD fetches only that specific expiry (fast, targeted).
+    Without it, fetches the next 10 expiries from Dhan (for manual Refresh button).
+    """
     import urllib.request, csv, io as _io, time as _time
+    target_expiry = request.args.get("expiry") or ""
+
+    # If a specific expiry is requested, go straight to option_chain (no CSV needed)
+    if target_expiry:
+        try:
+            count, err = _refresh_via_option_chain([target_expiry])
+            if err:
+                return jsonify({"ok": False, "error": err}), 500
+            return jsonify({"ok": True, "count": count, "source": "dhan_api", "expiry": target_expiry})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    # Full refresh: try CSV first, then fall back to option_chain for all upcoming expiries
     url = "https://images.dhan.co/api-data/api-scrip-master.csv"
     csv_err = None
     try:
@@ -2488,45 +2548,14 @@ def api_refresh_instruments():
         csv_err = str(e)
         logger.warning("CSV instrument refresh failed (%s), falling back to Dhan option_chain API", csv_err)
 
-    # Fallback: populate NIFTY options via Dhan option_chain API (VPS can always reach this)
+    # Fallback: fetch all upcoming expiries via option_chain
     try:
-        import time as _time
         dhan = _dhan_client()
         exp_resp = dhan.expiry_list(13, "IDX_I")
         expiries = ((exp_resp.get("data") or {}).get("data") or [])
         if not expiries:
             return jsonify({"ok": False, "error": f"CSV blocked: {csv_err}. Dhan expiry_list returned nothing"}), 500
-        now = _time.time()
-        db = get_db()
-        count = 0
-        with _db_lock:
-            for expiry in expiries[:10]:  # fetch next 10 expiries
-                try:
-                    oc_resp = dhan.option_chain(13, "IDX_I", expiry)
-                    oc_data = (((oc_resp.get("data") or {}).get("data") or {}).get("oc") or {})
-                    for strike_str, sides in oc_data.items():
-                        try:
-                            strike_f = float(strike_str)
-                        except ValueError:
-                            continue
-                        for side_key, opt_type in [("ce", "CE"), ("pe", "PE")]:
-                            side = sides.get(side_key) or {}
-                            sec_id = side.get("security_id")
-                            if not sec_id:
-                                continue
-                            db.execute(
-                                "INSERT OR REPLACE INTO option_instruments"
-                                " (security_id, exchange_segment, underlying, option_type, strike, expiry, refreshed_at)"
-                                " VALUES (?,?,?,?,?,?,?)",
-                                (str(sec_id), "NSE_FNO", "NIFTY", opt_type, strike_f, expiry, now),
-                            )
-                            count += 1
-                    db.commit()
-                    _time.sleep(0.3)
-                except Exception as oe:
-                    logger.warning("option_chain fetch failed for expiry %s: %s", expiry, oe)
-                    continue
-        logger.info("Instrument refresh via option_chain API: cached %d NIFTY options", count)
+        count, err = _refresh_via_option_chain(expiries[:10])
         return jsonify({"ok": True, "count": count, "source": "dhan_api"})
     except Exception as e:
         return jsonify({"ok": False, "error": f"CSV blocked ({csv_err}). API fallback also failed: {e}"}), 500
@@ -3195,12 +3224,12 @@ async function loadChart(offset,optType,strike){{
     if(d.error&&d.error.indexOf('No security_id')>=0){{
       showMsg('Fetching instrument list from Dhan…');
       try{{
-        var rfResp=await fetch('/api/refresh-instruments',{{method:'POST'}});
+        var rfResp=await fetch('/api/refresh-instruments?expiry='+encodeURIComponent(expiry),{{method:'POST'}});
         var rr=await rfResp.json();
         var btn=document.getElementById('refBtn');
         if(!rr.ok){{
           hideMsg();
-          showErr('Instrument refresh failed: '+(rr.error||'unknown error')+'. Check VPS can reach images.dhan.co');
+          showErr('Instrument refresh failed: '+(rr.error||'unknown error'));
           return;
         }}
         if(btn){{
@@ -3215,7 +3244,7 @@ async function loadChart(offset,optType,strike){{
     if(d.error){{
       hideMsg();
       showErr(d.error.indexOf('No security_id')>=0
-        ?'Strike not found even after instrument refresh. Check the expiry — NIFTY weekly options expire on Thursdays.'
+        ?'Strike '+strike+' '+optType+' not found for expiry '+expiry+'. Try Load ATM again or check the date.'
         :d.error);
       return;
     }}
