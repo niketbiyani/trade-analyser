@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v103"
+APP_VERSION = "v104"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2444,48 +2444,106 @@ def api_option_list():
 
 @app.route("/api/refresh-instruments", methods=["POST"])
 def api_refresh_instruments():
-    """Download Dhan's instrument master CSV and cache NSE_FNO/BSE_FNO options locally."""
+    """Populate option_instruments. Tries Dhan CSV first; falls back to option_chain API."""
     import urllib.request, csv, io as _io, time as _time
     url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+    csv_err = None
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "TradeAnalyser/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             content = resp.read().decode("utf-8", errors="replace")
+        reader = csv.DictReader(_io.StringIO(content))
+        now = _time.time()
+        db = get_db()
+        count = 0
+        with _db_lock:
+            for row in reader:
+                seg  = (row.get("SEM_SEGMENT") or "").strip()
+                inst = (row.get("SEM_INSTRUMENT_NAME") or "").strip()
+                if seg not in ("NSE_FNO", "BSE_FNO") or inst not in ("OPTIDX", "OPTSTK"):
+                    continue
+                sec_id   = (row.get("SEM_SMST_SECURITY_ID") or "").strip()
+                symbol   = (row.get("SEM_TRADING_SYMBOL") or "").strip()
+                opt_type = (row.get("SEM_OPTION_TYPE") or "").strip().upper()
+                expiry   = (row.get("SM_EXPIRY_DATE") or "").strip()
+                strike_s = (row.get("SEM_STRIKE_PRICE") or "0").strip()
+                if not sec_id or opt_type not in ("CE", "PE"):
+                    continue
+                try:
+                    strike_f = float(strike_s)
+                except ValueError:
+                    continue
+                underlying = _underlying(symbol, seg)
+                db.execute(
+                    "INSERT OR REPLACE INTO option_instruments"
+                    " (security_id, exchange_segment, underlying, option_type, strike, expiry, refreshed_at)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    (sec_id, seg, underlying, opt_type, strike_f, expiry, now),
+                )
+                count += 1
+            db.commit()
+        logger.info("Instrument refresh via CSV: cached %d FNO options", count)
+        return jsonify({"ok": True, "count": count, "source": "csv"})
     except Exception as e:
-        return jsonify({"ok": False, "error": f"Download failed: {e}"}), 500
+        csv_err = str(e)
+        logger.warning("CSV instrument refresh failed (%s), falling back to Dhan option_chain API", csv_err)
 
-    reader = csv.DictReader(_io.StringIO(content))
-    now = _time.time()
-    db = get_db()
-    count = 0
-    with _db_lock:
-        for row in reader:
-            seg  = (row.get("SEM_SEGMENT") or "").strip()
-            inst = (row.get("SEM_INSTRUMENT_NAME") or "").strip()
-            if seg not in ("NSE_FNO", "BSE_FNO") or inst not in ("OPTIDX", "OPTSTK"):
-                continue
-            sec_id   = (row.get("SEM_SMST_SECURITY_ID") or "").strip()
-            symbol   = (row.get("SEM_TRADING_SYMBOL") or "").strip()
-            opt_type = (row.get("SEM_OPTION_TYPE") or "").strip().upper()
-            expiry   = (row.get("SM_EXPIRY_DATE") or "").strip()
-            strike_s = (row.get("SEM_STRIKE_PRICE") or "0").strip()
-            if not sec_id or opt_type not in ("CE", "PE"):
-                continue
-            try:
-                strike_f = float(strike_s)
-            except ValueError:
-                continue
-            underlying = _underlying(symbol, seg)
-            db.execute(
-                "INSERT OR REPLACE INTO option_instruments"
-                " (security_id, exchange_segment, underlying, option_type, strike, expiry, refreshed_at)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (sec_id, seg, underlying, opt_type, strike_f, expiry, now),
-            )
-            count += 1
-        db.commit()
-    logger.info("Instrument refresh: cached %d FNO options", count)
-    return jsonify({"ok": True, "count": count})
+    # Fallback: populate NIFTY options via Dhan option_chain API (VPS can always reach this)
+    try:
+        import time as _time
+        dhan = _dhan_client()
+        exp_resp = dhan.expiry_list(13, "IDX_I")
+        expiries = ((exp_resp.get("data") or {}).get("data") or [])
+        if not expiries:
+            return jsonify({"ok": False, "error": f"CSV blocked: {csv_err}. Dhan expiry_list returned nothing"}), 500
+        now = _time.time()
+        db = get_db()
+        count = 0
+        with _db_lock:
+            for expiry in expiries[:10]:  # fetch next 10 expiries
+                try:
+                    oc_resp = dhan.option_chain(13, "IDX_I", expiry)
+                    oc_data = (((oc_resp.get("data") or {}).get("data") or {}).get("oc") or {})
+                    for strike_str, sides in oc_data.items():
+                        try:
+                            strike_f = float(strike_str)
+                        except ValueError:
+                            continue
+                        for side_key, opt_type in [("ce", "CE"), ("pe", "PE")]:
+                            side = sides.get(side_key) or {}
+                            sec_id = side.get("security_id")
+                            if not sec_id:
+                                continue
+                            db.execute(
+                                "INSERT OR REPLACE INTO option_instruments"
+                                " (security_id, exchange_segment, underlying, option_type, strike, expiry, refreshed_at)"
+                                " VALUES (?,?,?,?,?,?,?)",
+                                (str(sec_id), "NSE_FNO", "NIFTY", opt_type, strike_f, expiry, now),
+                            )
+                            count += 1
+                    db.commit()
+                    _time.sleep(0.3)
+                except Exception as oe:
+                    logger.warning("option_chain fetch failed for expiry %s: %s", expiry, oe)
+                    continue
+        logger.info("Instrument refresh via option_chain API: cached %d NIFTY options", count)
+        return jsonify({"ok": True, "count": count, "source": "dhan_api"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"CSV blocked ({csv_err}). API fallback also failed: {e}"}), 500
+
+
+@app.route("/api/nifty-expiry")
+def api_nifty_expiry():
+    """Return nearest NIFTY expiry >= requested date from Dhan expiry_list."""
+    req_date = request.args.get("date") or str(date.today())
+    try:
+        dhan = _dhan_client()
+        resp = dhan.expiry_list(13, "IDX_I")
+        expiries = sorted((resp.get("data") or {}).get("data") or [])
+        nearest = next((e for e in expiries if e >= req_date), expiries[-1] if expiries else None)
+        return jsonify({"expiry": nearest, "all": expiries[:12]})
+    except Exception as e:
+        return jsonify({"expiry": None, "error": str(e)}), 500
 
 
 @app.route("/api/debug-option-chain")
@@ -2742,12 +2800,23 @@ def api_atm_ladder():
         else:
             offset = f"ATM{i}"   # e.g. "ATM-1"
         strikes.append({"offset": offset, "strike": int(atm + i * 50)})
+    # Get nearest expiry for the ATM date from Dhan's expiry_list
+    nearest_expiry = ""
+    try:
+        dhan_exp = _dhan_client()
+        exp_resp = dhan_exp.expiry_list(13, "IDX_I")
+        expiries = sorted((exp_resp.get("data") or {}).get("data") or [])
+        nearest_expiry = next((e for e in expiries if e >= trade_date), expiries[-1] if expiries else "")
+    except Exception:
+        pass
+
     return jsonify({
         "date":        trade_date,
         "spot":        round(spot, 2),
         "atm":         int(atm),
         "strikes":     strikes,
         "spot_series": spot_series,
+        "expiry":      nearest_expiry,
         "error":       "",
     })
 
@@ -2919,6 +2988,7 @@ var _chart=null,_series=null,_markersPlugin=null,_curIvl=1;
 var _ema20s=null,_ema50s=null;
 var _tradeDates=[],_atmData=null,_selOffset=null,_selType=null,_selStrike=null;
 var _spotSeries=[];
+var _niftyExpiry='';
 var TODAY='{today}';
 
 (function initChart(){{
@@ -3053,6 +3123,7 @@ async function loadLadder(){{
     }}
     _atmData=data;
     _spotSeries=data.spot_series||[];
+    _niftyExpiry=data.expiry||'';
     if(_spotSeries.length){{
       updateAtmForTime();
     }}else{{
@@ -3108,8 +3179,17 @@ async function loadChart(offset,optType,strike){{
   var date=document.getElementById('dateIn').value;
   showMsg('Loading '+offset+' '+optType+'…');showErr('');
   try{{
-    var expiry=nearestThursday(date);
     if(!strike){{hideMsg();showErr('ATM not loaded — click Load ATM first');return;}}
+    // Use expiry from ATM load; fallback to Dhan API if not yet loaded
+    var expiry=_niftyExpiry;
+    if(!expiry){{
+      try{{
+        var er=await(await fetch('/api/nifty-expiry?date='+date)).json();
+        expiry=er.expiry||'';
+        if(expiry)_niftyExpiry=expiry;
+      }}catch(ef){{}}
+    }}
+    if(!expiry){{hideMsg();showErr('Could not determine expiry — click Load ATM first');return;}}
     var url='/api/option-candles?underlying=NIFTY'
       +'&option_type='+optType
       +'&strike='+strike
