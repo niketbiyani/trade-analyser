@@ -1284,11 +1284,77 @@ def _fetch_option_candles(security_id: str, exchange_segment: str,
         return [], str(e)
 
 
+def _parse_rolling_response(resp: dict, side: str) -> tuple[list[dict], list[float]]:
+    """Parse the nested rolling options API response structure.
+
+    Dhan's /charts/rollingoption returns:
+      resp["data"]["data"]["ce"] = {open, high, low, close, volume, spot, timestamp, ...}
+      resp["data"]["data"]["pe"] = same or null
+
+    Returns (ohlcv_candles, spot_values).
+    side: 'ce' or 'pe'
+    """
+    outer = resp.get("data") if isinstance(resp, dict) else None
+    inner = outer.get("data") if isinstance(outer, dict) else None
+    side_data = (inner.get(side) if isinstance(inner, dict) else None) or {}
+    if not isinstance(side_data, dict):
+        return [], []
+
+    timestamps = side_data.get("timestamp") or []
+    opens  = side_data.get("open")  or []
+    highs  = side_data.get("high")  or []
+    lows   = side_data.get("low")   or []
+    closes = side_data.get("close") or []
+    spots  = side_data.get("spot")  or []
+
+    candles = []
+    n = len(timestamps)
+    if opens and len(opens) == n:
+        for i in range(n):
+            try:
+                ts_epoch = int(timestamps[i]) + 19800   # true UTC → IST-as-UTC
+                candles.append({
+                    "time":  ts_epoch,
+                    "open":  round(float(opens[i]),  2),
+                    "high":  round(float(highs[i]),  2),
+                    "low":   round(float(lows[i]),   2),
+                    "close": round(float(closes[i]), 2),
+                })
+            except (TypeError, ValueError):
+                continue
+
+    spot_vals = []
+    for s in spots:
+        try:
+            v = float(s)
+            if v > 100:
+                spot_vals.append(v)
+        except (TypeError, ValueError):
+            continue
+
+    return candles, spot_vals
+
+
+def _call_rolling_api(dhan, **kwargs):
+    """Call expired_options_data with auth-retry."""
+    resp = _with_timeout(dhan.expired_options_data, **kwargs)
+    if _is_auth_error(resp):
+        try:
+            import token_manager  # noqa: PLC0415
+            if token_manager.refresh_token():
+                dhan = _dhan_client()
+                resp = _with_timeout(dhan.expired_options_data, **kwargs)
+        except Exception as e:
+            logger.warning("Token refresh failed in rolling API: %s", e)
+    return resp
+
+
 def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
     """Get NIFTY spot price at session open for a given date via the rolling options API."""
     try:
         dhan = _dhan_client()
-        kwargs = dict(
+        resp = _call_rolling_api(
+            dhan,
             security_id="13",
             exchange_segment="NSE_FNO",
             instrument_type="OPTIDX",
@@ -1301,31 +1367,14 @@ def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
             to_date=trade_date,
             interval=1,
         )
-        resp = _with_timeout(dhan.expired_options_data, **kwargs)
-        logger.info("ATM ladder raw response [%s]: %s", trade_date, str(resp)[:500])
-        if _is_auth_error(resp):
-            try:
-                import token_manager  # noqa: PLC0415
-                if token_manager.refresh_token():
-                    dhan = _dhan_client()
-                    resp = _with_timeout(dhan.expired_options_data, **kwargs)
-                    logger.info("ATM ladder retry response [%s]: %s", trade_date, str(resp)[:500])
-            except Exception as e:
-                logger.warning("Token refresh failed in ATM ladder: %s", e)
-        if not isinstance(resp, dict):
-            return 0.0, f"Unexpected response type: {type(resp).__name__}"
-        status = (resp.get("status") or "").lower()
+        status = (resp.get("status") or "").lower() if isinstance(resp, dict) else ""
         if status in ("failure", "failed", "error"):
-            remarks = str(resp.get("remarks") or resp.get("message") or resp)
+            remarks = str(resp.get("remarks") or resp.get("message") or "")
             return 0.0, f"API error: {remarks[:300]}"
-        data = resp.get("data") if isinstance(resp, dict) else None
-        if not isinstance(data, dict):
-            return 0.0, f"No data in response (status={status!r}, keys={list(resp.keys())[:10]})"
-        spots = data.get("spot") or []
-        valid = [float(s) for s in spots if s is not None and float(s) > 100]
-        if not valid:
-            return 0.0, f"No valid spot data (spot list len={len(spots)}, data keys={list(data.keys())[:10]})"
-        spot = valid[0]
+        _, spot_vals = _parse_rolling_response(resp, "ce")
+        if not spot_vals:
+            return 0.0, "No spot data — date may be a holiday or outside Dhan's rolling window"
+        spot = spot_vals[0]
         logger.info("ATM ladder: spot=%.2f for date=%s", spot, trade_date)
         return spot, ""
     except Exception as e:
@@ -1334,34 +1383,30 @@ def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
 
 def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
                                  option_type: str, interval: int = 1) -> tuple[list[dict], str]:
-    """Fetch 1m OHLCV for a NIFTY option via the expired rolling options API."""
+    """Fetch OHLCV candles for a NIFTY option via the expired rolling options API."""
     drv_type = "CALL" if option_type.upper() in ("CE", "CALL") else "PUT"
-    kwargs = dict(
-        security_id="13",
-        exchange_segment="NSE_FNO",
-        instrument_type="OPTIDX",
-        expiry_flag="WEEK",
-        expiry_code=1,   # Dhan treats 0 as "not provided"; 1 = nearest weekly expiry
-
-        strike=strike_offset,
-        drv_option_type=drv_type,
-        required_data=["open", "high", "low", "close", "volume"],
-        from_date=trade_date,
-        to_date=trade_date,
-        interval=interval,
-    )
+    side     = "ce"   if drv_type == "CALL"                     else "pe"
     try:
         dhan = _dhan_client()
-        resp = _with_timeout(dhan.expired_options_data, **kwargs)
-        if _is_auth_error(resp):
-            try:
-                import token_manager  # noqa: PLC0415
-                if token_manager.refresh_token():
-                    dhan = _dhan_client()
-                    resp = _with_timeout(dhan.expired_options_data, **kwargs)
-            except Exception as e:
-                logger.warning("Token refresh failed in rolling candles: %s", e)
-        candles = _parse_dhan_candles(resp, trade_date)
+        resp = _call_rolling_api(
+            dhan,
+            security_id="13",
+            exchange_segment="NSE_FNO",
+            instrument_type="OPTIDX",
+            expiry_flag="WEEK",
+            expiry_code=1,   # Dhan treats 0 as "not provided"; 1 = nearest weekly expiry
+            strike=strike_offset,
+            drv_option_type=drv_type,
+            required_data=["open", "high", "low", "close", "volume"],
+            from_date=trade_date,
+            to_date=trade_date,
+            interval=interval,
+        )
+        status = (resp.get("status") or "").lower() if isinstance(resp, dict) else ""
+        if status in ("failure", "failed", "error"):
+            remarks = str(resp.get("remarks") or resp.get("message") or "")
+            return [], f"API error: {remarks[:200]}"
+        candles, _ = _parse_rolling_response(resp, side)
         logger.info("Rolling candles: %s %s %s ivl=%dm → %d candles",
                     trade_date, strike_offset, option_type, interval, len(candles))
         return candles, ""
