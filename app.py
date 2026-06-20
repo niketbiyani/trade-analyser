@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v100"
+APP_VERSION = "v101"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2486,6 +2486,63 @@ def api_refresh_instruments():
         db.commit()
     logger.info("Instrument refresh: cached %d FNO options", count)
     return jsonify({"ok": True, "count": count})
+
+
+@app.route("/api/debug-ladder")
+def api_debug_ladder():
+    """Debug endpoint: shows option_instruments table state and lookup results."""
+    underlying  = (request.args.get("underlying") or "NIFTY").upper()
+    option_type = (request.args.get("option_type") or "CE").upper()
+    strike      = request.args.get("strike") or ""
+    expiry      = request.args.get("expiry") or ""
+
+    db = get_db()
+
+    # Total row count
+    total = db.execute("SELECT COUNT(*) FROM option_instruments").fetchone()[0]
+    nifty_count = db.execute(
+        "SELECT COUNT(*) FROM option_instruments WHERE underlying=?", (underlying,)
+    ).fetchone()[0]
+
+    # Sample expiry values stored for this underlying
+    sample_expiries = [
+        r[0] for r in db.execute(
+            "SELECT DISTINCT expiry FROM option_instruments WHERE underlying=? ORDER BY expiry DESC LIMIT 20",
+            (underlying,),
+        ).fetchall()
+    ]
+
+    # Exact lookup (what /api/option-candles does)
+    lookup_rows = []
+    if strike:
+        try:
+            strike_f = float(strike)
+            rows = db.execute(
+                "SELECT security_id, exchange_segment, expiry FROM option_instruments"
+                " WHERE underlying=? AND option_type=? AND strike=?"
+                " AND (expiry LIKE ? OR ?='')"
+                " ORDER BY expiry DESC LIMIT 10",
+                (underlying, option_type, strike_f, f"%{expiry[:10]}%", expiry),
+            ).fetchall()
+            lookup_rows = [dict(r) for r in rows]
+        except ValueError:
+            lookup_rows = [{"error": "invalid strike"}]
+
+    return jsonify({
+        "queried": {
+            "underlying": underlying,
+            "option_type": option_type,
+            "strike": strike,
+            "expiry": expiry,
+            "expiry_like": f"%{expiry[:10]}%" if expiry else "(empty — matches all)",
+        },
+        "db_stats": {
+            "total_option_instruments": total,
+            f"{underlying}_count": nifty_count,
+        },
+        "sample_expiries_in_db": sample_expiries,
+        "lookup_result": lookup_rows,
+    })
 
 
 @app.route("/api/option-candles")
