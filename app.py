@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v93"
+APP_VERSION = "v94"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -269,6 +269,53 @@ def subscribe_ticks(pairs: list[tuple[str, str]]) -> int:
             except Exception as e:
                 logger.warning("subscribe_ticks import error: %s", e)
     return added
+
+
+def _auto_import_scheduler():
+    """Background thread: auto-import today's trades at scheduled IST times.
+    Ensures the tick feed subscribes early enough to capture intraday 15s data.
+    """
+    import time as _time
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    _TRIGGERS = [10, 12, 14]  # fire once each at 10:00, 12:00, 14:00 IST
+    _triggered: set = set()
+    _last_date = None
+
+    while True:
+        try:
+            _time.sleep(60)
+            now = datetime.now(_IST)
+            if now.date() != _last_date:
+                _triggered.clear()
+                _last_date = now.date()
+            # Weekdays only, within market hours
+            if now.weekday() >= 5:
+                continue
+            if not ((9, 15) <= (now.hour, now.minute) <= (15, 30)):
+                continue
+            for th in _TRIGGERS:
+                if now.hour >= th and th not in _triggered:
+                    _triggered.add(th)
+                    today_str = str(now.date())
+                    logger.info("Auto-import: scheduled tick refresh at %02d:00 IST", th)
+                    try:
+                        import_from_dhan(today_str, today_str)
+                        rows = get_db().execute(
+                            "SELECT DISTINCT security_id, exchange_segment FROM trades"
+                            " WHERE date=? AND security_id != '' AND security_id GLOB '[0-9]*'",
+                            (today_str,),
+                        ).fetchall()
+                        if rows:
+                            n = subscribe_ticks(
+                                [(r["security_id"], r["exchange_segment"]) for r in rows]
+                            )
+                            logger.info(
+                                "Auto-import: %d new tick instruments subscribed", n
+                            )
+                    except Exception as e:
+                        logger.warning("Auto-import scheduled job failed: %s", e)
+        except Exception as e:
+            logger.debug("Auto-import scheduler loop error: %s", e)
 
 
 def _extract_batch(resp) -> list[dict]:
@@ -3177,6 +3224,9 @@ if __name__ == "__main__":
     if token_manager.is_token_refresh_configured():
         logger.info("Refreshing Dhan token at startup...")
         token_manager.refresh_token()
+    # Start background scheduler for mid-session auto-imports (enables 15s tick data)
+    threading.Thread(target=_auto_import_scheduler, daemon=True, name="auto-import").start()
+    logger.info("Auto-import scheduler started (triggers at 10:00, 12:00, 14:00 IST)")
     # Resume tick feed for today's already-imported trades (handles app restarts)
     try:
         today_str = str(date.today())
