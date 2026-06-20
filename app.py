@@ -1302,24 +1302,29 @@ def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
             interval=1,
         )
         resp = _with_timeout(dhan.expired_options_data, **kwargs)
+        logger.info("ATM ladder raw response [%s]: %s", trade_date, str(resp)[:500])
         if _is_auth_error(resp):
             try:
                 import token_manager  # noqa: PLC0415
                 if token_manager.refresh_token():
                     dhan = _dhan_client()
                     resp = _with_timeout(dhan.expired_options_data, **kwargs)
+                    logger.info("ATM ladder retry response [%s]: %s", trade_date, str(resp)[:500])
             except Exception as e:
                 logger.warning("Token refresh failed in ATM ladder: %s", e)
-        if not isinstance(resp, dict) or resp.get("status") == "failure":
-            remarks = str(resp.get("remarks", "") if isinstance(resp, dict) else resp)
-            return 0.0, f"API error: {remarks[:200]}"
-        data = resp.get("data", {}) if isinstance(resp, dict) else {}
+        if not isinstance(resp, dict):
+            return 0.0, f"Unexpected response type: {type(resp).__name__}"
+        status = (resp.get("status") or "").lower()
+        if status in ("failure", "failed", "error"):
+            remarks = str(resp.get("remarks") or resp.get("message") or resp)
+            return 0.0, f"API error: {remarks[:300]}"
+        data = resp.get("data") if isinstance(resp, dict) else None
         if not isinstance(data, dict):
-            return 0.0, "Unexpected response format"
+            return 0.0, f"No data in response (status={status!r}, keys={list(resp.keys())[:10]})"
         spots = data.get("spot") or []
-        valid = [float(s) for s in spots if s and float(s) > 100]
+        valid = [float(s) for s in spots if s is not None and float(s) > 100]
         if not valid:
-            return 0.0, "No spot data — date may be a holiday or outside Dhan's data range"
+            return 0.0, f"No valid spot data (spot list len={len(spots)}, data keys={list(data.keys())[:10]})"
         spot = valid[0]
         logger.info("ATM ladder: spot=%.2f for date=%s", spot, trade_date)
         return spot, ""
@@ -2592,6 +2597,34 @@ def api_rolling_candles():
     if not candles:
         return jsonify({"candles": [], "error": "No data — option may not have traded on this date, or date is outside Dhan rolling window"})
     return jsonify({"candles": candles, "error": ""})
+
+
+@app.route("/api/debug-rolling")
+def api_debug_rolling():
+    """Return the raw Dhan rolling options API response for diagnosis."""
+    trade_date  = request.args.get("date") or str(date.today())
+    strike      = request.args.get("strike") or "ATM"
+    option_type = (request.args.get("option_type") or "CALL").upper()
+    req_data    = request.args.get("req_data") or "spot"
+    try:
+        dhan = _dhan_client()
+        resp = _with_timeout(
+            dhan.expired_options_data,
+            security_id="13",
+            exchange_segment="NSE_FNO",
+            instrument_type="OPTIDX",
+            expiry_flag="WEEK",
+            expiry_code=0,
+            strike=strike,
+            drv_option_type=option_type,
+            required_data=req_data.split(","),
+            from_date=trade_date,
+            to_date=trade_date,
+            interval=1,
+        )
+        return jsonify({"ok": True, "raw": resp})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/option-ladder")
