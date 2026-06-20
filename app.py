@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v101"
+APP_VERSION = "v102"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3071,25 +3071,31 @@ async function loadChart(offset,optType,strike){{
       +'&interval='+_curIvl;
     var d=await(await fetch(url+'&t='+Date.now())).json();
 
-    // If security_id not found: silently refresh instruments and retry once
+    // If security_id not found: refresh instruments and retry once
     if(d.error&&d.error.indexOf('No security_id')>=0){{
-      showMsg('Fetching instrument list from Dhan (first time)…');
+      showMsg('Fetching instrument list from Dhan…');
       try{{
-        var rr=await(await fetch('/api/refresh-instruments',{{method:'POST'}})).json();
+        var rfResp=await fetch('/api/refresh-instruments',{{method:'POST'}});
+        var rr=await rfResp.json();
         var btn=document.getElementById('refBtn');
-        if(btn&&rr.ok){{
+        if(!rr.ok){{
+          hideMsg();
+          showErr('Instrument refresh failed: '+(rr.error||'unknown error')+'. Check VPS can reach images.dhan.co');
+          return;
+        }}
+        if(btn){{
           btn.textContent='✓ '+rr.count+' instruments';
           setTimeout(function(){{if(btn)btn.textContent='↻ Refresh Instruments';}},3000);
         }}
-        showMsg('Retrying…');
+        showMsg('Retrying with '+rr.count+' instruments…');
         d=await(await fetch(url+'&t2='+Date.now())).json();
-      }}catch(e2){{/* keep original d */}}
+      }}catch(e2){{hideMsg();showErr('Instrument refresh error: '+e2.message);return;}}
     }}
 
     if(d.error){{
       hideMsg();
       showErr(d.error.indexOf('No security_id')>=0
-        ?'Strike not found even after instrument refresh — this expiry may not be available in Dhan data. Try another date.'
+        ?'Strike not found even after instrument refresh. Check the expiry — NIFTY weekly options expire on Thursdays.'
         :d.error);
       return;
     }}
@@ -3111,16 +3117,23 @@ async function loadChart(offset,optType,strike){{
 async function refreshInstruments(){{
   var btn=document.getElementById('refBtn');
   if(btn){{btn.textContent='Refreshing…';btn.disabled=true;}}
+  showErr('');
   try{{
     var r=await fetch('/api/refresh-instruments',{{method:'POST'}});
     var d=await r.json();
-    if(btn){{
-      btn.textContent=d.ok?('✓ '+d.count+' instruments'):'Refresh failed';
-      btn.disabled=false;
-      setTimeout(function(){{if(btn)btn.textContent='↻ Refresh Instruments';}},4000);
+    if(btn){{btn.disabled=false;}}
+    if(d.ok){{
+      if(btn){{
+        btn.textContent='✓ '+d.count+' instruments';
+        setTimeout(function(){{if(btn)btn.textContent='↻ Refresh Instruments';}},4000);
+      }}
+    }}else{{
+      if(btn)btn.textContent='↻ Refresh Instruments';
+      showErr('Refresh failed: '+(d.error||'unknown error')+'. Check VPS network — needs to reach images.dhan.co');
     }}
   }}catch(e){{
-    if(btn){{btn.textContent='Refresh failed';btn.disabled=false;}}
+    if(btn){{btn.textContent='↻ Refresh Instruments';btn.disabled=false;}}
+    showErr('Refresh error: '+e.message);
   }}
 }}
 
