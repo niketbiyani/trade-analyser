@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v102"
+APP_VERSION = "v103"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2486,6 +2486,54 @@ def api_refresh_instruments():
         db.commit()
     logger.info("Instrument refresh: cached %d FNO options", count)
     return jsonify({"ok": True, "count": count})
+
+
+@app.route("/api/debug-option-chain")
+def api_debug_option_chain():
+    """Returns raw Dhan option_chain and expiry_list responses for debugging."""
+    expiry = request.args.get("expiry") or ""
+    try:
+        dhan = _dhan_client()
+        expiry_resp = dhan.expiry_list(13, "IDX_I")
+    except Exception as e:
+        return jsonify({"error": f"expiry_list failed: {e}"})
+
+    # Pick first expiry from list if none given
+    if not expiry:
+        try:
+            exp_data = expiry_resp.get("data") or expiry_resp
+            if isinstance(exp_data, list) and exp_data:
+                expiry = exp_data[0]
+            elif isinstance(exp_data, dict):
+                for v in exp_data.values():
+                    if isinstance(v, list) and v:
+                        expiry = v[0]
+                        break
+        except Exception:
+            pass
+
+    oc_resp = None
+    if expiry:
+        try:
+            oc_resp = dhan.option_chain(13, "IDX_I", expiry)
+        except Exception as e:
+            oc_resp = {"error": str(e)}
+
+    # Return first 3 entries of option chain data to keep response small
+    oc_preview = oc_resp
+    if oc_resp and isinstance(oc_resp.get("data"), list):
+        oc_preview = dict(oc_resp)
+        oc_preview["data"] = oc_resp["data"][:3]
+    elif oc_resp and isinstance(oc_resp.get("data"), dict):
+        inner = oc_resp["data"]
+        oc_preview = dict(oc_resp)
+        oc_preview["data"] = {k: (v[:3] if isinstance(v, list) else v) for k, v in inner.items()}
+
+    return jsonify({
+        "expiry_list_raw": expiry_resp,
+        "expiry_used": expiry,
+        "option_chain_preview": oc_preview,
+    })
 
 
 @app.route("/api/debug-ladder")
