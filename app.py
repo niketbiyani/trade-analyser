@@ -3011,22 +3011,33 @@ async function loadChart(offset,optType,strike){{
       +'&expiry='+expiry
       +'&from_date='+date
       +'&to_date='+date
-      +'&interval='+_curIvl
-      +'&t='+Date.now();
-    var r=await fetch(url);
-    var d=await r.json();
+      +'&interval='+_curIvl;
+    var d=await(await fetch(url+'&t='+Date.now())).json();
+
+    // If security_id not found: silently refresh instruments and retry once
+    if(d.error&&d.error.indexOf('No security_id')>=0){{
+      showMsg('Fetching instrument list from Dhan (first time)…');
+      try{{
+        var rr=await(await fetch('/api/refresh-instruments',{{method:'POST'}})).json();
+        var btn=document.getElementById('refBtn');
+        if(btn&&rr.ok){{
+          btn.textContent='✓ '+rr.count+' instruments';
+          setTimeout(function(){{if(btn)btn.textContent='↻ Refresh Instruments';}},3000);
+        }}
+        showMsg('Retrying…');
+        d=await(await fetch(url+'&t2='+Date.now())).json();
+      }}catch(e2){{/* keep original d */}}
+    }}
+
     if(d.error){{
       hideMsg();
-      if(d.error.indexOf('No security_id')>=0){{
-        showErr('Security ID not found for NIFTY '+strike+' '+optType+' (exp '+expiry+'). '
-          +'Click “Refresh Instruments” in the left panel then try again.');
-      }}else{{
-        showErr(d.error);
-      }}
+      showErr(d.error.indexOf('No security_id')>=0
+        ?'Strike not found even after instrument refresh — this expiry may not be available in Dhan data. Try another date.'
+        :d.error);
       return;
     }}
     var c=d.candles||[];
-    if(!c.length){{hideMsg();showErr('No candle data for this option on '+date+' (intraday API covers ~5 trading days)');return;}}
+    if(!c.length){{hideMsg();showErr('No candle data for this option on '+date+' — intraday API covers ~5 trading days');return;}}
     _series.setData(c);
     updateIndicators(c);
     _markersPlugin.setMarkers([]);
