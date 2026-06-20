@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v96"
+APP_VERSION = "v100"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2070,7 +2070,7 @@ function setType(t){{
 }}
 function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
 function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
-function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
+function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'block':'none';e.textContent=m||'';}}
 
 function fromDateFor(expDate){{
   var p=(expDate||TODAY).split('-');
@@ -2860,7 +2860,7 @@ function updateIndicators(data){{
 
 function showMsg(m){{var e=document.getElementById('msgEl');e.style.display=m?'':'none';e.textContent=m;}}
 function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
-function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
+function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'block':'none';e.textContent=m||'';}}
 
 function setIvl(n){{
   _curIvl=n;
