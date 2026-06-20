@@ -2871,25 +2871,28 @@ function renderLadder(strikes){{
     var tr=document.createElement('tr');
     var isAtm=s.offset==='ATM';
     if(isAtm)tr.className='atm-row';
-    var ceId='ce-'+s.offset.replace(/[+]/g,'p').replace(/-/g,'m');
-    var peId='pe-'+s.offset.replace(/[+]/g,'p').replace(/-/g,'m');
     tr.innerHTML=
       '<td class="off-col">'+s.offset+'</td>'+
       '<td class="sk-col"'+(isAtm?' style="color:#eee;"':'')+'>'+s.strike+'</td>'+
-      '<td class="ce-td" id="'+ceId+'" onclick="loadChart(\''+s.offset+'\',\'CE\')">CE</td>'+
-      '<td class="pe-td" id="'+peId+'" onclick="loadChart(\''+s.offset+'\',\'PE\')">PE</td>';
+      '<td class="ce-td">CE</td>'+
+      '<td class="pe-td">PE</td>';
+    var ceTd=tr.querySelector('.ce-td');
+    var peTd=tr.querySelector('.pe-td');
+    ceTd.dataset.offset=s.offset;
+    peTd.dataset.offset=s.offset;
+    ceTd.onclick=(function(off){{return function(){{loadChart(off,'CE');}};}})(s.offset);
+    peTd.onclick=(function(off){{return function(){{loadChart(off,'PE');}};}})(s.offset);
     tbody.appendChild(tr);
   }});
 }}
 
 async function loadChart(offset,optType){{
   _selOffset=offset;_selType=optType;
-  document.querySelectorAll('.ce-td').forEach(function(td){{td.classList.remove('sel');}});
-  document.querySelectorAll('.pe-td').forEach(function(td){{td.classList.remove('sel');}});
-  var pfx=optType==='CE'?'ce-':'pe-';
-  var tid=pfx+offset.replace(/[+]/g,'p').replace(/-/g,'m');
-  var selTd=document.getElementById(tid);
-  if(selTd)selTd.classList.add('sel');
+  document.querySelectorAll('.ce-td,.pe-td').forEach(function(td){{td.classList.remove('sel');}});
+  var selCls=optType==='CE'?'.ce-td':'.pe-td';
+  document.querySelectorAll(selCls).forEach(function(td){{
+    if(td.dataset.offset===offset)td.classList.add('sel');
+  }});
   var date=document.getElementById('dateIn').value;
   showMsg('Loading '+offset+' '+optType+'…');showErr('');
   try{{
