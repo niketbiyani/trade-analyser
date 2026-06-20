@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v95"
+APP_VERSION = "v96"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1284,21 +1284,22 @@ def _fetch_option_candles(security_id: str, exchange_segment: str,
         return [], str(e)
 
 
-def _parse_rolling_response(resp: dict, side: str) -> tuple[list[dict], list[float]]:
+def _parse_rolling_response(resp: dict, side: str) -> tuple[list[dict], list[float], list[dict]]:
     """Parse the nested rolling options API response structure.
 
     Dhan's /charts/rollingoption returns:
       resp["data"]["data"]["ce"] = {open, high, low, close, volume, spot, timestamp, ...}
       resp["data"]["data"]["pe"] = same or null
 
-    Returns (ohlcv_candles, spot_values).
+    Returns (ohlcv_candles, spot_values, spot_series).
+    spot_series = [{"ts": <IST-as-UTC epoch>, "spot": <float>}, ...]
     side: 'ce' or 'pe'
     """
     outer = resp.get("data") if isinstance(resp, dict) else None
     inner = outer.get("data") if isinstance(outer, dict) else None
     side_data = (inner.get(side) if isinstance(inner, dict) else None) or {}
     if not isinstance(side_data, dict):
-        return [], []
+        return [], [], []
 
     timestamps = side_data.get("timestamp") or []
     opens  = side_data.get("open")  or []
@@ -1324,15 +1325,29 @@ def _parse_rolling_response(resp: dict, side: str) -> tuple[list[dict], list[flo
                 continue
 
     spot_vals = []
-    for s in spots:
+    spot_series = []
+    n_ts = len(timestamps)
+    n_sp = len(spots)
+    for i in range(min(n_ts, n_sp)):
         try:
-            v = float(s)
+            v = float(spots[i])
             if v > 100:
+                ts = int(timestamps[i]) + 19800
                 spot_vals.append(v)
+                spot_series.append({"ts": ts, "spot": round(v, 2)})
         except (TypeError, ValueError):
             continue
+    # If spots exist but timestamps don't align, still collect spot_vals
+    if not spot_vals and n_ts == 0:
+        for s in spots:
+            try:
+                v = float(s)
+                if v > 100:
+                    spot_vals.append(v)
+            except (TypeError, ValueError):
+                continue
 
-    return candles, spot_vals
+    return candles, spot_vals, spot_series
 
 
 def _call_rolling_api(dhan, **kwargs):
@@ -1349,8 +1364,12 @@ def _call_rolling_api(dhan, **kwargs):
     return resp
 
 
-def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
-    """Get NIFTY spot price at session open for a given date via the rolling options API."""
+def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, list[dict], str]:
+    """Get NIFTY spot price series for a date via the rolling options API.
+
+    Returns (first_spot, spot_series, error).
+    spot_series = [{"ts": IST-as-UTC epoch, "spot": float}, ...] for the full trading day.
+    """
     try:
         dhan = _dhan_client()
         resp = _call_rolling_api(
@@ -1370,15 +1389,15 @@ def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
         status = (resp.get("status") or "").lower() if isinstance(resp, dict) else ""
         if status in ("failure", "failed", "error"):
             remarks = str(resp.get("remarks") or resp.get("message") or "")
-            return 0.0, f"API error: {remarks[:300]}"
-        _, spot_vals = _parse_rolling_response(resp, "ce")
+            return 0.0, [], f"API error: {remarks[:300]}"
+        _, spot_vals, spot_series = _parse_rolling_response(resp, "ce")
         if not spot_vals:
-            return 0.0, "No spot data — date may be a holiday or outside Dhan's rolling window"
+            return 0.0, [], "No spot data — date may be a holiday or outside Dhan's rolling window"
         spot = spot_vals[0]
-        logger.info("ATM ladder: spot=%.2f for date=%s", spot, trade_date)
-        return spot, ""
+        logger.info("ATM ladder: spot=%.2f series=%d pts for date=%s", spot, len(spot_series), trade_date)
+        return spot, spot_series, ""
     except Exception as e:
-        return 0.0, str(e)
+        return 0.0, [], str(e)
 
 
 def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
@@ -1406,7 +1425,7 @@ def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
         if status in ("failure", "failed", "error"):
             remarks = str(resp.get("remarks") or resp.get("message") or "")
             return [], f"API error: {remarks[:200]}"
-        candles, _ = _parse_rolling_response(resp, side)
+        candles, _, _ = _parse_rolling_response(resp, side)
         logger.info("Rolling candles: %s %s %s ivl=%dm → %d candles",
                     trade_date, strike_offset, option_type, interval, len(candles))
         return candles, ""
@@ -2603,11 +2622,11 @@ def api_tick_candles():
 
 @app.route("/api/atm-ladder")
 def api_atm_ladder():
-    """Return NIFTY ATM ±5 strike info for a date using the rolling options API."""
+    """Return NIFTY ATM ±5 strike info + full spot series for a date."""
     trade_date = request.args.get("date") or str(date.today())
-    spot, err = _get_nifty_spot_for_ladder(trade_date)
+    spot, spot_series, err = _get_nifty_spot_for_ladder(trade_date)
     if err:
-        return jsonify({"error": err, "spot": 0, "atm": 0, "strikes": [], "date": trade_date})
+        return jsonify({"error": err, "spot": 0, "atm": 0, "strikes": [], "spot_series": [], "date": trade_date})
     atm = round(spot / 50) * 50
     strikes = []
     for i in range(5, -6, -1):
@@ -2619,11 +2638,12 @@ def api_atm_ladder():
             offset = f"ATM{i}"   # e.g. "ATM-1"
         strikes.append({"offset": offset, "strike": int(atm + i * 50)})
     return jsonify({
-        "date": trade_date,
-        "spot": round(spot, 2),
-        "atm":  int(atm),
-        "strikes": strikes,
-        "error": "",
+        "date":        trade_date,
+        "spot":        round(spot, 2),
+        "atm":         int(atm),
+        "strikes":     strikes,
+        "spot_series": spot_series,
+        "error":       "",
     })
 
 
@@ -2681,6 +2701,15 @@ def option_ladder_page():
 def _option_ladder_page() -> str:
     today = str(date.today())
     ver   = APP_VERSION
+    # Generate time select options 09:15 → 15:30 in 15-min steps
+    h, m = 9, 15
+    time_opts = ""
+    while h < 15 or (h == 15 and m <= 30):
+        time_opts += f'<option value="{h:02d}:{m:02d}">{h:02d}:{m:02d}</option>'
+        m += 15
+        if m >= 60:
+            m = 0
+            h += 1
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2690,81 +2719,98 @@ def _option_ladder_page() -> str:
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
-body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
-#hdr{{display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;flex-wrap:wrap;}}
-#hdr a{{color:#555;text-decoration:none;font-size:11px;}}
-#hdr a:hover{{color:#aaa;}}
-.htitle{{font-weight:600;font-size:14px;color:#ccc;}}
-.badge{{font-size:10px;color:#555;}}
-.ibtn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
-.ibtn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
-#dateIn{{width:130px;background:#111;border:1px solid #2a2a2a;color:#ccc;padding:3px 6px;border-radius:3px;font-size:12px;}}
-.ldbtn{{background:#1a3a1a;border:1px solid #3a6a3a;color:#4fc3f7;padding:4px 14px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;}}
-.ldbtn:hover{{background:#224422;}}
-#spotInfo{{font-size:11px;color:#888;white-space:nowrap;}}
-#chartArea{{flex:1;min-height:0;position:relative;border-bottom:1px solid #1e1e1e;}}
-#chartEl{{width:100%;height:100%;}}
+html,body{{height:100%;overflow:hidden;}}
+body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:flex;flex-direction:row;}}
+#leftPanel{{flex:0 0 272px;display:flex;flex-direction:column;border-right:1px solid #1a1a1a;overflow:hidden;}}
+#lp-nav{{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #1a1a1a;flex-shrink:0;flex-wrap:wrap;}}
+#lp-nav a{{color:#555;text-decoration:none;font-size:11px;}}
+#lp-nav a:hover{{color:#aaa;}}
+.htitle{{font-weight:600;font-size:13px;color:#bbb;}}
+.badge{{font-size:10px;color:#444;border:1px solid #222;padding:1px 4px;border-radius:2px;}}
+#lp-ctrl{{padding:8px 10px;border-bottom:1px solid #1a1a1a;flex-shrink:0;}}
+.ctrl-row{{display:flex;gap:4px;align-items:center;margin-bottom:6px;}}
+.ctrl-row:last-child{{margin-bottom:0;}}
+.arrbtn{{background:#111;border:1px solid #222;color:#666;padding:2px 7px;border-radius:3px;cursor:pointer;font-size:12px;}}
+.arrbtn:hover{{color:#aaa;border-color:#444;}}
+#dateIn{{flex:1;background:#111;border:1px solid #2a2a2a;color:#ccc;padding:3px 6px;border-radius:3px;font-size:12px;}}
+#timeIn{{flex:1;background:#111;border:1px solid #2a2a2a;color:#ccc;padding:3px 6px;border-radius:3px;font-size:12px;cursor:pointer;}}
+.time-lbl{{font-size:11px;color:#555;white-space:nowrap;}}
+.ldbtn{{width:100%;background:#1a3a1a;border:1px solid #2a5a2a;color:#4fc3f7;padding:5px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;}}
+.ldbtn:hover{{background:#1e4a1e;}}
+#spotInfo{{font-size:11px;color:#888;min-height:15px;line-height:1.3;word-break:break-word;}}
+.ibtn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:11px;}}
+.ibtn.on{{background:#112211;border-color:#2a5a2a;color:#4fc3f7;}}
+#lp-body{{flex:1;overflow-y:auto;}}
+table{{width:100%;border-collapse:collapse;font-size:12px;}}
+thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;padding:4px 6px;text-align:center;border-bottom:1px solid #1a1a1a;font-size:11px;}}
+#ladderBody td{{padding:5px 6px;border-bottom:1px solid #0e0e0e;text-align:center;white-space:nowrap;}}
+.ce-td{{color:#4fc3f7;cursor:pointer;border-radius:3px;}}
+.ce-td:hover{{background:rgba(79,195,247,.12);}}
+.ce-td.sel{{background:rgba(79,195,247,.2);font-weight:700;}}
+.pe-td{{color:#ffb74d;cursor:pointer;border-radius:3px;}}
+.pe-td:hover{{background:rgba(255,183,77,.12);}}
+.pe-td.sel{{background:rgba(255,183,77,.2);font-weight:700;}}
+.atm-row td{{background:#111;}}
+.off-col{{color:#3a3a3a;font-size:10px;text-align:right;padding-right:4px;}}
+.sk-col{{font-weight:600;color:#999;}}
+.atm-row .sk-col{{color:#ddd;}}
+#rightPanel{{flex:1;position:relative;overflow:hidden;}}
+#chartEl{{position:absolute;inset:0;width:100%;height:100%;}}
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
 #errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
-#ladderPane{{flex:0 0 252px;display:flex;flex-direction:column;min-height:0;overflow:hidden;}}
-#lp-hdr{{padding:5px 10px;border-bottom:1px solid #0f0f0f;display:flex;align-items:center;gap:6px;flex-shrink:0;}}
-#lp-body{{flex:1;overflow-y:auto;}}
-table{{width:100%;border-collapse:collapse;font-size:12px;}}
-thead th{{position:sticky;top:0;background:#0a0a0a;color:#555;font-weight:500;padding:4px 6px;text-align:center;border-bottom:1px solid #1e1e1e;font-size:11px;}}
-#ladderBody td{{padding:5px 6px;border-bottom:1px solid #0f0f0f;text-align:center;white-space:nowrap;}}
-.ce-td{{color:#4fc3f7;cursor:pointer;border-radius:3px;}}
-.ce-td:hover{{background:rgba(79,195,247,.12);}}
-.ce-td.sel{{background:rgba(79,195,247,.18);font-weight:700;}}
-.pe-td{{color:#ffb74d;cursor:pointer;border-radius:3px;}}
-.pe-td:hover{{background:rgba(255,183,77,.12);}}
-.pe-td.sel{{background:rgba(255,183,77,.18);font-weight:700;}}
-.atm-row td{{background:#111;}}
-.off-col{{color:#444;font-size:10px;text-align:right;}}
-.sk-col{{font-weight:600;}}
+::-webkit-scrollbar{{width:4px;height:4px;}}
+::-webkit-scrollbar-thumb{{background:#222;border-radius:2px;}}
 </style>
 </head>
 <body>
-<div id="hdr">
-  <a href="/">&#8592; Main</a>
-  <a href="/option-chart">Option Chart</a>
-  <span class="htitle">ATM Ladder</span>
-  <span class="badge">{ver}</span>
-  <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-    <span id="spotInfo"></span>
-    <input type="date" id="dateIn" value="{today}">
-    <button class="ldbtn" onclick="loadLadder()">&#9654; Load ATM</button>
-    <span style="width:1px;background:#2a2a2a;margin:0 2px;align-self:stretch;"></span>
-    <button class="ibtn on" id="ivl1"  onclick="setIvl(1)">1m</button>
-    <button class="ibtn"    id="ivl5"  onclick="setIvl(5)">5m</button>
-    <button class="ibtn"    id="ivl15" onclick="setIvl(15)">15m</button>
+<div id="leftPanel">
+  <div id="lp-nav">
+    <a href="/">&#8592; Main</a>
+    <a href="/option-chart">Option Chart</a>
+    <span class="htitle">ATM Ladder</span>
+    <span class="badge">{ver}</span>
   </div>
-</div>
-<div id="chartArea">
-  <div id="chartTitle">Load a date below, then click a CE or PE strike to view its chart</div>
-  <div id="chartEl"></div>
-  <div id="msgEl"></div>
-  <div id="errBanner"></div>
-</div>
-<div id="ladderPane">
-  <div id="lp-hdr">
-    <button class="ibtn" style="padding:1px 7px;" onclick="shiftDay(-1)">&#9664;</button>
-    <button class="ibtn" style="padding:1px 7px;" onclick="shiftDay(1)">&#9654;</button>
-    <span style="font-size:11px;color:#555;">NIFTY weekly ATM &#177;5</span>
+  <div id="lp-ctrl">
+    <div class="ctrl-row">
+      <button class="arrbtn" onclick="shiftDay(-1)">&#9664;</button>
+      <input type="date" id="dateIn" value="{today}">
+      <button class="arrbtn" onclick="shiftDay(1)">&#9654;</button>
+    </div>
+    <div class="ctrl-row">
+      <span class="time-lbl">@ IST</span>
+      <select id="timeIn" onchange="updateAtmForTime()">{time_opts}</select>
+    </div>
+    <div class="ctrl-row">
+      <button class="ldbtn" onclick="loadLadder()">&#9654; Load ATM</button>
+    </div>
+    <div id="spotInfo"></div>
+    <div class="ctrl-row" style="margin-top:7px;">
+      <button class="ibtn on" id="ivl1"  onclick="setIvl(1)">1m</button>
+      <button class="ibtn"    id="ivl5"  onclick="setIvl(5)">5m</button>
+      <button class="ibtn"    id="ivl15" onclick="setIvl(15)">15m</button>
+    </div>
   </div>
   <div id="lp-body">
     <table>
       <thead><tr><th>Offset</th><th>Strike</th><th>CE</th><th>PE</th></tr></thead>
       <tbody id="ladderBody">
-        <tr><td colspan="4" style="color:#444;padding:28px;text-align:center;">Pick a date and click &#9654; Load ATM</td></tr>
+        <tr><td colspan="4" style="color:#333;padding:28px 10px;text-align:center;font-size:11px;">Pick a date and click &#9654; Load ATM</td></tr>
       </tbody>
     </table>
   </div>
+</div>
+<div id="rightPanel">
+  <div id="chartTitle">Load a date, then click a CE or PE strike to view its chart</div>
+  <div id="chartEl"></div>
+  <div id="msgEl">Select a strike to load its chart</div>
+  <div id="errBanner"></div>
 </div>
 <script>
 var _chart=null,_series=null,_markersPlugin=null,_curIvl=1;
 var _ema20s=null,_ema50s=null;
 var _tradeDates=[],_atmData=null,_selOffset=null,_selType=null;
+var _spotSeries=[];
 var TODAY='{today}';
 
 (function initChart(){{
@@ -2809,7 +2855,7 @@ function updateIndicators(data){{
   _ema50s.setData(toS(_emaArr(closes,50)));
 }}
 
-function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
+function showMsg(m){{var e=document.getElementById('msgEl');e.style.display=m?'':'none';e.textContent=m;}}
 function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
 function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
 
@@ -2840,27 +2886,67 @@ function shiftDay(dir){{
   loadLadder();
 }}
 
+function _spotAtTime(timeVal){{
+  if(!_spotSeries.length)return null;
+  var dp=document.getElementById('dateIn').value.split('-');
+  var tp=timeVal.split(':');
+  var target=Date.UTC(+dp[0],+dp[1]-1,+dp[2],+tp[0],+tp[1],0)/1000;
+  var best=_spotSeries[0],bestD=Math.abs(_spotSeries[0].ts-target);
+  for(var i=1;i<_spotSeries.length;i++){{
+    var d=Math.abs(_spotSeries[i].ts-target);
+    if(d<bestD){{bestD=d;best=_spotSeries[i];}}
+  }}
+  return best;
+}}
+
+function _buildStrikes(atm){{
+  var s=[];
+  for(var i=5;i>=-5;i--){{
+    var off=i===0?'ATM':(i>0?'ATM+'+i:'ATM'+i);
+    s.push({{offset:off,strike:atm+i*50}});
+  }}
+  return s;
+}}
+
+function updateAtmForTime(){{
+  var tv=document.getElementById('timeIn').value;
+  var entry=_spotAtTime(tv);
+  if(!entry)return;
+  var atm=Math.round(entry.spot/50)*50;
+  document.getElementById('spotInfo').textContent=
+    'NIFTY ≈'+Math.round(entry.spot)+' @ '+tv+' → ATM '+atm;
+  var strikes=_buildStrikes(atm);
+  if(_atmData){{_atmData.atm=atm;_atmData.spot=entry.spot;_atmData.strikes=strikes;}}
+  renderLadder(strikes);
+}}
+
 async function loadLadder(){{
   var d=document.getElementById('dateIn').value;
   document.getElementById('spotInfo').textContent='Loading…';
   var tbody=document.getElementById('ladderBody');
-  tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#555;padding:20px">Fetching NIFTY spot…</td></tr>';
+  tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#444;padding:20px;font-size:11px;">Fetching NIFTY spot…</td></tr>';
   _selOffset=null;_selType=null;
   try{{
     var r=await fetch('/api/atm-ladder?date='+d);
     var data=await r.json();
     if(data.error){{
-      document.getElementById('spotInfo').textContent='Error';
-      tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#f85149;padding:16px">'+data.error+'</td></tr>';
+      document.getElementById('spotInfo').textContent='';
+      tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#f85149;padding:16px;font-size:11px;">'+data.error+'</td></tr>';
       return;
     }}
     _atmData=data;
-    document.getElementById('spotInfo').textContent=
-      'NIFTY ≈'+Math.round(data.spot)+' → ATM '+data.atm;
-    renderLadder(data.strikes);
+    _spotSeries=data.spot_series||[];
+    if(_spotSeries.length){{
+      updateAtmForTime();
+    }}else{{
+      var atm=Math.round(data.spot/50)*50;
+      document.getElementById('spotInfo').textContent=
+        'NIFTY ≈'+Math.round(data.spot)+' → ATM '+atm;
+      renderLadder(_buildStrikes(atm));
+    }}
   }}catch(e){{
     document.getElementById('spotInfo').textContent='';
-    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#f85149;padding:16px">Error: '+e.message+'</td></tr>';
+    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#f85149;padding:16px;font-size:11px;">Error: '+e.message+'</td></tr>';
   }}
 }}
 
@@ -2873,7 +2959,7 @@ function renderLadder(strikes){{
     if(isAtm)tr.className='atm-row';
     tr.innerHTML=
       '<td class="off-col">'+s.offset+'</td>'+
-      '<td class="sk-col"'+(isAtm?' style="color:#eee;"':'')+'>'+s.strike+'</td>'+
+      '<td class="sk-col">'+s.strike+'</td>'+
       '<td class="ce-td">CE</td>'+
       '<td class="pe-td">PE</td>';
     var ceTd=tr.querySelector('.ce-td');
@@ -2884,6 +2970,13 @@ function renderLadder(strikes){{
     peTd.onclick=(function(off){{return function(){{loadChart(off,'PE');}};}})(s.offset);
     tbody.appendChild(tr);
   }});
+  // Restore selection highlight
+  if(_selOffset&&_selType){{
+    var selCls=_selType==='CE'?'.ce-td':'.pe-td';
+    document.querySelectorAll(selCls).forEach(function(td){{
+      if(td.dataset.offset===_selOffset)td.classList.add('sel');
+    }});
+  }}
 }}
 
 async function loadChart(offset,optType){{
@@ -2901,7 +2994,7 @@ async function loadChart(offset,optType){{
       +'&option_type='+optType
       +'&interval='+_curIvl);
     var d=await r.json();
-    if(d.error){{showMsg('');showErr(d.error);return;}}
+    if(d.error){{hideMsg();showErr(d.error);return;}}
     var c=d.candles||[];
     if(!c.length){{showMsg('No data — option may not have traded on this date');return;}}
     _series.setData(c);
@@ -2916,7 +3009,7 @@ async function loadChart(offset,optType){{
     var strikeDisp=atmNum+(offset!=='ATM'?' ('+offset+')':'');
     document.getElementById('chartTitle').textContent=
       'NIFTY '+strikeDisp+' '+optType+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
-  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
+  }}catch(e){{hideMsg();showErr('Error: '+e.message);}}
 }}
 
 loadDates().then(function(){{
