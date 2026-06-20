@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v94"
+APP_VERSION = "v95"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1284,6 +1284,85 @@ def _fetch_option_candles(security_id: str, exchange_segment: str,
         return [], str(e)
 
 
+def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
+    """Get NIFTY spot price at session open for a given date via the rolling options API."""
+    try:
+        dhan = _dhan_client()
+        kwargs = dict(
+            security_id="13",
+            exchange_segment="NSE_FNO",
+            instrument_type="OPTIDX",
+            expiry_flag="WEEK",
+            expiry_code=0,
+            strike="ATM",
+            drv_option_type="CALL",
+            required_data=["spot"],
+            from_date=trade_date,
+            to_date=trade_date,
+            interval=1,
+        )
+        resp = _with_timeout(dhan.expired_options_data, **kwargs)
+        if _is_auth_error(resp):
+            try:
+                import token_manager  # noqa: PLC0415
+                if token_manager.refresh_token():
+                    dhan = _dhan_client()
+                    resp = _with_timeout(dhan.expired_options_data, **kwargs)
+            except Exception as e:
+                logger.warning("Token refresh failed in ATM ladder: %s", e)
+        if not isinstance(resp, dict) or resp.get("status") == "failure":
+            remarks = str(resp.get("remarks", "") if isinstance(resp, dict) else resp)
+            return 0.0, f"API error: {remarks[:200]}"
+        data = resp.get("data", {}) if isinstance(resp, dict) else {}
+        if not isinstance(data, dict):
+            return 0.0, "Unexpected response format"
+        spots = data.get("spot") or []
+        valid = [float(s) for s in spots if s and float(s) > 100]
+        if not valid:
+            return 0.0, "No spot data — date may be a holiday or outside Dhan's data range"
+        spot = valid[0]
+        logger.info("ATM ladder: spot=%.2f for date=%s", spot, trade_date)
+        return spot, ""
+    except Exception as e:
+        return 0.0, str(e)
+
+
+def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
+                                 option_type: str, interval: int = 1) -> tuple[list[dict], str]:
+    """Fetch 1m OHLCV for a NIFTY option via the expired rolling options API."""
+    drv_type = "CALL" if option_type.upper() in ("CE", "CALL") else "PUT"
+    kwargs = dict(
+        security_id="13",
+        exchange_segment="NSE_FNO",
+        instrument_type="OPTIDX",
+        expiry_flag="WEEK",
+        expiry_code=0,
+        strike=strike_offset,
+        drv_option_type=drv_type,
+        required_data=["open", "high", "low", "close", "volume"],
+        from_date=trade_date,
+        to_date=trade_date,
+        interval=interval,
+    )
+    try:
+        dhan = _dhan_client()
+        resp = _with_timeout(dhan.expired_options_data, **kwargs)
+        if _is_auth_error(resp):
+            try:
+                import token_manager  # noqa: PLC0415
+                if token_manager.refresh_token():
+                    dhan = _dhan_client()
+                    resp = _with_timeout(dhan.expired_options_data, **kwargs)
+            except Exception as e:
+                logger.warning("Token refresh failed in rolling candles: %s", e)
+        candles = _parse_dhan_candles(resp, trade_date)
+        logger.info("Rolling candles: %s %s %s ivl=%dm → %d candles",
+                    trade_date, strike_offset, option_type, interval, len(candles))
+        return candles, ""
+    except Exception as e:
+        return [], str(e)
+
+
 def _aggregate_candles(candles: list[dict], minutes: int) -> list[dict]:
     """Aggregate 1-minute candles into N-minute candles."""
     if not candles or minutes <= 1:
@@ -1375,6 +1454,7 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
   <a href="/">&#8592; Main</a>
   <span class="htitle">Option Chart</span>
   <a href="/option-expiry" style="margin-left:6px;background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;font-size:11px;text-decoration:none;">By Expiry &#8599;</a>
+  <a href="/option-ladder" style="background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;font-size:11px;text-decoration:none;">ATM Ladder &#8599;</a>
   <span class="badge">{ver}</span>
   <div style="margin-left:auto;display:flex;gap:4px;">
     <button class="ivl-btn" id="tick15s" onclick="setTick(15)" title="15-second tick chart (today only)">15s</button>
@@ -1782,6 +1862,7 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
 <div id="hdr">
   <a href="/">&#8592; Main</a>
   <a href="/option-chart">Option Chart</a>
+  <a href="/option-ladder">ATM Ladder</a>
   <span class="htitle">Historical Options</span>
   <span class="badge">{ver}</span>
   <div style="margin-left:auto;display:flex;gap:4px;">
@@ -2469,6 +2550,303 @@ def api_tick_candles():
     return jsonify({"candles": candles, "error": ""})
 
 
+@app.route("/api/atm-ladder")
+def api_atm_ladder():
+    """Return NIFTY ATM ±5 strike info for a date using the rolling options API."""
+    trade_date = request.args.get("date") or str(date.today())
+    spot, err = _get_nifty_spot_for_ladder(trade_date)
+    if err:
+        return jsonify({"error": err, "spot": 0, "atm": 0, "strikes": [], "date": trade_date})
+    atm = round(spot / 50) * 50
+    strikes = []
+    for i in range(5, -6, -1):
+        if i == 0:
+            offset = "ATM"
+        elif i > 0:
+            offset = f"ATM+{i}"
+        else:
+            offset = f"ATM{i}"   # e.g. "ATM-1"
+        strikes.append({"offset": offset, "strike": int(atm + i * 50)})
+    return jsonify({
+        "date": trade_date,
+        "spot": round(spot, 2),
+        "atm":  int(atm),
+        "strikes": strikes,
+        "error": "",
+    })
+
+
+@app.route("/api/rolling-candles")
+def api_rolling_candles():
+    """Return 1m OHLCV candles for a NIFTY option strike via the rolling/expired options API."""
+    trade_date  = request.args.get("date")        or str(date.today())
+    offset      = request.args.get("offset")      or "ATM"
+    option_type = (request.args.get("option_type") or "CE").upper()
+    try:
+        interval = int(request.args.get("interval") or 1)
+    except ValueError:
+        interval = 1
+    candles, err = _fetch_rolling_candles_data(trade_date, offset, option_type, interval)
+    if err:
+        return jsonify({"candles": [], "error": f"Dhan error: {err}"})
+    if not candles:
+        return jsonify({"candles": [], "error": "No data — option may not have traded on this date, or date is outside Dhan rolling window"})
+    return jsonify({"candles": candles, "error": ""})
+
+
+@app.route("/option-ladder")
+def option_ladder_page():
+    return _option_ladder_page()
+
+
+def _option_ladder_page() -> str:
+    today = str(date.today())
+    ver   = APP_VERSION
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ATM Ladder — Trade Analyser {ver}</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
+#hdr{{display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;flex-wrap:wrap;}}
+#hdr a{{color:#555;text-decoration:none;font-size:11px;}}
+#hdr a:hover{{color:#aaa;}}
+.htitle{{font-weight:600;font-size:14px;color:#ccc;}}
+.badge{{font-size:10px;color:#555;}}
+.ibtn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
+.ibtn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
+#dateIn{{width:130px;background:#111;border:1px solid #2a2a2a;color:#ccc;padding:3px 6px;border-radius:3px;font-size:12px;}}
+.ldbtn{{background:#1a3a1a;border:1px solid #3a6a3a;color:#4fc3f7;padding:4px 14px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;}}
+.ldbtn:hover{{background:#224422;}}
+#spotInfo{{font-size:11px;color:#888;white-space:nowrap;}}
+#chartArea{{flex:1;min-height:0;position:relative;border-bottom:1px solid #1e1e1e;}}
+#chartEl{{width:100%;height:100%;}}
+#chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
+#msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
+#errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
+#ladderPane{{flex:0 0 252px;display:flex;flex-direction:column;min-height:0;overflow:hidden;}}
+#lp-hdr{{padding:5px 10px;border-bottom:1px solid #0f0f0f;display:flex;align-items:center;gap:6px;flex-shrink:0;}}
+#lp-body{{flex:1;overflow-y:auto;}}
+table{{width:100%;border-collapse:collapse;font-size:12px;}}
+thead th{{position:sticky;top:0;background:#0a0a0a;color:#555;font-weight:500;padding:4px 6px;text-align:center;border-bottom:1px solid #1e1e1e;font-size:11px;}}
+#ladderBody td{{padding:5px 6px;border-bottom:1px solid #0f0f0f;text-align:center;white-space:nowrap;}}
+.ce-td{{color:#4fc3f7;cursor:pointer;border-radius:3px;}}
+.ce-td:hover{{background:rgba(79,195,247,.12);}}
+.ce-td.sel{{background:rgba(79,195,247,.18);font-weight:700;}}
+.pe-td{{color:#ffb74d;cursor:pointer;border-radius:3px;}}
+.pe-td:hover{{background:rgba(255,183,77,.12);}}
+.pe-td.sel{{background:rgba(255,183,77,.18);font-weight:700;}}
+.atm-row td{{background:#111;}}
+.off-col{{color:#444;font-size:10px;text-align:right;}}
+.sk-col{{font-weight:600;}}
+</style>
+</head>
+<body>
+<div id="hdr">
+  <a href="/">&#8592; Main</a>
+  <a href="/option-chart">Option Chart</a>
+  <span class="htitle">ATM Ladder</span>
+  <span class="badge">{ver}</span>
+  <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+    <span id="spotInfo"></span>
+    <input type="date" id="dateIn" value="{today}">
+    <button class="ldbtn" onclick="loadLadder()">&#9654; Load ATM</button>
+    <span style="width:1px;background:#2a2a2a;margin:0 2px;align-self:stretch;"></span>
+    <button class="ibtn on" id="ivl1"  onclick="setIvl(1)">1m</button>
+    <button class="ibtn"    id="ivl5"  onclick="setIvl(5)">5m</button>
+    <button class="ibtn"    id="ivl15" onclick="setIvl(15)">15m</button>
+  </div>
+</div>
+<div id="chartArea">
+  <div id="chartTitle">Load a date below, then click a CE or PE strike to view its chart</div>
+  <div id="chartEl"></div>
+  <div id="msgEl"></div>
+  <div id="errBanner"></div>
+</div>
+<div id="ladderPane">
+  <div id="lp-hdr">
+    <button class="ibtn" style="padding:1px 7px;" onclick="shiftDay(-1)">&#9664;</button>
+    <button class="ibtn" style="padding:1px 7px;" onclick="shiftDay(1)">&#9654;</button>
+    <span style="font-size:11px;color:#555;">NIFTY weekly ATM &#177;5</span>
+  </div>
+  <div id="lp-body">
+    <table>
+      <thead><tr><th>Offset</th><th>Strike</th><th>CE</th><th>PE</th></tr></thead>
+      <tbody id="ladderBody">
+        <tr><td colspan="4" style="color:#444;padding:28px;text-align:center;">Pick a date and click &#9654; Load ATM</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<script>
+var _chart=null,_series=null,_markersPlugin=null,_curIvl=1;
+var _ema20s=null,_ema50s=null;
+var _tradeDates=[],_atmData=null,_selOffset=null,_selType=null;
+var TODAY='{today}';
+
+(function initChart(){{
+  try{{
+    var el=document.getElementById('chartEl');
+    _chart=LightweightCharts.createChart(el,{{
+      layout:{{background:{{color:'#0d0d0d'}},textColor:'#aaa'}},
+      grid:{{vertLines:{{color:'#1a1a1a'}},horzLines:{{color:'#1a1a1a'}}}},
+      crosshair:{{mode:0}},
+      rightPriceScale:{{borderColor:'#2a2a2a'}},
+      timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false}},
+    }});
+    _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
+      upColor:'#3fb950',downColor:'#f85149',
+      borderUpColor:'#3fb950',borderDownColor:'#f85149',
+      wickUpColor:'#3fb950',wickDownColor:'#f85149',
+    }});
+    _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
+    _ema20s=_chart.addSeries(LightweightCharts.LineSeries,{{
+      color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    }});
+    _ema50s=_chart.addSeries(LightweightCharts.LineSeries,{{
+      color:'#FF9800',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    }});
+    new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
+  }}catch(e){{console.error('Chart init:',e);}}
+}})();
+
+function _emaArr(closes,p){{
+  var out=new Array(closes.length).fill(null);
+  if(closes.length<p)return out;
+  var s=0;for(var j=0;j<p;j++)s+=closes[j];
+  out[p-1]=s/p;var k=2/(p+1);
+  for(var i=p;i<closes.length;i++)out[i]=closes[i]*k+out[i-1]*(1-k);
+  return out;
+}}
+function updateIndicators(data){{
+  if(!data.length||!_ema20s)return;
+  var closes=data.map(function(c){{return c.close;}}),times=data.map(function(c){{return c.time;}});
+  function toS(arr){{var o=[];for(var i=0;i<arr.length;i++)if(arr[i]!==null)o.push({{time:times[i],value:arr[i]}});return o;}}
+  _ema20s.setData(toS(_emaArr(closes,20)));
+  _ema50s.setData(toS(_emaArr(closes,50)));
+}}
+
+function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
+function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
+function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
+
+function setIvl(n){{
+  _curIvl=n;
+  [1,5,15].forEach(function(v){{
+    var b=document.getElementById('ivl'+v);if(b)b.className='ibtn'+(v===n?' on':'');
+  }});
+  if(_selOffset&&_selType)loadChart(_selOffset,_selType);
+}}
+
+async function loadDates(){{
+  try{{var r=await fetch('/api/dates');_tradeDates=await r.json();}}catch(e){{}}
+}}
+function shiftDay(dir){{
+  var cur=document.getElementById('dateIn').value;
+  if(_tradeDates.length){{
+    var idx=_tradeDates.indexOf(cur),next;
+    if(dir<0){{next=idx<0?_tradeDates[0]:_tradeDates[Math.min(idx+1,_tradeDates.length-1)];}}
+    else     {{next=idx<0?_tradeDates[_tradeDates.length-1]:_tradeDates[Math.max(idx-1,0)];}}
+    if(next){{document.getElementById('dateIn').value=next;loadLadder();return;}}
+  }}
+  if(!cur)return;
+  var p=cur.split('-');
+  var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
+  dt.setUTCDate(dt.getUTCDate()+dir);
+  document.getElementById('dateIn').value=dt.toISOString().slice(0,10);
+  loadLadder();
+}}
+
+async function loadLadder(){{
+  var d=document.getElementById('dateIn').value;
+  document.getElementById('spotInfo').textContent='Loading…';
+  var tbody=document.getElementById('ladderBody');
+  tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#555;padding:20px">Fetching NIFTY spot…</td></tr>';
+  _selOffset=null;_selType=null;
+  try{{
+    var r=await fetch('/api/atm-ladder?date='+d);
+    var data=await r.json();
+    if(data.error){{
+      document.getElementById('spotInfo').textContent='Error';
+      tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#f85149;padding:16px">'+data.error+'</td></tr>';
+      return;
+    }}
+    _atmData=data;
+    document.getElementById('spotInfo').textContent=
+      'NIFTY ≈'+Math.round(data.spot)+' → ATM '+data.atm;
+    renderLadder(data.strikes);
+  }}catch(e){{
+    document.getElementById('spotInfo').textContent='';
+    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#f85149;padding:16px">Error: '+e.message+'</td></tr>';
+  }}
+}}
+
+function renderLadder(strikes){{
+  var tbody=document.getElementById('ladderBody');
+  tbody.innerHTML='';
+  strikes.forEach(function(s){{
+    var tr=document.createElement('tr');
+    var isAtm=s.offset==='ATM';
+    if(isAtm)tr.className='atm-row';
+    var ceId='ce-'+s.offset.replace(/[+]/g,'p').replace(/-/g,'m');
+    var peId='pe-'+s.offset.replace(/[+]/g,'p').replace(/-/g,'m');
+    tr.innerHTML=
+      '<td class="off-col">'+s.offset+'</td>'+
+      '<td class="sk-col"'+(isAtm?' style="color:#eee;"':'')+'>'+s.strike+'</td>'+
+      '<td class="ce-td" id="'+ceId+'" onclick="loadChart(\''+s.offset+'\',\'CE\')">CE</td>'+
+      '<td class="pe-td" id="'+peId+'" onclick="loadChart(\''+s.offset+'\',\'PE\')">PE</td>';
+    tbody.appendChild(tr);
+  }});
+}}
+
+async function loadChart(offset,optType){{
+  _selOffset=offset;_selType=optType;
+  document.querySelectorAll('.ce-td').forEach(function(td){{td.classList.remove('sel');}});
+  document.querySelectorAll('.pe-td').forEach(function(td){{td.classList.remove('sel');}});
+  var pfx=optType==='CE'?'ce-':'pe-';
+  var tid=pfx+offset.replace(/[+]/g,'p').replace(/-/g,'m');
+  var selTd=document.getElementById(tid);
+  if(selTd)selTd.classList.add('sel');
+  var date=document.getElementById('dateIn').value;
+  showMsg('Loading '+offset+' '+optType+'…');showErr('');
+  try{{
+    var r=await fetch('/api/rolling-candles?date='+date
+      +'&offset='+encodeURIComponent(offset)
+      +'&option_type='+optType
+      +'&interval='+_curIvl);
+    var d=await r.json();
+    if(d.error){{showMsg('');showErr(d.error);return;}}
+    var c=d.candles||[];
+    if(!c.length){{showMsg('No data — option may not have traded on this date');return;}}
+    _series.setData(c);
+    updateIndicators(c);
+    _markersPlugin.setMarkers([]);
+    var dp=date.split('-');
+    var dayStart=Date.UTC(+dp[0],+dp[1]-1,+dp[2],9,15,0)/1000;
+    var dayEnd=Date.UTC(+dp[0],+dp[1]-1,+dp[2],15,30,0)/1000;
+    _chart.timeScale().setVisibleRange({{from:dayStart,to:dayEnd}});
+    hideMsg();
+    var atmNum=_atmData?_atmData.atm:0;
+    var strikeDisp=atmNum+(offset!=='ATM'?' ('+offset+')':'');
+    document.getElementById('chartTitle').textContent=
+      'NIFTY '+strikeDisp+' '+optType+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
+  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
+}}
+
+loadDates().then(function(){{
+  var d=_tradeDates.length?_tradeDates[0]:TODAY;
+  document.getElementById('dateIn').value=d;
+  loadLadder();
+}});
+</script>
+</body>
+</html>"""
+
+
 # ── HTML page ─────────────────────────────────────────────────────────────────────────────────
 
 
@@ -2607,6 +2985,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <a href="/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
   <a href="/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
+  <a href="/option-ladder" class="hbtn" style="text-decoration:none">&#128693; ATM Ladder</a>
 </div>
 <div id="main">
   <div id="chartsArea">
