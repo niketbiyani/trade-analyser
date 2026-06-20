@@ -1293,7 +1293,7 @@ def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, str]:
             exchange_segment="NSE_FNO",
             instrument_type="OPTIDX",
             expiry_flag="WEEK",
-            expiry_code=0,
+            expiry_code=1,   # Dhan treats 0 as "not provided"; 1 = nearest weekly expiry
             strike="ATM",
             drv_option_type="CALL",
             required_data=["spot"],
@@ -1341,7 +1341,8 @@ def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
         exchange_segment="NSE_FNO",
         instrument_type="OPTIDX",
         expiry_flag="WEEK",
-        expiry_code=0,
+        expiry_code=1,   # Dhan treats 0 as "not provided"; 1 = nearest weekly expiry
+
         strike=strike_offset,
         drv_option_type=drv_type,
         required_data=["open", "high", "low", "close", "volume"],
@@ -2614,7 +2615,7 @@ def api_debug_rolling():
             exchange_segment="NSE_FNO",
             instrument_type="OPTIDX",
             expiry_flag="WEEK",
-            expiry_code=0,
+            expiry_code=1,   # 0 is treated as "not provided" by Dhan; 1 = nearest expiry
             strike=strike,
             drv_option_type=option_type,
             required_data=req_data.split(","),
