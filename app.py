@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v106"
+APP_VERSION = "v107"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -2569,7 +2569,17 @@ def api_nifty_expiry():
         dhan = _dhan_client()
         resp = dhan.expiry_list(13, "IDX_I")
         expiries = sorted((resp.get("data") or {}).get("data") or [])
-        nearest = next((e for e in expiries if e >= req_date), expiries[-1] if expiries else None)
+        nearest = None
+        if expiries:
+            if req_date < expiries[0]:
+                from datetime import datetime as _dt, timedelta as _td
+                first_exp = _dt.strptime(expiries[0], "%Y-%m-%d").date()
+                exp_weekday = first_exp.weekday()
+                req_obj = _dt.strptime(req_date, "%Y-%m-%d").date()
+                days_ahead = (exp_weekday - req_obj.weekday()) % 7
+                nearest = str(req_obj + _td(days=days_ahead))
+            else:
+                nearest = next((e for e in expiries if e >= req_date), expiries[-1])
         return jsonify({"expiry": nearest, "all": expiries[:12]})
     except Exception as e:
         return jsonify({"expiry": None, "error": str(e)}), 500
@@ -2835,7 +2845,18 @@ def api_atm_ladder():
         dhan_exp = _dhan_client()
         exp_resp = dhan_exp.expiry_list(13, "IDX_I")
         expiries = sorted((exp_resp.get("data") or {}).get("data") or [])
-        nearest_expiry = next((e for e in expiries if e >= trade_date), expiries[-1] if expiries else "")
+        if expiries:
+            if trade_date < expiries[0]:
+                # Past date: expiry_list only returns future dates, so derive the correct
+                # past expiry from the weekday pattern of the nearest future expiry
+                from datetime import datetime as _dt, timedelta as _td
+                first_exp = _dt.strptime(expiries[0], "%Y-%m-%d").date()
+                exp_weekday = first_exp.weekday()
+                td_obj = _dt.strptime(trade_date, "%Y-%m-%d").date()
+                days_ahead = (exp_weekday - td_obj.weekday()) % 7
+                nearest_expiry = str(td_obj + _td(days=days_ahead))
+            else:
+                nearest_expiry = next((e for e in expiries if e >= trade_date), expiries[-1])
     except Exception:
         pass
 
@@ -3211,11 +3232,16 @@ async function loadChart(offset,optType,strike){{
       }}catch(ef){{}}
     }}
     if(!expiry){{hideMsg();showErr('Could not determine expiry — click Load ATM first');return;}}
+    // Fetch the full expiry week (7 calendar days back covers 5 trading days for weekly options)
+    var dp0=date.split('-');
+    var fromDt=new Date(Date.UTC(+dp0[0],+dp0[1]-1,+dp0[2]));
+    fromDt.setUTCDate(fromDt.getUTCDate()-7);
+    var fromDate=fromDt.toISOString().slice(0,10);
     var url='/api/option-candles?underlying=NIFTY'
       +'&option_type='+optType
       +'&strike='+strike
       +'&expiry='+expiry
-      +'&from_date='+date
+      +'&from_date='+fromDate
       +'&to_date='+date
       +'&interval='+_curIvl;
     var d=await(await fetch(url+'&t='+Date.now())).json();
@@ -3249,17 +3275,14 @@ async function loadChart(offset,optType,strike){{
       return;
     }}
     var c=d.candles||[];
-    if(!c.length){{hideMsg();showErr('No candle data for this option on '+date+' — intraday API covers ~5 trading days');return;}}
+    if(!c.length){{hideMsg();showErr('No candle data for this option ('+fromDate+' → '+date+') — intraday API covers ~5 trading days');return;}}
     _series.setData(c);
     updateIndicators(c);
     _markersPlugin.setMarkers([]);
-    var dp=date.split('-');
-    var dayStart=Date.UTC(+dp[0],+dp[1]-1,+dp[2],9,15,0)/1000;
-    var dayEnd=Date.UTC(+dp[0],+dp[1]-1,+dp[2],15,30,0)/1000;
-    _chart.timeScale().setVisibleRange({{from:dayStart,to:dayEnd}});
+    _chart.timeScale().fitContent();
     hideMsg();
     document.getElementById('chartTitle').textContent=
-      'NIFTY '+strike+' '+optType+' exp '+expiry.slice(5).replace('-','/')+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
+      'NIFTY '+strike+' '+optType+' \xb7 exp '+expiry+' \xb7 '+fromDate+' → '+date+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
   }}catch(e){{hideMsg();showErr('Error: '+e.message);}}
 }}
 
