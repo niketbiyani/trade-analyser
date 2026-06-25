@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v112"
+APP_VERSION = "v113"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3374,6 +3374,7 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #impBtn {{ margin-left: auto; background: var(--acc); border: none; color: #fff;
           padding: 5px 14px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 12px }}
 #impBtn:hover {{ opacity: .85 }}
+#autoImpStatus {{ font-size: 10px; color: #555; margin-left: 4px; white-space: nowrap }}
 .hbtn {{ background: var(--s2); border: 1px solid var(--border); color: var(--dim);
         padding: 5px 10px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 11px }}
 .hbtn:hover {{ border-color: var(--acc); color: var(--text) }}
@@ -3470,6 +3471,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <span id="ivl">&#8212;</span>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
+  <span id="autoImpStatus"></span>
   <a href="/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
   <a href="/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
   <a href="/option-ladder" class="hbtn" style="text-decoration:none">&#128693; ATM Ladder</a>
@@ -3758,6 +3760,29 @@ function _updatePaneBtns(){{
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
+async function autoImport(){{
+  var st=document.getElementById('autoImpStatus');
+  if(st) st.textContent='⟳';
+  try{{
+    var now=new Date(Date.now()+19800000);
+    var today=now.toISOString().slice(0,10);
+    var r=await fetch('/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{from_date:today,to_date:today}})}});
+    var d=await r.json();
+    var ts=now.toISOString().slice(11,16)+' IST';
+    if(d.imported>0){{
+      if(st) st.textContent='✓ +'+d.imported+' @ '+ts;
+      // reload trades if viewing today
+      if(curDate===today) loadTrades();
+    }} else {{
+      if(st) st.textContent='✓ '+ts;
+    }}
+    if(st) setTimeout(function(){{if(st.textContent.indexOf('⟳')<0)st.textContent=st.textContent;}},0);
+  }}catch(e){{
+    if(st) st.textContent='✗ err';
+  }}
+}}
+
 window.addEventListener('DOMContentLoaded', function() {{
   initChart();
   _updatePaneBtns();
@@ -3766,6 +3791,8 @@ window.addEventListener('DOMContentLoaded', function() {{
   document.getElementById('dp').value=today;
   curDate=today;
   loadAll();
+  setTimeout(autoImport, 5000);
+  setInterval(autoImport, 120000);
 }});
 
 function shiftDay(d) {{
