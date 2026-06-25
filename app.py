@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v113"
+APP_VERSION = "v114"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3760,27 +3760,19 @@ function _updatePaneBtns(){{
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function autoImport(){{
+function autoImport(){{
   var st=document.getElementById('autoImpStatus');
-  if(st) st.textContent='⟳';
-  try{{
-    var now=new Date(Date.now()+19800000);
-    var today=now.toISOString().slice(0,10);
-    var r=await fetch('/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{from_date:today,to_date:today}})}});
-    var d=await r.json();
-    var ts=now.toISOString().slice(11,16)+' IST';
-    if(d.imported>0){{
-      if(st) st.textContent='✓ +'+d.imported+' @ '+ts;
-      // reload trades if viewing today
-      if(curDate===today) loadTrades();
-    }} else {{
-      if(st) st.textContent='✓ '+ts;
-    }}
-    if(st) setTimeout(function(){{if(st.textContent.indexOf('⟳')<0)st.textContent=st.textContent;}},0);
-  }}catch(e){{
-    if(st) st.textContent='✗ err';
-  }}
+  if(st) st.textContent='[..]';
+  var now=new Date(Date.now()+19800000);
+  var today=now.toISOString().slice(0,10);
+  fetch('/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{from_date:today,to_date:today}})}})
+    .then(function(r){{return r.json();}})
+    .then(function(d){{
+      var ts=new Date(Date.now()+19800000).toISOString().slice(11,16)+' IST';
+      if(st) st.textContent=(d.imported>0?'+'+d.imported+' ':'')+ts;
+    }})
+    .catch(function(){{if(st) st.textContent='err';}});
 }}
 
 window.addEventListener('DOMContentLoaded', function() {{
