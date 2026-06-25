@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v114"
+APP_VERSION = "v115"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3771,6 +3771,11 @@ function autoImport(){{
     .then(function(d){{
       var ts=new Date(Date.now()+19800000).toISOString().slice(11,16)+' IST';
       if(st) st.textContent=(d.imported>0?'+'+d.imported+' ':'')+ts;
+      if(d.imported>0){{
+        var now2=new Date(Date.now()+19800000);
+        var today2=now2.toISOString().slice(0,10);
+        if(curDate===today2) loadTrades();
+      }}
     }})
     .catch(function(){{if(st) st.textContent='err';}});
 }}
