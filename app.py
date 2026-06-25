@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v109"
+APP_VERSION = "v110"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -1401,10 +1401,15 @@ def _get_nifty_spot_for_ladder(trade_date: str) -> tuple[float, list[dict], str]
 
 
 def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
-                                 option_type: str, interval: int = 1) -> tuple[list[dict], str]:
-    """Fetch OHLCV candles for a NIFTY option via the expired rolling options API."""
+                                 option_type: str, interval: int = 1,
+                                 from_date: str = None) -> tuple[list[dict], str]:
+    """Fetch OHLCV candles for a NIFTY option via the expired rolling options API.
+
+    from_date: start of date range (defaults to trade_date for single-day fetch).
+    """
     drv_type = "CALL" if option_type.upper() in ("CE", "CALL") else "PUT"
     side     = "ce"   if drv_type == "CALL"                     else "pe"
+    fd = from_date or trade_date
     try:
         dhan = _dhan_client()
         resp = _call_rolling_api(
@@ -1417,7 +1422,7 @@ def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
             strike=strike_offset,
             drv_option_type=drv_type,
             required_data=["open", "high", "low", "close", "volume"],
-            from_date=trade_date,
+            from_date=fd,
             to_date=trade_date,
             interval=interval,
         )
@@ -1426,8 +1431,8 @@ def _fetch_rolling_candles_data(trade_date: str, strike_offset: str,
             remarks = str(resp.get("remarks") or resp.get("message") or "")
             return [], f"API error: {remarks[:200]}"
         candles, _, _ = _parse_rolling_response(resp, side)
-        logger.info("Rolling candles: %s %s %s ivl=%dm → %d candles",
-                    trade_date, strike_offset, option_type, interval, len(candles))
+        logger.info("Rolling candles: %s→%s %s %s ivl=%dm → %d candles",
+                    fd, trade_date, strike_offset, option_type, interval, len(candles))
         return candles, ""
     except Exception as e:
         return [], str(e)
@@ -2873,19 +2878,23 @@ def api_atm_ladder():
 
 @app.route("/api/rolling-candles")
 def api_rolling_candles():
-    """Return 1m OHLCV candles for a NIFTY option strike via the rolling/expired options API."""
+    """Return OHLCV candles for a NIFTY ATM-relative strike via the rolling/expired options API.
+
+    Params: date (to_date), from_date (optional, defaults to date), offset, option_type, interval.
+    """
     trade_date  = request.args.get("date")        or str(date.today())
+    from_date_p = request.args.get("from_date")   or trade_date
     offset      = request.args.get("offset")      or "ATM"
     option_type = (request.args.get("option_type") or "CE").upper()
     try:
         interval = int(request.args.get("interval") or 1)
     except ValueError:
         interval = 1
-    candles, err = _fetch_rolling_candles_data(trade_date, offset, option_type, interval)
+    candles, err = _fetch_rolling_candles_data(trade_date, offset, option_type, interval, from_date=from_date_p)
     if err:
         return jsonify({"candles": [], "error": f"Dhan error: {err}"})
     if not candles:
-        return jsonify({"candles": [], "error": "No data — option may not have traded on this date, or date is outside Dhan rolling window"})
+        return jsonify({"candles": [], "error": "No data — date may be outside Dhan's rolling window (~30 days)"})
     return jsonify({"candles": candles, "error": ""})
 
 
@@ -3272,10 +3281,25 @@ async function loadChart(offset,optType,strike){{
           return;
         }}
         if(rr.count===0){{
-          // Past expiry: option_chain returns nothing for expired options.
-          // Only options in your trade history can be charted.
+          // Past expiry: option_chain returns nothing. Fall back to rolling (ATM-relative) API.
+          showMsg('Using rolling option data for past expiry…');
+          try{{
+            var rollResp=await fetch('/api/rolling-candles?offset='+encodeURIComponent(offset)
+              +'&option_type='+optType+'&from_date='+fromDate+'&date='+date+'&interval='+_curIvl);
+            var roll=await rollResp.json();
+            if(roll.candles&&roll.candles.length>0){{
+              _series.setData(roll.candles);
+              updateIndicators(roll.candles);
+              _markersPlugin.setMarkers([]);
+              _chart.timeScale().fitContent();
+              hideMsg();
+              document.getElementById('chartTitle').textContent=
+                'NIFTY '+offset+' '+optType+' (rolling ATM) \xb7 '+expiry+' \xb7 '+fromDate+' → '+date+' \xb7 '+_curIvl+'m \xb7 '+roll.candles.length+' bars';
+              return;
+            }}
+          }}catch(rollErr){{}}
           hideMsg();
-          showErr('NIFTY '+strike+' '+optType+' exp '+expiry+' was not found. Past expiry options can only be charted if you imported trades for that strike. Import your '+expiry+' trades first.');
+          showErr('No data for NIFTY '+offset+' '+optType+' on '+expiry+' — date may be outside Dhan\'s ~30 day rolling window.');
           return;
         }}
         if(btn){{
