@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v107"
+APP_VERSION = "v108"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3039,6 +3039,7 @@ var _ema20s=null,_ema50s=null;
 var _tradeDates=[],_atmData=null,_selOffset=null,_selType=null,_selStrike=null;
 var _spotSeries=[];
 var _niftyExpiry='';
+var _niftyExpiryForDate='';  // date for which _niftyExpiry was last computed
 var TODAY='{today}';
 
 (function initChart(){{
@@ -3166,6 +3167,7 @@ async function loadLadder(){{
     _atmData=data;
     _spotSeries=data.spot_series||[];
     _niftyExpiry=data.expiry||'';
+    _niftyExpiryForDate=d;
     if(_spotSeries.length){{
       updateAtmForTime();
     }}else{{
@@ -3222,8 +3224,8 @@ async function loadChart(offset,optType,strike){{
   showMsg('Loading '+offset+' '+optType+'…');showErr('');
   try{{
     if(!strike){{hideMsg();showErr('ATM not loaded — click Load ATM first');return;}}
-    // Use expiry from ATM load; fallback to Dhan API if not yet loaded
-    var expiry=_niftyExpiry;
+    // Use expiry from ATM load only if it was loaded for this exact date
+    var expiry=(_niftyExpiryForDate===date)?_niftyExpiry:'';
     if(!expiry){{
       try{{
         var er=await(await fetch('/api/nifty-expiry?date='+date)).json();
