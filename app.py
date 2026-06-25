@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v108"
+APP_VERSION = "v109"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3168,6 +3168,17 @@ async function loadLadder(){{
     _spotSeries=data.spot_series||[];
     _niftyExpiry=data.expiry||'';
     _niftyExpiryForDate=d;
+    // Proactively warm instrument cache for this expiry (background, non-blocking)
+    if(_niftyExpiry){{
+      fetch('/api/refresh-instruments?expiry='+encodeURIComponent(_niftyExpiry),{{method:'POST'}})
+        .then(function(r){{return r.json();}})
+        .then(function(rr){{
+          if(rr.ok&&rr.count>0){{
+            var rb=document.getElementById('refBtn');
+            if(rb){{rb.textContent='✓ '+rr.count+' cached';setTimeout(function(){{rb.textContent='↻ Refresh Instruments';}},3000);}}
+          }}
+        }}).catch(function(){{}});
+    }}
     if(_spotSeries.length){{
       updateAtmForTime();
     }}else{{
@@ -3258,6 +3269,13 @@ async function loadChart(offset,optType,strike){{
         if(!rr.ok){{
           hideMsg();
           showErr('Instrument refresh failed: '+(rr.error||'unknown error'));
+          return;
+        }}
+        if(rr.count===0){{
+          // Past expiry: option_chain returns nothing for expired options.
+          // Only options in your trade history can be charted.
+          hideMsg();
+          showErr('NIFTY '+strike+' '+optType+' exp '+expiry+' was not found. Past expiry options can only be charted if you imported trades for that strike. Import your '+expiry+' trades first.');
           return;
         }}
         if(btn){{
