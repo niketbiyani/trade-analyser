@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v115"
+APP_VERSION = "v116"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -59,8 +59,34 @@ CHART_TIMEOUT = 10
 
 # ── Database ────────────────────────────────────────────────────────
 
-_db_lock = threading.Lock()
+_db_lock    = threading.Lock()
 _conn: sqlite3.Connection | None = None
+
+# ── In-memory trade cache ────────────────────────────────────────────
+# Rebuilt after every write; GET /api/trades and /api/dates serve from here.
+_cache_lock:   threading.Lock = threading.Lock()
+_trades_cache: dict           = {}  # date -> list[dict]  (all fields, notes resolved)
+_dates_cache:  list           = []  # sorted desc, max 90 entries
+
+
+def _rebuild_cache(conn: sqlite3.Connection | None = None) -> None:
+    """Reload all trades from DB into the in-memory cache."""
+    global _trades_cache, _dates_cache
+    db   = conn or get_db()
+    rows = db.execute(
+        "SELECT t.*, COALESCE(n.notes, t.notes, '') AS notes"
+        " FROM trades t"
+        " LEFT JOIN trade_notes n"
+        "   ON n.date=t.date AND n.underlying=t.underlying"
+        "   AND n.option_type=t.option_type AND n.strike=t.strike AND n.entry_time=t.entry_time"
+        " ORDER BY t.date DESC, t.entry_time"
+    ).fetchall()
+    cache: dict = {}
+    for r in rows:
+        cache.setdefault(r["date"], []).append(dict(r))
+    with _cache_lock:
+        _trades_cache = cache
+        _dates_cache  = sorted(cache.keys(), reverse=True)[:90]
 
 
 def get_db() -> sqlite3.Connection:
@@ -69,6 +95,7 @@ def get_db() -> sqlite3.Connection:
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _init_db(_conn)
+        _rebuild_cache(_conn)
     return _conn
 
 
@@ -2259,6 +2286,7 @@ def api_import():
     to_date   = data.get("to_date")   or str(date.today())
     try:
         result = import_from_dhan(from_date, to_date)
+        _rebuild_cache()
         # Auto-subscribe tick feed for today's freshly imported options
         today = str(date.today())
         if from_date <= today <= to_date:
@@ -2294,6 +2322,7 @@ def api_import_csv():
         return jsonify({"ok": False, "error": parse_err}), 400
     try:
         result = _process_raw_trades(raw)
+        _rebuild_cache()
         return jsonify({"ok": True, **result})
     except Exception as e:
         logger.error("import-csv: %s", e)
@@ -2313,21 +2342,13 @@ def api_trades():
     d  = request.args.get("date") or str(date.today())
     u  = (request.args.get("underlying") or "").upper()
     ot = (request.args.get("option_type") or "").upper()
-    db = get_db()
-    q = (
-        "SELECT t.*, COALESCE(n.notes, t.notes, '') AS notes"
-        " FROM trades t"
-        " LEFT JOIN trade_notes n"
-        "   ON n.date=t.date AND n.underlying=t.underlying"
-        "   AND n.option_type=t.option_type AND n.strike=t.strike AND n.entry_time=t.entry_time"
-        " WHERE t.date=?"
-    )
-    p = [d]
+    with _cache_lock:
+        rows = list(_trades_cache.get(d, []))
     if u and u != "ALL":
-        q += " AND t.underlying=?"; p.append(u)
+        rows = [r for r in rows if r.get("underlying") == u]
     if ot and ot not in ("ALL", "BOTH", ""):
-        q += " AND t.option_type=?"; p.append(ot)
-    return jsonify([dict(r) for r in db.execute(q + " ORDER BY t.entry_time", p).fetchall()])
+        rows = [r for r in rows if r.get("option_type") == ot]
+    return jsonify(rows)
 
 
 @app.route("/api/trade/<int:tid>", methods=["DELETE"])
@@ -2336,6 +2357,7 @@ def api_delete_trade(tid: int):
         db = get_db()
         db.execute("DELETE FROM trades WHERE id=?", (tid,))
         db.commit()
+    _rebuild_cache()
     return jsonify({"ok": True})
 
 
@@ -2356,6 +2378,7 @@ def api_delete_date(trade_date: str):
         )
         db.execute("DELETE FROM trades WHERE date=?", (trade_date,))
         db.commit()
+    _rebuild_cache()
     return jsonify({"ok": True})
 
 
@@ -2375,6 +2398,7 @@ def api_close_trade(tid: int):
             (exit_price, exit_time, pnl, tid),
         )
         db.commit()
+    _rebuild_cache()
     return jsonify({"ok": True, "pnl": pnl})
 
 
@@ -2397,6 +2421,7 @@ def api_notes(tid: int):
                  row["strike"], row["entry_time"], notes, datetime.now().timestamp()),
             )
         db.commit()
+    _rebuild_cache()
     return jsonify({"ok": True})
 
 
@@ -2410,10 +2435,8 @@ def api_chart():
 
 @app.route("/api/dates")
 def api_dates():
-    rows = get_db().execute(
-        "SELECT DISTINCT date FROM trades ORDER BY date DESC LIMIT 90"
-    ).fetchall()
-    return jsonify([r["date"] for r in rows])
+    with _cache_lock:
+        return jsonify(list(_dates_cache))
 
 
 @app.route("/option-chart")
