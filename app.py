@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v111"
+APP_VERSION = "v112"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -4007,7 +4007,7 @@ function openImp(){{
   var now=new Date(Date.now()+19800000); // IST
   var today=now.toISOString().slice(0,10);
   var ago30=new Date(Date.now()+19800000-30*86400000).toISOString().slice(0,10);
-  document.getElementById('mFrom').value=ago30;
+  document.getElementById('mFrom').value=today;
   document.getElementById('mTo').value=today;
   document.getElementById('mres').textContent='';
   document.getElementById('mdiag').style.display='none';
