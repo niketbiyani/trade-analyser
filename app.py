@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v110"
+APP_VERSION = "v111"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3244,89 +3244,60 @@ async function loadChart(offset,optType,strike){{
   showMsg('Loading '+offset+' '+optType+'…');showErr('');
   try{{
     if(!strike){{hideMsg();showErr('ATM not loaded — click Load ATM first');return;}}
-    // Use expiry from ATM load only if it was loaded for this exact date
+    // 7 calendar days back covers the full expiry week (~5 trading days)
+    var dp0=date.split('-');
+    var fromDt=new Date(Date.UTC(+dp0[0],+dp0[1]-1,+dp0[2]));
+    fromDt.setUTCDate(fromDt.getUTCDate()-7);
+    var fromDate=fromDt.toISOString().slice(0,10);
+
+    // PRIMARY: rolling expired_options_data — works for any past option, no security_id needed
+    showMsg('Loading '+offset+' '+optType+' chart…');
+    var rollResp=await fetch('/api/rolling-candles?offset='+encodeURIComponent(offset)
+      +'&option_type='+optType+'&from_date='+fromDate+'&date='+date+'&interval='+_curIvl);
+    var roll=await rollResp.json();
+    if(roll.candles&&roll.candles.length>0){{
+      _series.setData(roll.candles);
+      updateIndicators(roll.candles);
+      _markersPlugin.setMarkers([]);
+      _chart.timeScale().fitContent();
+      hideMsg();
+      // Get expiry for display (from cache or skip)
+      var expDisp=(_niftyExpiryForDate===date&&_niftyExpiry)?_niftyExpiry:'';
+      document.getElementById('chartTitle').textContent=
+        'NIFTY '+offset+' (≈'+strike+') '+optType
+        +(expDisp?' \xb7 exp '+expDisp:'')
+        +' \xb7 '+fromDate+' → '+date+' \xb7 '+_curIvl+'m \xb7 '+roll.candles.length+' bars';
+      return;
+    }}
+
+    // FALLBACK: specific security_id path (for options with known ID from trades/cache)
     var expiry=(_niftyExpiryForDate===date)?_niftyExpiry:'';
     if(!expiry){{
       try{{
         var er=await(await fetch('/api/nifty-expiry?date='+date)).json();
         expiry=er.expiry||'';
-        if(expiry)_niftyExpiry=expiry;
+        if(expiry){{_niftyExpiry=expiry;_niftyExpiryForDate=date;}}
       }}catch(ef){{}}
     }}
-    if(!expiry){{hideMsg();showErr('Could not determine expiry — click Load ATM first');return;}}
-    // Fetch the full expiry week (7 calendar days back covers 5 trading days for weekly options)
-    var dp0=date.split('-');
-    var fromDt=new Date(Date.UTC(+dp0[0],+dp0[1]-1,+dp0[2]));
-    fromDt.setUTCDate(fromDt.getUTCDate()-7);
-    var fromDate=fromDt.toISOString().slice(0,10);
-    var url='/api/option-candles?underlying=NIFTY'
-      +'&option_type='+optType
-      +'&strike='+strike
-      +'&expiry='+expiry
-      +'&from_date='+fromDate
-      +'&to_date='+date
-      +'&interval='+_curIvl;
-    var d=await(await fetch(url+'&t='+Date.now())).json();
-
-    // If security_id not found: refresh instruments and retry once
-    if(d.error&&d.error.indexOf('No security_id')>=0){{
-      showMsg('Fetching instrument list from Dhan…');
-      try{{
-        var rfResp=await fetch('/api/refresh-instruments?expiry='+encodeURIComponent(expiry),{{method:'POST'}});
-        var rr=await rfResp.json();
-        var btn=document.getElementById('refBtn');
-        if(!rr.ok){{
-          hideMsg();
-          showErr('Instrument refresh failed: '+(rr.error||'unknown error'));
-          return;
-        }}
-        if(rr.count===0){{
-          // Past expiry: option_chain returns nothing. Fall back to rolling (ATM-relative) API.
-          showMsg('Using rolling option data for past expiry…');
-          try{{
-            var rollResp=await fetch('/api/rolling-candles?offset='+encodeURIComponent(offset)
-              +'&option_type='+optType+'&from_date='+fromDate+'&date='+date+'&interval='+_curIvl);
-            var roll=await rollResp.json();
-            if(roll.candles&&roll.candles.length>0){{
-              _series.setData(roll.candles);
-              updateIndicators(roll.candles);
-              _markersPlugin.setMarkers([]);
-              _chart.timeScale().fitContent();
-              hideMsg();
-              document.getElementById('chartTitle').textContent=
-                'NIFTY '+offset+' '+optType+' (rolling ATM) \xb7 '+expiry+' \xb7 '+fromDate+' → '+date+' \xb7 '+_curIvl+'m \xb7 '+roll.candles.length+' bars';
-              return;
-            }}
-          }}catch(rollErr){{}}
-          hideMsg();
-          showErr('No data for NIFTY '+offset+' '+optType+' on '+expiry+' — date may be outside Dhan\'s ~30 day rolling window.');
-          return;
-        }}
-        if(btn){{
-          btn.textContent='✓ '+rr.count+' instruments';
-          setTimeout(function(){{if(btn)btn.textContent='↻ Refresh Instruments';}},3000);
-        }}
-        showMsg('Retrying with '+rr.count+' instruments…');
-        d=await(await fetch(url+'&t2='+Date.now())).json();
-      }}catch(e2){{hideMsg();showErr('Instrument refresh error: '+e2.message);return;}}
+    if(expiry){{
+      var url='/api/option-candles?underlying=NIFTY'
+        +'&option_type='+optType+'&strike='+strike+'&expiry='+expiry
+        +'&from_date='+fromDate+'&to_date='+date+'&interval='+_curIvl;
+      var d=await(await fetch(url+'&t='+Date.now())).json();
+      if(!d.error&&d.candles&&d.candles.length>0){{
+        _series.setData(d.candles);
+        updateIndicators(d.candles);
+        _markersPlugin.setMarkers([]);
+        _chart.timeScale().fitContent();
+        hideMsg();
+        document.getElementById('chartTitle').textContent=
+          'NIFTY '+strike+' '+optType+' \xb7 exp '+expiry+' \xb7 '+fromDate+' → '+date+' \xb7 '+_curIvl+'m \xb7 '+d.candles.length+' bars';
+        return;
+      }}
     }}
 
-    if(d.error){{
-      hideMsg();
-      showErr(d.error.indexOf('No security_id')>=0
-        ?'Strike '+strike+' '+optType+' not found for expiry '+expiry+'. Try Load ATM again or check the date.'
-        :d.error);
-      return;
-    }}
-    var c=d.candles||[];
-    if(!c.length){{hideMsg();showErr('No candle data for this option ('+fromDate+' → '+date+') — intraday API covers ~5 trading days');return;}}
-    _series.setData(c);
-    updateIndicators(c);
-    _markersPlugin.setMarkers([]);
-    _chart.timeScale().fitContent();
     hideMsg();
-    document.getElementById('chartTitle').textContent=
-      'NIFTY '+strike+' '+optType+' \xb7 exp '+expiry+' \xb7 '+fromDate+' → '+date+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
+    showErr('No chart data for '+offset+' '+optType+' on '+date+' — date may be outside Dhan\'s ~30 day window');
   }}catch(e){{hideMsg();showErr('Error: '+e.message);}}
 }}
 
