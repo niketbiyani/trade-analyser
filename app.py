@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v116"
+APP_VERSION = "v117"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -366,6 +366,150 @@ def _is_no_records_error(resp) -> bool:
     if not isinstance(remarks, dict):
         return False
     return "RESOURCE_ERROR" in (remarks.get("error_type") or "")
+
+
+def _parse_fyers_symbol(name: str) -> dict | None:
+    """Parse a Fyers symbol like 'BSE:SENSEX2581981600PE' into trade metadata.
+
+    Returns a dict with keys: tradingSymbol, exchangeSegment, drvOptionType,
+    drvStrikePrice, drvExpiryDate — or None if unrecognised/non-index.
+    """
+    import re as _re
+    name = name.strip()
+    if ":" not in name:
+        return None
+    exchange_prefix, body = name.split(":", 1)
+
+    if body.endswith("CE"):
+        opt_type, body = "CE", body[:-2]
+    elif body.endswith("PE"):
+        opt_type, body = "PE", body[:-2]
+    else:
+        return None  # not an option
+
+    # Identify known index underlyings (longest-match first)
+    underlying = None
+    for u in ("BANKNIFTY", "MIDCPNIFTY", "FINNIFTY", "SENSEX", "NIFTY"):
+        if body.startswith(u):
+            underlying = u
+            date_strike = body[len(u):]
+            break
+    if underlying is None:
+        return None  # stock option — skip
+
+    # Fyers compact date format: YY + M[M] + DD + STRIKE
+    # Single-digit months 1-9 use 1 char; Oct/Nov/Dec use 2 chars ("10","11","12")
+    # Some older symbols use 3-letter month abbreviation (e.g. BANKNIFTY25AUG...) — skip those
+    if not _re.match(r'^\d', date_strike):
+        return None  # month abbreviation format — not supported
+
+    year   = 2000 + int(date_strike[:2])
+    rest   = date_strike[2:]
+    if not rest or not rest[0].isdigit():
+        return None  # month-abbreviation format (e.g. "25AUG...") — not supported
+    if rest[:2] in ("10", "11", "12"):
+        month = int(rest[:2]); rest = rest[2:]
+    else:
+        month = int(rest[0]);  rest = rest[1:]
+    day    = int(rest[:2])
+    strike = float(rest[2:])
+
+    expiry    = f"{year:04d}-{month:02d}-{day:02d}"
+    exseg     = "BSE_FNO" if exchange_prefix == "BSE" else "NSE_FNO"
+    sym_clean = f"{underlying}{date_strike[:]}{opt_type}"
+
+    return {
+        "tradingSymbol":   sym_clean,
+        "exchangeSegment": exseg,
+        "drvOptionType":   opt_type,
+        "drvStrikePrice":  strike,
+        "drvExpiryDate":   expiry,
+    }
+
+
+def _parse_fyers_csv(content: str) -> tuple[list[dict], str]:
+    """Parse a Fyers orderbook CSV export into raw trade dicts for _process_raw_trades."""
+    import csv
+    import io
+    import re as _re
+    from datetime import datetime as _dt
+
+    lines = content.splitlines()
+
+    # Find the data header row (starts with "Name,")
+    header_idx = None
+    for i, line in enumerate(lines):
+        if line.startswith("Name,"):
+            header_idx = i
+            break
+    if header_idx is None:
+        return [], "Could not find 'Name' header row in Fyers CSV"
+
+    try:
+        reader = list(csv.DictReader(io.StringIO("\n".join(lines[header_idx:]))))
+    except Exception as e:
+        return [], f"CSV parse error: {e}"
+
+    raw: list[dict] = []
+    skipped_reasons: dict = {}
+
+    for row in reader:
+        status = (row.get("Status") or "").strip()
+        if status not in ("Executed",):
+            skipped_reasons[status] = skipped_reasons.get(status, 0) + 1
+            continue
+
+        qty_raw = (row.get("Qty") or "0").replace(",", "").strip()
+        try:
+            qty = int(qty_raw)
+        except ValueError:
+            continue
+        if qty <= 0:
+            continue
+
+        name = (row.get("Name") or "").strip()
+        parsed = _parse_fyers_symbol(name)
+        if parsed is None:
+            skipped_reasons["non-index"] = skipped_reasons.get("non-index", 0) + 1
+            continue
+
+        try:
+            price = float((row.get("Traded price") or "0").replace(",", ""))
+        except ValueError:
+            continue
+
+        # Datetime: "19-08-2025 15:04:03"
+        dt_raw = (row.get("Date & Time") or "").strip()
+        try:
+            create_time = _dt.strptime(dt_raw, "%d-%m-%Y %H:%M:%S").strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            create_time = dt_raw
+
+        # OMS order ID: =""25081900419396"" → strip ="""" wrapper
+        oid_raw = (row.get("OMS order ID") or "").strip()
+        oid = _re.sub(r'^=""', "", oid_raw).rstrip('"')
+
+        side = (row.get("Side") or "").strip().upper()
+        tx_type = "SELL" if side == "SELL" else "BUY"
+
+        raw.append({
+            "tradingSymbol":   parsed["tradingSymbol"],
+            "transactionType": tx_type,
+            "tradedQuantity":  qty,
+            "tradedPrice":     price,
+            "createTime":      create_time,
+            "orderId":         oid,
+            "exchangeSegment": parsed["exchangeSegment"],
+            "drvOptionType":   parsed["drvOptionType"],
+            "drvStrikePrice":  parsed["drvStrikePrice"],
+            "drvExpiryDate":   parsed["drvExpiryDate"],
+            "securityId":      "",
+        })
+
+    if skipped_reasons:
+        logger.info("Fyers CSV: skipped rows by reason: %s", skipped_reasons)
+
+    return raw, ""
 
 
 def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
@@ -2317,7 +2461,8 @@ def api_import_csv():
         content = f.read().decode("utf-8-sig")  # strip BOM if present
     except Exception as e:
         return jsonify({"ok": False, "error": f"Could not read file: {e}"}), 400
-    raw, parse_err = _parse_csv_trades(content)
+    is_fyers = content.lstrip().startswith("Report Title,Orderbook report")
+    raw, parse_err = (_parse_fyers_csv(content) if is_fyers else _parse_csv_trades(content))
     if parse_err:
         return jsonify({"ok": False, "error": parse_err}), 400
     try:
