@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v122"
+APP_VERSION = "v123"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -328,7 +328,7 @@ def _auto_import_scheduler():
                     today_str = str(now.date())
                     logger.info("Auto-import: scheduled tick refresh at %02d:00 IST", th)
                     try:
-                        subscribe_ticks([("13", "IDX_I"), ("51", "IDX_I")])
+                        subscribe_ticks([("13", "NSE_EQ"), ("51", "BSE_EQ")])
                         import_from_dhan(today_str, today_str)
                         rows = get_db().execute(
                             "SELECT DISTINCT security_id, exchange_segment FROM trades"
@@ -4333,9 +4333,10 @@ if __name__ == "__main__":
     threading.Thread(target=_auto_import_scheduler, daemon=True, name="auto-import").start()
     logger.info("Auto-import scheduler started (triggers at 10:00, 12:00, 14:00 IST)")
     # Always subscribe to NIFTY and SENSEX index ticks (for 15s/custom interval charts)
+    # IDX_I (segment 0) is rejected by MarketFeed; use NSE_EQ/BSE_EQ instead.
     try:
-        n = subscribe_ticks([("13", "IDX_I"), ("51", "IDX_I")])
-        logger.info("Startup: subscribed to NIFTY (13) + SENSEX (51) tick feed (%d new)", n)
+        n = subscribe_ticks([("13", "NSE_EQ"), ("51", "BSE_EQ")])
+        logger.info("Startup: subscribed to NIFTY (13/NSE_EQ) + SENSEX (51/BSE_EQ) tick feed (%d new)", n)
     except Exception as _e:
         logger.warning("Startup index tick subscribe failed: %s", _e)
     # Also resume tick feed for today's already-imported option trades (handles restarts)
