@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v125"
+APP_VERSION = "v126"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3586,7 +3586,7 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #ph b {{ color: var(--dim); font-size: 10px; letter-spacing: 1px }}
 #psummary {{ margin-left: auto; font-size: 11px; color: var(--dim) }}
 #pbody {{ flex: 1; overflow-y: auto }}
-table {{ width: 100%; border-collapse: collapse; font-size: 12px }}
+table {{ width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed }}
 th {{ position: sticky; top: 0; background: var(--s2); color: var(--dim); font-weight: 500;
      padding: 5px 12px; text-align: left; border-bottom: 1px solid var(--border) }}
 td {{ padding: 5px 12px; border-bottom: 1px solid rgba(255,255,255,.035) }}
@@ -3688,7 +3688,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <div id="empty">No trades for this date &#8212; import from Dhan or pick another day.</div>
       <table id="tbl" style="display:none">
         <thead><tr>
-          <th>Time</th><th>Dir</th><th>Type</th><th>Strike</th>
+          <th style="white-space:nowrap">Time</th><th>Dir</th><th>Type</th><th>Strike</th>
           <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Lots</th><th>P&amp;L</th><th style="width:100%">Notes</th><th></th>
         </tr></thead>
         <tbody id="tbody"></tbody>
@@ -4127,7 +4127,7 @@ function renderTrades(trades) {{
     var sel=selId===t.id?' sel':'';
     var nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
-      '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,5):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,5):'')+'</td>' +
+      '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,8):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,8):'')+'</td>' +
       '<td><span class="tag '+dc+'">'+dir+'</span></td>' +
       '<td><span class="tag '+tc+'">'+t.option_type+'</span></td>' +
       '<td>'+sk+'</td><td>'+t.entry_price.toFixed(2)+'</td><td>'+ep+'</td>' +
