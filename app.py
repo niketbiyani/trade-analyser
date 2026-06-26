@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v118"
+APP_VERSION = "v119"
 
 PORT    = int(os.getenv("PORT", "5556"))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
@@ -3942,7 +3942,7 @@ function autoImport(){{
       if(d.imported>0){{
         var now2=new Date(Date.now()+19800000);
         var today2=now2.toISOString().slice(0,10);
-        if(curDate===today2) loadTrades();
+        if(curDate===today2) refreshTradesTable();
       }}
     }})
     .catch(function(){{if(st) st.textContent='err';}});
@@ -4042,6 +4042,13 @@ async function loadTrades() {{
     allTrades=await r.json();
     if(_savedNotes.length) await _restoreNotes();
     var f=_filtered(); renderTrades(f); putMarkers(f);
+  }} catch(e) {{ console.error(e); }}
+}}
+async function refreshTradesTable() {{
+  try {{
+    var r=await fetch('/api/trades?date='+curDate+'&underlying='+curU);
+    allTrades=await r.json();
+    var f=_filtered(); renderTrades(f);
   }} catch(e) {{ console.error(e); }}
 }}
 async function _restoreNotes(){{
