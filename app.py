@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
 
@@ -23,10 +24,11 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v119"
+APP_VERSION = "v120"
 
-PORT    = int(os.getenv("PORT", "5556"))
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
+PORT     = int(os.getenv("PORT", "5556"))
+APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
+DB_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
 
 LOT_SIZES = {
     "NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20,
@@ -1644,6 +1646,7 @@ def _aggregate_candles(candles: list[dict], minutes: int) -> list[dict]:
 def _option_chart_page() -> str:
     today = str(date.today())
     ver   = APP_VERSION
+    root  = APP_ROOT
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1697,10 +1700,10 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
 </head>
 <body>
 <div id="hdr">
-  <a href="/">&#8592; Main</a>
+  <a href="{root}/">&#8592; Main</a>
   <span class="htitle">Option Chart</span>
-  <a href="/option-expiry" style="margin-left:6px;background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;font-size:11px;text-decoration:none;">By Expiry &#8599;</a>
-  <a href="/option-ladder" style="background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;font-size:11px;text-decoration:none;">ATM Ladder &#8599;</a>
+  <a href="{root}/option-expiry" style="margin-left:6px;background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;font-size:11px;text-decoration:none;">By Expiry &#8599;</a>
+  <a href="{root}/option-ladder" style="background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;font-size:11px;text-decoration:none;">ATM Ladder &#8599;</a>
   <span class="badge">{ver}</span>
   <div style="margin-left:auto;display:flex;gap:4px;">
     <button class="ivl-btn" id="tick15s" onclick="setTick(15)" title="15-second tick chart (today only)">15s</button>
@@ -1759,6 +1762,7 @@ tbody tr.sel{{background:#0d1a0d;outline:1px solid #3a6a3a;outline-offset:-1px;}
   </div>
 </div>
 <script>
+var _root='{root}';
 var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_curTick=0,_selRow=null;
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
@@ -2069,6 +2073,7 @@ loadDates().then(function(){{
 def _option_expiry_page() -> str:
     today = str(date.today())
     ver   = APP_VERSION
+    root  = APP_ROOT
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2106,9 +2111,9 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
 </head>
 <body>
 <div id="hdr">
-  <a href="/">&#8592; Main</a>
-  <a href="/option-chart">Option Chart</a>
-  <a href="/option-ladder">ATM Ladder</a>
+  <a href="{root}/">&#8592; Main</a>
+  <a href="{root}/option-chart">Option Chart</a>
+  <a href="{root}/option-ladder">ATM Ladder</a>
   <span class="htitle">Historical Options</span>
   <span class="badge">{ver}</span>
   <div style="margin-left:auto;display:flex;gap:4px;">
@@ -2152,6 +2157,7 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
   <div id="errBanner"></div>
 </div>
 <script>
+var _root='{root}';
 var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_optType='CE';
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
@@ -2270,7 +2276,7 @@ async function loadChart(){{
     +'&to_date='+encodeURIComponent(expiry)
     +'&interval='+_curIvl;
   try{{
-    var r=await fetch('/api/option-candles?'+qs);
+    var r=await fetch(_root+'/api/option-candles?'+qs);
     var d=await r.json();
     if(d.error){{showMsg('');showErr(d.error);return;}}
     var c=d.candles||[];
@@ -2290,7 +2296,7 @@ async function refreshInstruments(){{
   var st=document.getElementById('rfStatus');
   btn.disabled=true;btn.textContent='Downloading…';st.textContent='';
   try{{
-    var r=await fetch('/api/refresh-instruments',{{method:'POST'}});
+    var r=await fetch(_root+'/api/refresh-instruments',{{method:'POST'}});
     var d=await r.json();
     if(d.ok){{st.textContent='Cached '+d.count+' contracts';st.style.color='#3fb950';}}
     else{{st.textContent=d.error||'Failed';st.style.color='#f85149';}}
@@ -2306,6 +2312,8 @@ document.addEventListener('keydown',function(e){{if(e.key==='Enter')loadChart();
 
 
 app = Flask(__name__)
+app.config['APPLICATION_ROOT'] = APP_ROOT
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 
 @app.route("/")
@@ -3102,6 +3110,7 @@ def option_ladder_page():
 def _option_ladder_page() -> str:
     today = str(date.today())
     ver   = APP_VERSION
+    root  = APP_ROOT
     # Generate time select options 09:15 → 15:30 in 15-min steps
     h, m = 9, 15
     time_opts = ""
@@ -3167,8 +3176,8 @@ thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;pa
 <body>
 <div id="leftPanel">
   <div id="lp-nav">
-    <a href="/">&#8592; Main</a>
-    <a href="/option-chart">Option Chart</a>
+    <a href="{root}/">&#8592; Main</a>
+    <a href="{root}/option-chart">Option Chart</a>
     <span class="htitle">ATM Ladder</span>
     <span class="badge">{ver}</span>
   </div>
@@ -3211,6 +3220,7 @@ thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;pa
   <div id="errBanner"></div>
 </div>
 <script>
+var _root='{root}';
 var _chart=null,_series=null,_markersPlugin=null,_curIvl=1;
 var _ema20s=null,_ema50s=null;
 var _tradeDates=[],_atmData=null,_selOffset=null,_selType=null,_selStrike=null;
@@ -3274,7 +3284,7 @@ function setIvl(n){{
 }}
 
 async function loadDates(){{
-  try{{var r=await fetch('/api/dates');_tradeDates=await r.json();}}catch(e){{}}
+  try{{var r=await fetch(_root+'/api/dates');_tradeDates=await r.json();}}catch(e){{}}
 }}
 function shiftDay(dir){{
   var cur=document.getElementById('dateIn').value;
@@ -3334,7 +3344,7 @@ async function loadLadder(){{
   tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:#444;padding:20px;font-size:11px;">Fetching NIFTY spot…</td></tr>';
   _selOffset=null;_selType=null;
   try{{
-    var r=await fetch('/api/atm-ladder?date='+d);
+    var r=await fetch(_root+'/api/atm-ladder?date='+d);
     var data=await r.json();
     if(data.error){{
       document.getElementById('spotInfo').textContent='';
@@ -3347,7 +3357,7 @@ async function loadLadder(){{
     _niftyExpiryForDate=d;
     // Proactively warm instrument cache for this expiry (background, non-blocking)
     if(_niftyExpiry){{
-      fetch('/api/refresh-instruments?expiry='+encodeURIComponent(_niftyExpiry),{{method:'POST'}})
+      fetch(_root+'/api/refresh-instruments?expiry='+encodeURIComponent(_niftyExpiry),{{method:'POST'}})
         .then(function(r){{return r.json();}})
         .then(function(rr){{
           if(rr.ok&&rr.count>0){{
@@ -3420,7 +3430,7 @@ async function loadChart(offset,optType,strike){{
 
     // PRIMARY: rolling expired_options_data — works for any past option, no security_id needed
     showMsg('Loading '+offset+' '+optType+' chart…');
-    var rollResp=await fetch('/api/rolling-candles?offset='+encodeURIComponent(offset)
+    var rollResp=await fetch(_root+'/api/rolling-candles?offset='+encodeURIComponent(offset)
       +'&option_type='+optType+'&from_date='+fromDate+'&date='+date+'&interval='+_curIvl);
     var roll=await rollResp.json();
     if(roll.candles&&roll.candles.length>0){{
@@ -3442,13 +3452,13 @@ async function loadChart(offset,optType,strike){{
     var expiry=(_niftyExpiryForDate===date)?_niftyExpiry:'';
     if(!expiry){{
       try{{
-        var er=await(await fetch('/api/nifty-expiry?date='+date)).json();
+        var er=await(await fetch(_root+'/api/nifty-expiry?date='+date)).json();
         expiry=er.expiry||'';
         if(expiry){{_niftyExpiry=expiry;_niftyExpiryForDate=date;}}
       }}catch(ef){{}}
     }}
     if(expiry){{
-      var url='/api/option-candles?underlying=NIFTY'
+      var url=_root+'/api/option-candles?underlying=NIFTY'
         +'&option_type='+optType+'&strike='+strike+'&expiry='+expiry
         +'&from_date='+fromDate+'&to_date='+date+'&interval='+_curIvl;
       var d=await(await fetch(url+'&t='+Date.now())).json();
@@ -3474,7 +3484,7 @@ async function refreshInstruments(){{
   if(btn){{btn.textContent='Refreshing…';btn.disabled=true;}}
   showErr('');
   try{{
-    var r=await fetch('/api/refresh-instruments',{{method:'POST'}});
+    var r=await fetch(_root+'/api/refresh-instruments',{{method:'POST'}});
     var d=await r.json();
     if(btn){{btn.disabled=false;}}
     if(d.ok){{
@@ -3506,7 +3516,8 @@ loadDates().then(function(){{
 
 
 def _page() -> str:
-    ver = APP_VERSION
+    ver  = APP_VERSION
+    root = APP_ROOT
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3640,9 +3651,9 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <span id="autoImpStatus"></span>
-  <a href="/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
-  <a href="/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
-  <a href="/option-ladder" class="hbtn" style="text-decoration:none">&#128693; ATM Ladder</a>
+  <a href="{root}/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
+  <a href="{root}/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
+  <a href="{root}/option-ladder" class="hbtn" style="text-decoration:none">&#128693; ATM Ladder</a>
 </div>
 <div id="main">
   <div id="chartsArea">
@@ -3733,6 +3744,7 @@ window.addEventListener('unhandledrejection', function(e) {{
 
 <!-- Main app -->
 <script>
+var _root='{root}';
 (function(){{ var e=document.getElementById('jss'); if(e){{ e.textContent='JS OK'; e.style.color='#4caf50'; }} }})();
 
 var _chartInst=null;
@@ -3933,7 +3945,7 @@ function autoImport(){{
   if(st) st.textContent='[..]';
   var now=new Date(Date.now()+19800000);
   var today=now.toISOString().slice(0,10);
-  fetch('/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+  fetch(_root+'/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{from_date:today,to_date:today}})}})
     .then(function(r){{return r.json();}})
     .then(function(d){{
@@ -3997,7 +4009,7 @@ async function loadChart() {{
   setChartMsg('Loading chart...','');
   try {{
     var ctl=new AbortController(), tid=setTimeout(function(){{ctl.abort();}},20000);
-    var r=await fetch('/api/chart?underlying='+curU+'&date='+curDate,{{signal:ctl.signal}});
+    var r=await fetch(_root+'/api/chart?underlying='+curU+'&date='+curDate,{{signal:ctl.signal}});
     clearTimeout(tid);
     var d=await r.json();
     candles=d.candles||[]; curInterval=d.interval||'1m';
@@ -4027,7 +4039,7 @@ async function loadSample() {{
   if (!series) {{ setChartMsg('Chart not initialised',''); return; }}
   setChartMsg('Loading sample...','');
   try {{
-    var r=await fetch('/api/test-chart?date='+curDate);
+    var r=await fetch(_root+'/api/test-chart?date='+curDate);
     var d=await r.json();
     candles=d.candles||[];
     series.setData(candles);
@@ -4038,7 +4050,7 @@ async function loadSample() {{
 
 async function loadTrades() {{
   try {{
-    var r=await fetch('/api/trades?date='+curDate+'&underlying='+curU);
+    var r=await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
     allTrades=await r.json();
     if(_savedNotes.length) await _restoreNotes();
     var f=_filtered(); renderTrades(f); putMarkers(f);
@@ -4046,7 +4058,7 @@ async function loadTrades() {{
 }}
 async function refreshTradesTable() {{
   try {{
-    var r=await fetch('/api/trades?date='+curDate+'&underlying='+curU);
+    var r=await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
     allTrades=await r.json();
     var f=_filtered(); renderTrades(f);
   }} catch(e) {{ console.error(e); }}
@@ -4157,7 +4169,7 @@ async function closeTrade(id,e){{
   var price=parseFloat(px);
   if(isNaN(price)||price<0){{alert('Invalid price');return;}}
   try{{
-    var r=await fetch('/api/trade/'+id+'/close',{{method:'PUT',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{exit_price:price}})}});
+    var r=await fetch(_root+'/api/trade/'+id+'/close',{{method:'PUT',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{exit_price:price}})}});
     var d=await r.json();
     if(d.ok){{
       var t=allTrades.find(function(x){{return x.id===id;}});
@@ -4170,7 +4182,7 @@ async function delTrade(id,e){{
   e.stopPropagation();
   if(!confirm('Delete this trade?'))return;
   try{{
-    await fetch('/api/trade/'+id,{{method:'DELETE'}});
+    await fetch(_root+'/api/trade/'+id,{{method:'DELETE'}});
     allTrades=allTrades.filter(function(t){{return t.id!==id;}});
     if(selId===id){{selId=null;isolateId=null;}}
     var f=_filtered(); renderTrades(f); putMarkers(f);
@@ -4181,7 +4193,7 @@ async function wipeDate(){{
   try{{
     _savedNotes=allTrades.filter(function(t){{return t.notes&&t.notes.trim();}})
       .map(function(t){{return {{underlying:t.underlying,option_type:t.option_type,strike:t.strike,entry_time:t.entry_time,notes:t.notes}};}});
-    await fetch('/api/trades/date/'+curDate,{{method:'DELETE'}});
+    await fetch(_root+'/api/trades/date/'+curDate,{{method:'DELETE'}});
     allTrades=[]; renderTrades([]); putMarkers([]);
     var btn=document.getElementById('mBtn');
     document.getElementById('mFrom').value=curDate;
@@ -4191,7 +4203,7 @@ async function wipeDate(){{
 }}
 async function saveNote(id,notes){{
   try{{
-    await fetch('/api/trade/'+id+'/notes',{{method:'PUT',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{notes:notes}})}});
+    await fetch(_root+'/api/trade/'+id+'/notes',{{method:'PUT',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{notes:notes}})}});
     var t=allTrades.find(function(x){{return x.id===id;}});
     if(t)t.notes=notes;
   }}catch(e){{console.error(e);}}
@@ -4223,7 +4235,7 @@ async function doImport(){{
   btn.disabled=true; btn.textContent='Importing...'; res.style.color=''; res.textContent='Fetching...';
   diag.style.display='none'; diag.textContent='';
   try{{
-    var r=await fetch('/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    var r=await fetch(_root+'/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
       body:JSON.stringify({{from_date:document.getElementById('mFrom').value,to_date:document.getElementById('mTo').value}})}});
     var d=await r.json();
     if(d.ok){{
@@ -4248,7 +4260,7 @@ async function doImportCsv(){{
   diag.style.display='none'; diag.textContent='';
   var fd=new FormData(); fd.append('file',inp.files[0]);
   try{{
-    var r=await fetch('/api/import-csv',{{method:'POST',body:fd}});
+    var r=await fetch(_root+'/api/import-csv',{{method:'POST',body:fd}});
     var d=await r.json();
     if(d.ok){{
       res.style.color='#4caf50';
@@ -4267,7 +4279,7 @@ async function doRefreshToken(){{
   btns.forEach(function(b){{if(b.textContent.indexOf('Token')>=0)btn=b;}});
   if(btn){{btn.textContent='Refreshing...';btn.disabled=true;}}
   try{{
-    var r=await fetch('/api/refresh-token',{{method:'POST'}});
+    var r=await fetch(_root+'/api/refresh-token',{{method:'POST'}});
     var d=await r.json();
     if(btn){{btn.textContent=d.ok?'OK Token':'Fail Token';btn.style.color=d.ok?'#4caf50':'#ef5350';}}
     setTimeout(function(){{
