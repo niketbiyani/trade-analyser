@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v124"
+APP_VERSION = "v125"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3689,7 +3689,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <table id="tbl" style="display:none">
         <thead><tr>
           <th>Time</th><th>Dir</th><th>Type</th><th>Strike</th>
-          <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Lots</th><th>P&amp;L</th><th>Notes</th><th></th>
+          <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Lots</th><th>P&amp;L</th><th style="width:100%">Notes</th><th></th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -4127,7 +4127,7 @@ function renderTrades(trades) {{
     var sel=selId===t.id?' sel':'';
     var nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
-      '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,8):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,8):'')+'</td>' +
+      '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,5):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,5):'')+'</td>' +
       '<td><span class="tag '+dc+'">'+dir+'</span></td>' +
       '<td><span class="tag '+tc+'">'+t.option_type+'</span></td>' +
       '<td>'+sk+'</td><td>'+t.entry_price.toFixed(2)+'</td><td>'+ep+'</td>' +
