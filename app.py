@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v121"
+APP_VERSION = "v122"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -328,6 +328,7 @@ def _auto_import_scheduler():
                     today_str = str(now.date())
                     logger.info("Auto-import: scheduled tick refresh at %02d:00 IST", th)
                     try:
+                        subscribe_ticks([("13", "IDX_I"), ("51", "IDX_I")])
                         import_from_dhan(today_str, today_str)
                         rows = get_db().execute(
                             "SELECT DISTINCT security_id, exchange_segment FROM trades"
@@ -4331,7 +4332,13 @@ if __name__ == "__main__":
     # Start background scheduler for mid-session auto-imports (enables 15s tick data)
     threading.Thread(target=_auto_import_scheduler, daemon=True, name="auto-import").start()
     logger.info("Auto-import scheduler started (triggers at 10:00, 12:00, 14:00 IST)")
-    # Resume tick feed for today's already-imported trades (handles app restarts)
+    # Always subscribe to NIFTY and SENSEX index ticks (for 15s/custom interval charts)
+    try:
+        n = subscribe_ticks([("13", "IDX_I"), ("51", "IDX_I")])
+        logger.info("Startup: subscribed to NIFTY (13) + SENSEX (51) tick feed (%d new)", n)
+    except Exception as _e:
+        logger.warning("Startup index tick subscribe failed: %s", _e)
+    # Also resume tick feed for today's already-imported option trades (handles restarts)
     try:
         today_str = str(date.today())
         _startup_rows = get_db().execute(
@@ -4342,7 +4349,7 @@ if __name__ == "__main__":
         if _startup_rows:
             n = subscribe_ticks([(r["security_id"], r["exchange_segment"]) for r in _startup_rows])
             if n:
-                logger.info("Startup: resumed tick feed for %d instruments (today's trades)", n)
+                logger.info("Startup: resumed tick feed for %d option instruments", n)
     except Exception as _e:
         logger.warning("Startup tick resume failed: %s", _e)
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
