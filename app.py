@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v120"
+APP_VERSION = "v121"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3575,7 +3575,10 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 .pane-btn:hover {{ color:#ccc; border-color:#555; }}
 .ind-label {{ position: absolute; top: 5px; left: 10px; font-size: 10px; color: #484f58;
               pointer-events: none; z-index: 1; letter-spacing: 0.3px; font-weight: 500 }}
-#panel {{ height: 185px; border-top: 1px solid var(--border);
+#resizeHandle {{ height: 5px; background: var(--border); cursor: ns-resize;
+                flex-shrink: 0; transition: background 0.15s }}
+#resizeHandle:hover, #resizeHandle.dragging {{ background: #444 }}
+#panel {{ height: 185px; border-top: none;
          display: flex; flex-direction: column; background: var(--surface) }}
 #ph {{ display: flex; align-items: center; gap: 12px; padding: 6px 14px;
       border-bottom: 1px solid var(--border); flex-shrink: 0 }}
@@ -3670,6 +3673,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <div id="paneBtn2" class="pane-btn" style="top:83.7%"  onclick="togglePaneExpand(2)">&#x26F6;</div>
     </div>
   </div>
+  <div id="resizeHandle" title="Drag to resize trades panel"></div>
   <div id="panel">
     <div id="ph">
       <b>TRADES</b>
@@ -3959,6 +3963,29 @@ function autoImport(){{
     }})
     .catch(function(){{if(st) st.textContent='err';}});
 }}
+
+// ── Trades panel resize handle ────────────────────────────────────────────────
+(function(){{
+  var handle=document.getElementById('resizeHandle');
+  var panel=document.getElementById('panel');
+  var startY, startH;
+  handle.addEventListener('mousedown', function(e){{
+    startY=e.clientY; startH=panel.offsetHeight;
+    handle.classList.add('dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  }});
+  function onMove(e){{
+    var dy=startY-e.clientY;
+    panel.style.height=Math.max(80, Math.min(startH+dy, window.innerHeight-180))+'px';
+  }}
+  function onUp(){{
+    handle.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }}
+}})();
 
 window.addEventListener('DOMContentLoaded', function() {{
   initChart();
