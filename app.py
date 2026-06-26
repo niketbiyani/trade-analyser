@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v123"
+APP_VERSION = "v124"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3595,6 +3595,8 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
 .tag {{ display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 700 }}
 .tag.ce {{ background: rgba(79,195,247,.12); color: var(--ce) }}
 .tag.pe {{ background: rgba(255,183,77,.12); color: var(--pe) }}
+.tag.short {{ background: rgba(239,83,80,.10); color: #ef9a9a }}
+.tag.long  {{ background: rgba(129,199,132,.10); color: #81c784 }}
 .pos {{ color: var(--green) }} .neg {{ color: var(--red) }}
 .ni {{ background: none; border: none; color: var(--text); font: inherit; width: 100%; outline: none }}
 .ni:focus {{ border-bottom: 1px solid var(--acc) }}
@@ -3686,7 +3688,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <div id="empty">No trades for this date &#8212; import from Dhan or pick another day.</div>
       <table id="tbl" style="display:none">
         <thead><tr>
-          <th>Time</th><th>Type</th><th>Strike</th>
+          <th>Time</th><th>Dir</th><th>Type</th><th>Strike</th>
           <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Lots</th><th>P&amp;L</th><th>Notes</th><th></th>
         </tr></thead>
         <tbody id="tbody"></tbody>
@@ -4116,6 +4118,8 @@ function renderTrades(trades) {{
   sum.innerHTML='<span class="'+(tot>=0?'pos':'neg')+'">'+(tot>=0?'+':'')+tot.toFixed(0)+'</span>&nbsp;'+wins+'W/'+loss+'L';
   var rows=trades.map(function(t) {{
     var tc=t.option_type.toLowerCase();
+    var dir=(t.direction||'SHORT');
+    var dc=dir==='LONG'?'long':'short';
     var sk=t.strike?t.strike.toLocaleString('en-IN'):'--';
     var ep=t.exit_price!=null?t.exit_price.toFixed(2):'--';
     var pl=t.pnl!=null?'<span class="'+(t.pnl>=0?'pos':'neg')+'">'+(t.pnl>=0?'+':'')+t.pnl.toFixed(0)+'</span>':'--';
@@ -4124,6 +4128,7 @@ function renderTrades(trades) {{
     var nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
       '<td style="white-space:nowrap">'+(t.entry_time?t.entry_time.slice(0,8):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,8):'')+'</td>' +
+      '<td><span class="tag '+dc+'">'+dir+'</span></td>' +
       '<td><span class="tag '+tc+'">'+t.option_type+'</span></td>' +
       '<td>'+sk+'</td><td>'+t.entry_price.toFixed(2)+'</td><td>'+ep+'</td>' +
       '<td>'+lts+'</td><td>'+pl+'</td>' +
