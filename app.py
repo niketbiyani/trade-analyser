@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v130"
+APP_VERSION = "v131"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -4001,7 +4001,6 @@ function autoImport(){{
 
 window.addEventListener('DOMContentLoaded', function() {{
   initChart();
-  _updatePaneBtns();
   var now=new Date(Date.now()+19800000); // UTC+5:30 IST offset
   var today=now.toISOString().slice(0,10);
   document.getElementById('dp').value=today;
@@ -4012,8 +4011,10 @@ window.addEventListener('DOMContentLoaded', function() {{
 }});
 
 function shiftDay(d) {{
+  if(!curDate) return;
   var p=curDate.split('-');
   var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
+  if(isNaN(dt.getTime())) return;
   dt.setUTCDate(dt.getUTCDate()+d);
   curDate=dt.toISOString().slice(0,10);
   document.getElementById('dp').value=curDate;
