@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v132"
+APP_VERSION = "v133"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3564,8 +3564,8 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
 #chartBox {{ flex: 1; min-height: 220px; position: relative; overflow: hidden }}
 #chartEl {{ position: absolute; inset: 0 }}
-#rsiBox  {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
-#macdBox {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
+#rsiBox  {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
+#macdBox {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
 #rsiEl, #macdEl {{ position: absolute; inset: 0 }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
@@ -3934,26 +3934,27 @@ function updateIndicators(){{
 }}
 // ── Indicator show / hide ─────────────────────────────────────────────────────
 function toggleIndicator(which){{
-  if(which==='rsi'){{
-    _rsiVisible=!_rsiVisible;
-    var box=document.getElementById('rsiBox');
-    if(box)box.style.display=_rsiVisible?'':'none';
-    var b=document.getElementById('rsiToggle');
-    if(b)b.classList.toggle('on',_rsiVisible);
-    if(_rsiVisible&&_rsiChart){{
-      var el=document.getElementById('rsiEl');
-      if(el){{var sz=el.getBoundingClientRect();if(sz.width>0&&sz.height>0)_rsiChart.resize(sz.width,sz.height);}}
-    }}
-  }}else{{
-    _macdVisible=!_macdVisible;
-    var box=document.getElementById('macdBox');
-    if(box)box.style.display=_macdVisible?'':'none';
-    var b=document.getElementById('macdToggle');
-    if(b)b.classList.toggle('on',_macdVisible);
-    if(_macdVisible&&_macdChart){{
-      var el=document.getElementById('macdEl');
-      if(el){{var sz=el.getBoundingClientRect();if(sz.width>0&&sz.height>0)_macdChart.resize(sz.width,sz.height);}}
-    }}
+  var isRsi=(which==='rsi');
+  var visible=isRsi?_rsiVisible:_macdVisible;
+  visible=!visible;
+  if(isRsi)_rsiVisible=visible; else _macdVisible=visible;
+  var boxId=isRsi?'rsiBox':'macdBox';
+  var elId=isRsi?'rsiEl':'macdEl';
+  var chipId=isRsi?'rsiToggle':'macdToggle';
+  var inst=isRsi?_rsiChart:_macdChart;
+  var box=document.getElementById(boxId);
+  var el=document.getElementById(elId);
+  var btn=box?box.querySelector('.pane-btn'):null;
+  var chip=document.getElementById(chipId);
+  if(box) box.style.height=visible?'90px':'22px';
+  if(el)  el.style.display=visible?'':'none';
+  if(btn) btn.innerHTML=visible?'&#x25B2;':'&#x25BC;';
+  if(chip)chip.classList.toggle('on',visible);
+  if(visible&&inst){{
+    setTimeout(function(){{
+      var e=document.getElementById(elId);
+      if(e){{var sz=e.getBoundingClientRect();if(sz.width>0&&sz.height>0)inst.resize(sz.width,sz.height);}}
+    }},160);
   }}
 }}
 // ─────────────────────────────────────────────────────────────────────────────
