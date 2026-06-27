@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v129"
+APP_VERSION = "v130"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3564,6 +3564,9 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
 #chartBox {{ flex: 1; min-height: 220px; position: relative; overflow: hidden }}
 #chartEl {{ position: absolute; inset: 0 }}
+#rsiBox  {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
+#macdBox {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border) }}
+#rsiEl, #macdEl {{ position: absolute; inset: 0 }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
             background: var(--bg); pointer-events: none; flex-direction: column; gap: 8px }}
@@ -3676,9 +3679,14 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
         <span id="chartMsgSub"></span>
       </div>
       <div class="ind-label">EMA&thinsp;<span style="color:#2196F3">20</span>&ensp;<span style="color:#FF9800">50</span></div>
-      <div id="paneBtn0" class="pane-btn" style="top:4px"    onclick="togglePaneExpand(0)">&#x26F6;</div>
-      <div id="paneBtn1" class="pane-btn" style="top:67.5%"  onclick="togglePaneExpand(1)">&#x26F6;</div>
-      <div id="paneBtn2" class="pane-btn" style="top:83.7%"  onclick="togglePaneExpand(2)">&#x26F6;</div>
+    </div>
+    <div id="rsiBox">
+      <div id="rsiEl"></div>
+      <div class="ind-label">RSI&thinsp;<span style="color:#58a6ff">14</span></div>
+    </div>
+    <div id="macdBox">
+      <div id="macdEl"></div>
+      <div class="ind-label">MACD&thinsp;<span style="color:#2196F3">12</span>,<span style="color:#FF5722">26</span>,9</div>
     </div>
   </div>
   <div id="resizeHandle" title="Drag to resize trades panel"></div>
@@ -3759,12 +3767,12 @@ window.addEventListener('unhandledrejection', function(e) {{
 var _root='{root}';
 (function(){{ var e=document.getElementById('jss'); if(e){{ e.textContent='JS OK'; e.style.color='#4caf50'; }} }})();
 
-var _chartInst=null;
+var _chartInst=null, _rsiChart=null, _macdChart=null;
 var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
-var _PANE_FACTORS=[5,1.2,1.2], _expandedPane=-1;
+var _syncingRange=false;
 var _rsiVisible=true, _macdVisible=true;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
@@ -3781,7 +3789,7 @@ function setChartMsg(main,sub) {{
 }}
 function hideChartMsg() {{ document.getElementById('chartMsg').classList.add('hide'); }}
 
-function _chartOpts(el) {{
+function _chartOpts(el, noTimeAxis) {{
   return {{
     width:  el.clientWidth  || 800,
     height: el.clientHeight || 400,
@@ -3789,7 +3797,7 @@ function _chartOpts(el) {{
     grid:   {{ vertLines: {{ color: '#21262d' }}, horzLines: {{ color: '#21262d' }} }},
     crosshair: {{ mode: 0 }},
     rightPriceScale: {{ borderColor: '#30363d' }},
-    timeScale: {{ borderColor: '#30363d', timeVisible: true, secondsVisible: false }},
+    timeScale: {{ borderColor: '#30363d', timeVisible: !noTimeAxis, secondsVisible: false, visible: !noTimeAxis }},
   }};
 }}
 function _watchResize(inst, el) {{
@@ -3801,16 +3809,14 @@ function _watchResize(inst, el) {{
 
 function initChart() {{
   try {{
+    // ── Main chart: candlesticks + EMA ─────────────────────────────────────
     var el = document.getElementById('chartEl');
     _chartInst = LightweightCharts.createChart(el, _chartOpts(el));
-
-    // ── Pane 0: candlestick + EMA ──────────────────────────────────────────
-    series  = _chartInst.addSeries(LightweightCharts.CandlestickSeries, {{
+    series = _chartInst.addSeries(LightweightCharts.CandlestickSeries, {{
       upColor:'#3fb950', downColor:'#f85149',
       borderUpColor:'#3fb950', borderDownColor:'#f85149',
       wickUpColor:'#3fb950', wickDownColor:'#f85149'
     }});
-    // v5: setMarkers() removed from series — use the createSeriesMarkers plugin instead
     _markersPlugin = LightweightCharts.createSeriesMarkers(series, []);
     _ema20s = _chartInst.addSeries(LightweightCharts.LineSeries, {{
       color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
@@ -3818,37 +3824,37 @@ function initChart() {{
     _ema50s = _chartInst.addSeries(LightweightCharts.LineSeries, {{
       color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
     }});
-
-    // ── Pane 1: RSI ────────────────────────────────────────────────────────
-    _rsiSeries = _chartInst.addSeries(LightweightCharts.LineSeries, {{
-      color:'#58a6ff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
-    }}, 1);
-    _rsiSeries.createPriceLine({{ price:70, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
-    _rsiSeries.createPriceLine({{ price:30, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
-
-    // ── Pane 2: MACD ───────────────────────────────────────────────────────
-    _macdHist   = _chartInst.addSeries(LightweightCharts.HistogramSeries, {{
-      color:'#555', lastValueVisible:false, priceLineVisible:false
-    }}, 2);
-    _macdLine   = _chartInst.addSeries(LightweightCharts.LineSeries, {{
-      color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false
-    }}, 2);
-    _macdSignal = _chartInst.addSeries(LightweightCharts.LineSeries, {{
-      color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false
-    }}, 2);
-
-    // Pane proportions: main=5, RSI=1.2, MACD=1.2  (setStretchFactor available in v5.2+)
-    var _initPanes = _chartInst.panes();
-    if (_initPanes[0]) _initPanes[0].setStretchFactor(_PANE_FACTORS[0]);
-    if (_initPanes[1]) _initPanes[1].setStretchFactor(_PANE_FACTORS[1]);
-    if (_initPanes[2]) _initPanes[2].setStretchFactor(_PANE_FACTORS[2]);
-
-    // Pane buttons (HTML overlays) call togglePaneExpand(n) directly — no canvas event needed.
-
     chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
 
-    // OHLC legend
+    // ── RSI chart ──────────────────────────────────────────────────────────
+    var rsiEl = document.getElementById('rsiEl');
+    _rsiChart = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, true));
+    _rsiSeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
+      color:'#58a6ff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
+    }});
+    _rsiSeries.createPriceLine({{ price:70, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:30, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _watchResize(_rsiChart, rsiEl);
+
+    // ── MACD chart ─────────────────────────────────────────────────────────
+    var macdEl = document.getElementById('macdEl');
+    _macdChart = LightweightCharts.createChart(macdEl, _chartOpts(macdEl, true));
+    _macdHist   = _macdChart.addSeries(LightweightCharts.HistogramSeries, {{
+      color:'#555', lastValueVisible:false, priceLineVisible:false
+    }});
+    _macdLine   = _macdChart.addSeries(LightweightCharts.LineSeries, {{
+      color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+    }});
+    _macdSignal = _macdChart.addSeries(LightweightCharts.LineSeries, {{
+      color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+    }});
+    _watchResize(_macdChart, macdEl);
+
+    // ── Sync time scales across all three charts ────────────────────────────
+    _syncTimeScales();
+
+    // ── OHLC legend ────────────────────────────────────────────────────────
     var _leg = document.getElementById('chartLegend');
     _chartInst.subscribeCrosshairMove(function(param) {{
       if (!param.time || !param.seriesData || !param.seriesData.get(series)) {{
@@ -3868,6 +3874,21 @@ function initChart() {{
   }} catch(e) {{
     setChartMsg('Chart init error: ' + e.message, e.stack || '');
   }}
+}}
+function _syncTimeScales() {{
+  var charts = [_chartInst, _rsiChart, _macdChart];
+  charts.forEach(function(src, si) {{
+    if (!src) return;
+    src.timeScale().subscribeVisibleLogicalRangeChange(function(range) {{
+      if (_syncingRange || !range) return;
+      _syncingRange = true;
+      charts.forEach(function(tgt, ti) {{
+        if (!tgt || ti === si) return;
+        try {{ tgt.timeScale().setVisibleLogicalRange(range); }} catch(e) {{}}
+      }});
+      _syncingRange = false;
+    }});
+  }});
 }}
 
 // ─── Indicator math ───────────────────────────────────────────────────────────
@@ -3909,60 +3930,29 @@ function updateIndicators(){{
   _rsiMap={{}};ind.rsi.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_rsiMap[d.time]=d.value;}});
   _macdMap={{}};ind.sigLine.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_macdMap[d.time]=d.value;}});
 }}
-// ── Pane expand / collapse ────────────────────────────────────────────────────
-function togglePaneExpand(n){{
-  if(!_chartInst)return;
-  if(n===1&&!_rsiVisible)return;
-  if(n===2&&!_macdVisible)return;
-  var panes=_chartInst.panes();
-  if(!panes.length)return;
-  try{{
-    if(_expandedPane===n){{
-      _expandedPane=-1;
-      _applyPaneFactors();
-    }}else{{
-      _expandedPane=n;
-      panes.forEach(function(p,i){{p.setStretchFactor(i===n?100:0.01);}});
-      _updatePaneBtns();
-    }}
-  }}catch(e){{ console.error('[pane]',e.message); }}
-}}
-function _updatePaneBtns(){{
-  var factors=_expandedPane>=0
-    ? _PANE_FACTORS.map(function(f,i){{return i===_expandedPane?7.4:0.1;}})
-    : _PANE_FACTORS.slice();
-  var total=factors.reduce(function(a,b){{return a+b;}},0),cum=0;
-  factors.forEach(function(f,i){{
-    var btn=document.getElementById('paneBtn'+i);
-    if(btn){{
-      var hidden=(i===1&&!_rsiVisible)||(i===2&&!_macdVisible);
-      btn.style.display=hidden?'none':'';
-      btn.style.top='calc('+((cum/total)*100).toFixed(1)+'% + 4px)';
-      btn.textContent=(_expandedPane===i)?'&#x21A9;':'&#x26F6;';
-      btn.style.color=(_expandedPane===i)?'#4fc3f7':'#666';
-    }}
-    cum+=f;
-  }});
-}}
+// ── Indicator show / hide ─────────────────────────────────────────────────────
 function toggleIndicator(which){{
   if(which==='rsi'){{
     _rsiVisible=!_rsiVisible;
+    var box=document.getElementById('rsiBox');
+    if(box)box.style.display=_rsiVisible?'':'none';
     var b=document.getElementById('rsiToggle');
     if(b)b.classList.toggle('on',_rsiVisible);
+    if(_rsiVisible&&_rsiChart){{
+      var el=document.getElementById('rsiEl');
+      if(el){{var sz=el.getBoundingClientRect();if(sz.width>0&&sz.height>0)_rsiChart.resize(sz.width,sz.height);}}
+    }}
   }}else{{
     _macdVisible=!_macdVisible;
+    var box=document.getElementById('macdBox');
+    if(box)box.style.display=_macdVisible?'':'none';
     var b=document.getElementById('macdToggle');
     if(b)b.classList.toggle('on',_macdVisible);
+    if(_macdVisible&&_macdChart){{
+      var el=document.getElementById('macdEl');
+      if(el){{var sz=el.getBoundingClientRect();if(sz.width>0&&sz.height>0)_macdChart.resize(sz.width,sz.height);}}
+    }}
   }}
-  _applyPaneFactors();
-}}
-function _applyPaneFactors(){{
-  if(!_chartInst)return;
-  _expandedPane=-1;
-  var panes=_chartInst.panes();
-  var f=[_PANE_FACTORS[0], _rsiVisible?_PANE_FACTORS[1]:0.001, _macdVisible?_PANE_FACTORS[2]:0.001];
-  f.forEach(function(v,i){{if(panes[i])panes[i].setStretchFactor(v);}});
-  _updatePaneBtns();
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
