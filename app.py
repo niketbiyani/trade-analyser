@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v128"
+APP_VERSION = "v129"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3654,6 +3654,10 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip on" data-v="SHORT" onclick="togD(this)">Short</div>
     <div class="chip on" data-v="LONG"  onclick="togD(this)">Long</div>
   </div>
+  <div class="chips" id="indChips">
+    <div class="chip on" id="rsiToggle" onclick="toggleIndicator('rsi')">RSI</div>
+    <div class="chip on" id="macdToggle" onclick="toggleIndicator('macd')">MACD</div>
+  </div>
   <span id="ivl">&#8212;</span>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -3761,6 +3765,7 @@ var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
 var _PANE_FACTORS=[5,1.2,1.2], _expandedPane=-1;
+var _rsiVisible=true, _macdVisible=true;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -3906,30 +3911,21 @@ function updateIndicators(){{
 }}
 // ── Pane expand / collapse ────────────────────────────────────────────────────
 function togglePaneExpand(n){{
-  console.log('[pane] click n='+n+' chartInst='+!!_chartInst+' expandedPane='+_expandedPane);
-  if(!_chartInst){{ console.warn('[pane] no chart'); return; }}
-  var hasPanes=typeof _chartInst.panes==='function';
-  console.log('[pane] hasPanes='+hasPanes);
-  if(!hasPanes){{ console.warn('[pane] panes() not a function'); return; }}
+  if(!_chartInst)return;
+  if(n===1&&!_rsiVisible)return;
+  if(n===2&&!_macdVisible)return;
   var panes=_chartInst.panes();
-  console.log('[pane] panes.length='+panes.length);
   if(!panes.length)return;
-  var hasSF=panes[0]&&typeof panes[0].setStretchFactor==='function';
-  console.log('[pane] hasSetStretchFactor='+hasSF);
   try{{
     if(_expandedPane===n){{
       _expandedPane=-1;
-      _PANE_FACTORS.forEach(function(f,i){{if(panes[i])panes[i].setStretchFactor(f);}});
+      _applyPaneFactors();
     }}else{{
       _expandedPane=n;
-      // Use extreme ratio so any working implementation is obvious
       panes.forEach(function(p,i){{p.setStretchFactor(i===n?100:0.01);}});
+      _updatePaneBtns();
     }}
-    console.log('[pane] setStretchFactor done, expandedPane='+_expandedPane);
-  }}catch(e){{
-    console.error('[pane] setStretchFactor error:',e.message);
-  }}
-  _updatePaneBtns();
+  }}catch(e){{ console.error('[pane]',e.message); }}
 }}
 function _updatePaneBtns(){{
   var factors=_expandedPane>=0
@@ -3939,12 +3935,34 @@ function _updatePaneBtns(){{
   factors.forEach(function(f,i){{
     var btn=document.getElementById('paneBtn'+i);
     if(btn){{
+      var hidden=(i===1&&!_rsiVisible)||(i===2&&!_macdVisible);
+      btn.style.display=hidden?'none':'';
       btn.style.top='calc('+((cum/total)*100).toFixed(1)+'% + 4px)';
-      btn.textContent=(_expandedPane===i)?'↩':'⛶';
+      btn.textContent=(_expandedPane===i)?'&#x21A9;':'&#x26F6;';
       btn.style.color=(_expandedPane===i)?'#4fc3f7':'#666';
     }}
     cum+=f;
   }});
+}}
+function toggleIndicator(which){{
+  if(which==='rsi'){{
+    _rsiVisible=!_rsiVisible;
+    var b=document.getElementById('rsiToggle');
+    if(b)b.classList.toggle('on',_rsiVisible);
+  }}else{{
+    _macdVisible=!_macdVisible;
+    var b=document.getElementById('macdToggle');
+    if(b)b.classList.toggle('on',_macdVisible);
+  }}
+  _applyPaneFactors();
+}}
+function _applyPaneFactors(){{
+  if(!_chartInst)return;
+  _expandedPane=-1;
+  var panes=_chartInst.panes();
+  var f=[_PANE_FACTORS[0], _rsiVisible?_PANE_FACTORS[1]:0.001, _macdVisible?_PANE_FACTORS[2]:0.001];
+  f.forEach(function(v,i){{if(panes[i])panes[i].setStretchFactor(v);}});
+  _updatePaneBtns();
 }}
 // ─────────────────────────────────────────────────────────────────────────────
 
