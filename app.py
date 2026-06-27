@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v131"
+APP_VERSION = "v132"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3683,10 +3683,12 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div id="rsiBox">
       <div id="rsiEl"></div>
       <div class="ind-label">RSI&thinsp;<span style="color:#58a6ff">14</span></div>
+      <div class="pane-btn" style="top:4px" onclick="toggleIndicator('rsi')" title="Hide RSI">&#x25B2;</div>
     </div>
     <div id="macdBox">
       <div id="macdEl"></div>
       <div class="ind-label">MACD&thinsp;<span style="color:#2196F3">12</span>,<span style="color:#FF5722">26</span>,9</div>
+      <div class="pane-btn" style="top:4px" onclick="toggleIndicator('macd')" title="Hide MACD">&#x25B2;</div>
     </div>
   </div>
   <div id="resizeHandle" title="Drag to resize trades panel"></div>
