@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v133"
+APP_VERSION = "v134"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3703,8 +3703,8 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <div id="empty">No trades for this date &#8212; import from Dhan or pick another day.</div>
       <table id="tbl" style="display:none">
         <thead><tr>
-          <th style="width:148px">Time</th><th style="width:44px">Dir</th><th style="width:36px">Type</th><th style="width:70px">Strike</th>
-          <th style="width:64px">Entry &#8377;</th><th style="width:64px">Exit &#8377;</th><th style="width:36px">Lots</th><th style="width:52px">P&amp;L</th><th>Notes</th><th style="width:58px"></th>
+          <th style="width:148px">Time</th><th style="width:58px">Dir</th><th style="width:54px">Type</th><th style="width:70px">Strike</th>
+          <th style="width:64px">Entry &#8377;</th><th style="width:64px">Exit &#8377;</th><th style="width:52px">Lots</th><th style="width:52px">P&amp;L</th><th>Notes</th><th style="width:58px"></th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
