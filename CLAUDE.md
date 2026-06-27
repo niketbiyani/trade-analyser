@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v91`
+**Current version:** `v128`
 
 ---
 
@@ -23,7 +23,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 | `app.py` | Single-file Flask app — all routes, DB, chart data, inline HTML/CSS/JS |
 | `token_manager.py` | Dhan token auto-refresh via PIN + TOTP (copied from risk-management) |
 | `analyser.db` | SQLite database (gitignored, created on first run) |
-| `analyser.log` | Log file (gitignored) |
+| `analyser.log` | Log file (gitignored) — may be empty; use `journalctl -u trade-analyser` |
 | `requirements.txt` | Python dependencies |
 | `.env` | Credentials (gitignored) — see `.env.example` |
 
@@ -33,7 +33,18 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 ### Backend (app.py)
 
-**Config** — reads from `.env` via `load_dotenv`. Key vars: `DHAN_CLIENT_ID`, `DHAN_ACCESS_TOKEN`, `PORT`.
+**Config** — reads from `.env` via `load_dotenv`. Key vars: `DHAN_CLIENT_ID`, `DHAN_ACCESS_TOKEN`, `PORT`, `APPLICATION_ROOT`.
+
+```python
+APP_VERSION = "v128"
+PORT     = int(os.getenv("PORT", "5556"))
+APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for Nginx prefix
+DB_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
+
+app = Flask(__name__)
+app.config['APPLICATION_ROOT'] = APP_ROOT
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+```
 
 **Database** — single SQLite file `analyser.db`. Tables: `trades`, `trade_notes`, `option_instruments`, `tick_data`. Thread-safe via `_db_lock`. Connection is module-level singleton.
 
@@ -52,7 +63,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 1. Normalise `transactionType` → BUY/SELL
 2. Parse `tradingSymbol`/`customSymbol` → underlying, option_type, strike, expiry
 3. Group by `(date, securityId)` — uses `_real_ts()` to skip "NA" createTime, falls through to `exchangeTime`
-4. Per group: call `_aggregate_partial_fills`, then pair SELLs→BUYs (SHORT) or BUYs→SELLs (LONG/hedge)
+4. Per group: call `_aggregate_partial_fills`, then pair via `_fifo_pair`
 5. Upsert into SQLite — three dedup checks (see Dedup section below)
 6. After each INSERT: restore any saved note from `trade_notes` backup table
 
@@ -70,6 +81,59 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 - Returns `(candles, interval, error)`
 - **No yfinance** — Dhan historical API only, always 1m candles
 
+### Tick data collection
+
+Continuously collects 1-second (or faster) index ticks from Dhan's MarketFeed and stores them in `tick_data`. This powers the future 5s/15s chart feature.
+
+**`subscribe_ticks(instruments)`** — wraps `dhanhq.MarketFeed.Ticker`. Each instrument is `(security_id, exchange_segment_string)`.
+
+**`_tick_callback(inst, type, packet)`** — called on every tick; writes `(security_id, ts, price)` to `tick_data` table. `ts` is IST-as-UTC epoch (parse IST string naively with `.timestamp()`).
+
+**Startup subscription** (at `__main__`):
+```python
+subscribe_ticks([("13", "NSE_EQ"), ("51", "BSE_EQ")])
+```
+- NIFTY: `security_id="13"`, `NSE_EQ`
+- SENSEX: `security_id="51"`, `BSE_EQ`
+
+**CRITICAL**: `IDX_I` (segment 0) does NOT work with `MarketFeed.Ticker` — it returns no ticks. Always use `NSE_EQ` (segment 3) for NIFTY index and `BSE_EQ` (segment 4) for SENSEX index.
+
+Exchange segment int mapping for MarketFeed:
+```
+NSE_FNO=2, BSE_FNO=8, NSE_EQ=3, BSE_EQ=4, IDX_I=0 (broken)
+```
+
+**To verify tick collection on VPS:**
+```bash
+sqlite3 /root/trade-analyser/analyser.db \
+  "SELECT security_id, COUNT(*), MIN(datetime(ts,'unixepoch')), MAX(datetime(ts,'unixepoch')) FROM tick_data WHERE security_id IN ('13','51') GROUP BY security_id;"
+```
+
+### Nginx reverse proxy (APPLICATION_ROOT)
+
+The app can run behind Nginx at a path prefix (e.g. `/analyser/`).
+
+**Flask side:**
+- `APPLICATION_ROOT` env var sets the prefix (e.g. `/analyser`)
+- `ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)` handles `X-Forwarded-*` headers
+- Each page function does `root = APP_ROOT` and injects `var _root='{root}';` into the JS block
+- All `fetch()` calls use `fetch(_root+'/api/...')` — never bare `/api/`
+- All nav hrefs use `href="{root}/"` — never bare `/`
+
+**Nginx side** (example block):
+```nginx
+location /analyser/ {
+    proxy_pass         http://127.0.0.1:5556/;   # trailing slash strips prefix
+    proxy_set_header   Host $host;
+    proxy_set_header   X-Real-IP $remote_addr;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_set_header   X-Forwarded-Prefix /analyser;
+}
+```
+
+The trailing slash on `proxy_pass` is mandatory — it strips `/analyser/` before forwarding to Flask.
+
 ### Frontend (inline in `_page()`)
 
 - TradingView Lightweight Charts v4.1.3 from CDN
@@ -83,11 +147,50 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 - Markers must be sorted by time before calling `series.setMarkers()`
 - `snapTs(ts)` snaps a trade timestamp to nearest available candle
 - **Trade isolation**: clicking a row sets `isolateId`; `putMarkers` filters to that trade only. Clicking again clears isolation and shows all markers.
-- **Notes preservation (two-layer)**:
-  - *Client-side*: `_savedNotes` snapshot taken in `wipeDate()` before DELETE; `_restoreNotes()` replays after import by matching `(underlying, option_type, strike, entry_time)`. Works within the same browser session.
-  - *Server-side*: `DELETE /api/trades/date/{date}` writes notes to `trade_notes` table before deleting. On each INSERT in `_process_raw_trades`, the backup is checked and restored automatically. Survives browser close, session change, or delayed reimport.
-- **Date navigation fix**: `shiftDay()` uses `Date.UTC()` to avoid IST browser timezone shifting the date. `DOMContentLoaded` calculates today as `new Date(Date.now() + 19800000).toISOString().slice(0,10)` (UTC+5:30 offset).
-- `_watchResize(inst, el)` — ResizeObserver that calls `inst.resize()` on each pane
+
+**Auto-import and chart viewport fix (v119):**
+- `refreshTradesTable()` — fetches trades and calls `renderTrades()` only. No `putMarkers()` call, so the chart viewport does not reset.
+- `loadTrades()` — full load: fetches trades + calls `putMarkers()`. Used on page load and manual date change.
+- Auto-import (every 2 minutes on today's date) calls `refreshTradesTable()`, not `loadTrades()`. This prevents the chart from resetting its scroll position every 2 minutes.
+
+**Resizable trades panel (v121):**
+- `#resizeHandle` — a 5px tall `div` between `#chartsArea` and `#panel`
+- Drag handle: `mousedown` captures `startY` + `startH`; `mousemove` adjusts `panel.style.height`; `mouseup` cleans up
+- Height clamped: `Math.max(80, Math.min(startH+dy, window.innerHeight-180))`
+- CSS: `cursor: ns-resize`, highlights on hover and while dragging
+
+**Trades table (v128):**
+- `table-layout: fixed; width: 100%` for stable column widths
+- `overflow: hidden; text-overflow: ellipsis; white-space: nowrap` on all `th`/`td`
+- Explicit px widths on every column; Notes column gets the remaining space:
+
+| Column | Width |
+|---|---|
+| Time (HH:MM:SS) | 148px |
+| Dir | 44px |
+| Type | 36px |
+| Strike | 70px |
+| Entry ₹ | 64px |
+| Exit ₹ | 64px |
+| Lots | 36px |
+| P&L | 52px |
+| Notes | auto (remainder) |
+| Actions | 58px |
+
+- Time shows full `HH:MM:SS` — do NOT truncate to HH:MM. Seconds are important for 15s chart analysis.
+
+**Direction column (v124):**
+- Shows SHORT or LONG tag in a coloured pill after Time
+- `.tag.short` — red tint (`rgba(239,83,80,.10)`, text `#ef9a9a`)
+- `.tag.long` — green tint (`rgba(129,199,132,.10)`, text `#81c784`)
+
+**Notes preservation (two-layer):**
+- *Client-side*: `_savedNotes` snapshot taken in `wipeDate()` before DELETE; `_restoreNotes()` replays after import by matching `(underlying, option_type, strike, entry_time)`. Works within the same browser session.
+- *Server-side*: `DELETE /api/trades/date/{date}` writes notes to `trade_notes` table before deleting. On each INSERT in `_process_raw_trades`, the backup is checked and restored automatically. Survives browser close, session change, or delayed reimport.
+
+**Date navigation fix**: `shiftDay()` uses `Date.UTC()` to avoid IST browser timezone shifting the date. `DOMContentLoaded` calculates today as `new Date(Date.now() + 19800000).toISOString().slice(0,10)` (UTC+5:30 offset).
+
+`_watchResize(inst, el)` — ResizeObserver that calls `inst.resize()` on each pane.
 
 ### Token management (token_manager.py)
 
@@ -140,9 +243,28 @@ CREATE TABLE trade_notes (
     updated_at   REAL DEFAULT 0,
     PRIMARY KEY (date, underlying, option_type, strike, entry_time)
 );
+
+CREATE TABLE tick_data (
+    security_id  TEXT NOT NULL,
+    ts           REAL NOT NULL,    -- IST-as-UTC epoch
+    price        REAL NOT NULL
+);
+
+CREATE TABLE option_instruments (
+    -- used by option-chart page for instrument lookup
+    security_id     TEXT PRIMARY KEY,
+    exchange_segment TEXT,
+    trading_symbol  TEXT,
+    underlying      TEXT,
+    option_type     TEXT,
+    strike          REAL,
+    expiry          TEXT
+);
 ```
 
 `trade_notes` is a persistent notes backup. Written by `DELETE /api/trades/date/{date}` before wiping, read back by `_process_raw_trades` after each INSERT. Notes survive wipes, session changes, and reimports.
+
+`tick_data` stores continuous NIFTY and SENSEX ticks. No primary key — each tick is an append. Future use: aggregate into 5s/15s candles for the chart.
 
 DB migrations run in `_init_db()` on startup:
 - Adds `direction` column if missing (existing rows default to `SHORT`)
@@ -170,12 +292,15 @@ For each FIFO-paired trade being inserted:
 | Method | Route | Description |
 |---|---|---|
 | GET | `/` | Main page |
+| GET | `/option-chart` | Option premium chart page |
 | POST | `/api/import` | `{from_date, to_date}` → import from Dhan |
 | POST | `/api/import-csv` | multipart file upload → parse CSV and import |
 | GET | `/api/trades` | `?date=&underlying=&option_type=` |
 | PUT | `/api/trade/<id>/notes` | `{notes}` |
 | DELETE | `/api/trades/date/<date>` | Wipe all trades for date; backs up notes to `trade_notes` first |
-| GET | `/api/chart` | `?underlying=&date=` → OHLCV candles |
+| GET | `/api/chart` | `?underlying=&date=` → 1m OHLCV candles |
+| GET | `/api/option-candles` | `?security_id=&exchange_segment=&interval=` → option premium candles |
+| GET | `/api/option-list` | Distinct options from trades DB (for By Expiry tab) |
 | GET | `/api/dates` | List of dates with trades (last 90) |
 | POST | `/api/refresh-token` | Trigger token refresh |
 | GET | `/api/debug-dhan` | `?from_date=&to_date=` → raw Dhan API responses (all pages) |
@@ -222,11 +347,11 @@ The two Dhan endpoints return **different field names and formats**:
 
 ### Wipe & reimport — notes are safe
 
-`DELETE /api/trades/date/{date}` (triggered by the 🗑️ Wipe & reimport button) backs up all notes to the `trade_notes` table before deleting. On the subsequent reimport, `_process_raw_trades` checks `trade_notes` after each INSERT and restores matching notes automatically. Notes are matched by `(date, underlying, option_type, strike, entry_time)` — as long as the FIFO produces the same entry_time (consistent for stable data), notes are fully preserved. Client-side `_savedNotes`/`_restoreNotes()` provides a second layer for within-session restores.
+`DELETE /api/trades/date/{date}` (triggered by the Wipe & reimport button) backs up all notes to the `trade_notes` table before deleting. On the subsequent reimport, `_process_raw_trades` checks `trade_notes` after each INSERT and restores matching notes automatically. Notes are matched by `(date, underlying, option_type, strike, entry_time)` — as long as the FIFO produces the same entry_time (consistent for stable data), notes are fully preserved. Client-side `_savedNotes`/`_restoreNotes()` provides a second layer for within-session restores.
 
 ### Wipe bug history (fixed in v90)
 
-The DELETE route previously had `AND dhan_order_id != ''` which silently left CSV-imported trades (empty dhan_order_id) in the DB across every wipe. This caused stale records to accumulate and conflict with subsequent imports. Fixed in v90: the route now deletes ALL trades for the date unconditionally.
+The DELETE route previously had `AND dhan_order_id != ''` which silently left CSV-imported trades (empty dhan_order_id) in the DB across every wipe. Fixed in v90: the route now deletes ALL trades for the date unconditionally.
 
 ### Timestamp handling
 Dhan `createTime` in trade book is IST string `"YYYY-MM-DD HH:MM:SS"`. Strip timezone → naive → `.timestamp()` gives "IST-as-UTC" Unix epoch. TradingView displays UTC, so it shows correct IST times. **Do not add timezone to TradingView timeScale** (v4 doesn't support it). **Do not use `new Date()` in JS** for converting trade times — use `Date.UTC()` to avoid browser timezone interference.
@@ -260,6 +385,13 @@ Replaces all quantity/time heuristics. Processes trades chronologically:
 ### JS "Script error. line 0"
 Harmless cross-origin error from TradingView CDN script caught by global error handler. Does not affect functionality.
 
+### Logs on VPS
+The systemd service is configured to write to `analyser.log`, but in practice logs often go to the systemd journal. Always check both:
+```bash
+tail -f /root/trade-analyser/analyser.log
+sudo journalctl -u trade-analyser -n 50 -f
+```
+
 ---
 
 ## systemd service (VPS)
@@ -292,8 +424,8 @@ sudo systemctl start trade-analyser
 sudo systemctl stop trade-analyser
 sudo systemctl restart trade-analyser
 sudo systemctl status trade-analyser
-sudo journalctl -u trade-analyser -n 50   # systemd journal (if log file empty)
-tail -f /root/trade-analyser/analyser.log
+sudo journalctl -u trade-analyser -n 50 -f   # live log stream
+tail -f /root/trade-analyser/analyser.log    # file log (may be empty)
 ```
 
 ---
@@ -305,10 +437,11 @@ tail -f /root/trade-analyser/analyser.log
 cd ~/trade-analyser
 git pull origin claude/admiring-einstein-prd40v
 sudo systemctl restart trade-analyser
-tail -f /root/trade-analyser/analyser.log
+sudo journalctl -u trade-analyser -n 30
 ```
 
-Dashboard: `http://YOUR_VPS_IP:5556`
+**Without Nginx prefix:**  `http://YOUR_VPS_IP:5556`
+**With Nginx at /analyser:** `http://YOUR_VPS_IP/analyser/`
 
 ---
 
@@ -348,12 +481,35 @@ Added in v60–v63. Separate page from the main index chart.
 
 ## Pending / next work
 
+- **5s/15s chart from tick_data** — once NIFTY/SENSEX ticks are confirmed flowing (check after next market open), add a chart interval toggle (1m / 15s / 5s) to the main page. The 15s/5s chart would aggregate `tick_data` rows server-side and render as a separate candle series on the same chart — no new page, no new tab, just toggle the interval in-place.
+- **Verify tick collection** — run the DB check below on next market day (9:15 IST) to confirm ticks are being stored:
+  ```bash
+  sqlite3 /root/trade-analyser/analyser.db \
+    "SELECT security_id, COUNT(*) FROM tick_data WHERE security_id IN ('13','51') GROUP BY security_id;"
+  ```
 - **Spread grouping** — detect and visually group the sell leg + hedge leg of a credit spread (same underlying, same timestamp cluster, opposite strikes). Show as a bracketed pair on the chart with the net credit.
 - **Session summary** — daily stats card: total trades, win rate, gross P&L, best/worst trade.
 - **Export** — CSV export of trade history for a date range.
-- **Open positions indicator** — trades with OPEN status (no exit) show entry marker only. Consider adding a "still open" visual indicator.
+- **Open positions indicator** — trades with OPEN status show entry marker only. Add a visual "still open" indicator.
 - **SENSEX chart** — Dhan historical data for SENSEX needs the correct security_id verified in production.
 - **By Expiry: verify expired options** — Dhan `/charts/intraday` may not return data for options expired more than 5 trading days ago. Need to test with real expired contracts.
+
+---
+
+## Version history (recent)
+
+| Version | Change |
+|---|---|
+| v119 | Fix chart viewport reset on auto-import — use `refreshTradesTable()` instead of `loadTrades()` |
+| v120 | Add `APPLICATION_ROOT` + `ProxyFix` for Nginx reverse proxy at `/analyser/` |
+| v121 | Resizable trades panel with drag handle between chart and trades table |
+| v122 | Add `tick_data` table + `subscribe_ticks()` for continuous index tick collection |
+| v123 | Fix tick subscription: IDX_I broken → use NSE_EQ for NIFTY, BSE_EQ for SENSEX |
+| v124 | Add Direction (SHORT/LONG) column to trades table with coloured pill tags |
+| v125 | Full HH:MM:SS time display (no truncation) — seconds needed for 15s chart analysis |
+| v126 | `table-layout: fixed` with explicit column widths to stop Notes column from overflowing |
+| v127 | Fix column widths after `fixed` layout — explicit px on all columns |
+| v128 | Widen Strike (70px), Entry (64px), Exit (64px) — were too narrow and truncating values |
 
 ---
 
