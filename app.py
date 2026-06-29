@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v134"
+APP_VERSION = "v135"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -306,7 +306,7 @@ def _auto_import_scheduler():
     """
     import time as _time
     _IST = timezone(timedelta(hours=5, minutes=30))
-    _TRIGGERS = [10, 12, 14]  # fire once each at 10:00, 12:00, 14:00 IST
+    _TRIGGERS = [10, 12, 14, 15, 16]  # fire once each at 10:00, 12:00, 14:00, 15:00, 16:00 IST
     _triggered: set = set()
     _last_date = None
 
@@ -320,7 +320,7 @@ def _auto_import_scheduler():
             # Weekdays only, within market hours
             if now.weekday() >= 5:
                 continue
-            if not ((9, 15) <= (now.hour, now.minute) <= (15, 30)):
+            if not ((9, 0) <= (now.hour, now.minute) <= (16, 30)):
                 continue
             for th in _TRIGGERS:
                 if now.hour >= th and th not in _triggered:
@@ -939,6 +939,10 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                     if existing["status"] == "OPEN" and status == "CLOSED":
                         updates += ["exit_time=?","exit_price=?","pnl=?","status=?","quantity=?","lots=?"]
                         vals    += [exit_time, exit_price, pnl, status, qty, lots]
+                        logger.info(
+                            "Patching OPEN→CLOSED: %s %s %s %s entry=%s exit=%s pnl=%s",
+                            trade_date, underlying, opt_type, strike, entry_time, exit_time, pnl,
+                        )
                     if updates:
                         vals.append(existing["id"])
                         db.execute(f"UPDATE trades SET {','.join(updates)} WHERE id=?", vals)
@@ -4103,7 +4107,7 @@ async function refreshTradesTable() {{
   try {{
     var r=await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
     allTrades=await r.json();
-    var f=_filtered(); renderTrades(f);
+    var f=_filtered(); renderTrades(f); putMarkers(f);
   }} catch(e) {{ console.error(e); }}
 }}
 async function _restoreNotes(){{
@@ -4338,6 +4342,30 @@ async function doRefreshToken(){{
 </html>"""
 
 
+def _close_stale_open_trades() -> None:
+    """Re-import any past dates that still have OPEN trades so they get patched to CLOSED.
+
+    Runs at startup and covers cases where the browser was closed before an EOD square-off
+    was imported (e.g. forced broker close at 15:20 IST after the last auto-import).
+    """
+    today = str(date.today())
+    try:
+        db = get_db()
+        rows = db.execute(
+            "SELECT DISTINCT date FROM trades WHERE status='OPEN' AND date < ?", (today,)
+        ).fetchall()
+        for row in rows:
+            d = row["date"]
+            logger.info("Stale OPEN trade(s) found for %s — re-importing to close", d)
+            try:
+                result = import_from_dhan(d, d)
+                logger.info("Re-import %s: imported=%d skipped=%d", d, result.get("imported", 0), result.get("skipped", 0))
+            except Exception as e:
+                logger.warning("Failed to re-import stale date %s: %s", d, e)
+    except Exception as e:
+        logger.warning("Stale OPEN trade check failed: %s", e)
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -4347,9 +4375,11 @@ if __name__ == "__main__":
     if token_manager.is_token_refresh_configured():
         logger.info("Refreshing Dhan token at startup...")
         token_manager.refresh_token()
+    # Close any OPEN trades from previous days (e.g. EOD force-close missed while browser was closed)
+    threading.Thread(target=_close_stale_open_trades, daemon=True, name="stale-open-closer").start()
     # Start background scheduler for mid-session auto-imports (enables 15s tick data)
     threading.Thread(target=_auto_import_scheduler, daemon=True, name="auto-import").start()
-    logger.info("Auto-import scheduler started (triggers at 10:00, 12:00, 14:00 IST)")
+    logger.info("Auto-import scheduler started (triggers at 10:00, 12:00, 14:00, 15:00, 16:00 IST)")
     # Always subscribe to NIFTY and SENSEX index ticks (for 15s/custom interval charts)
     # IDX_I (segment 0) is rejected by MarketFeed; use NSE_EQ/BSE_EQ instead.
     try:

@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v128`
+**Current version:** `v135`
 
 ---
 
@@ -148,9 +148,9 @@ The trailing slash on `proxy_pass` is mandatory — it strips `/analyser/` befor
 - `snapTs(ts)` snaps a trade timestamp to nearest available candle
 - **Trade isolation**: clicking a row sets `isolateId`; `putMarkers` filters to that trade only. Clicking again clears isolation and shows all markers.
 
-**Auto-import and chart viewport fix (v119):**
-- `refreshTradesTable()` — fetches trades and calls `renderTrades()` only. No `putMarkers()` call, so the chart viewport does not reset.
-- `loadTrades()` — full load: fetches trades + calls `putMarkers()`. Used on page load and manual date change.
+**Auto-import and chart viewport fix (v119/v135):**
+- `refreshTradesTable()` — fetches trades, calls `renderTrades()` AND `putMarkers()`. The `putMarkers()` call (added v135) ensures exit markers appear on the chart when a trade closes via auto-import — it does NOT reset the chart viewport, only re-places markers.
+- `loadTrades()` — full load: fetches trades + calls `renderTrades()` + `putMarkers()`. Used on page load and manual date change.
 - Auto-import (every 2 minutes on today's date) calls `refreshTradesTable()`, not `loadTrades()`. This prevents the chart from resetting its scroll position every 2 minutes.
 
 **Resizable trades panel (v121):**
@@ -510,6 +510,9 @@ Added in v60–v63. Separate page from the main index chart.
 | v126 | `table-layout: fixed` with explicit column widths to stop Notes column from overflowing |
 | v127 | Fix column widths after `fixed` layout — explicit px on all columns |
 | v128 | Widen Strike (70px), Entry (64px), Exit (64px) — were too narrow and truncating values |
+| v129–v133 | Collapsible RSI/MACD panes — separate LWC chart instances in height-based boxes (22px collapsed / 90px expanded); RSI/MACD toggle chips in top bar |
+| v134 | Fix column headers truncating — Type→54px, Lots→52px, Dir→58px |
+| v135 | Fix OPEN→CLOSED trade update: `refreshTradesTable()` now calls `putMarkers()` so exit markers appear on chart; add `_close_stale_open_trades()` at startup to re-import past dates with OPEN trades; extend scheduler to 15:00+16:00 IST triggers; logging for OPEN→CLOSED patch |
 
 ---
 
