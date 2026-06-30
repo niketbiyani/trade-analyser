@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v140"
+APP_VERSION = "v141"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -301,6 +301,66 @@ def subscribe_ticks(pairs: list[tuple[str, str]]) -> int:
             except Exception as e:
                 logger.warning("subscribe_ticks import error: %s", e)
     return added
+
+
+def _start_index_poller():
+    """Background thread: poll NIFTY (13) and SENSEX (51) index LTP every 3s via REST.
+
+    MarketFeed.Ticker does not emit ticks for index instruments (IDX_I segment broken,
+    NSE_EQ/BSE_EQ via WebSocket returns nothing for indices). Instead we poll ticker_data
+    every 3 seconds during market hours and write results to tick_data. This gives ~5
+    samples per 15s candle — enough for meaningful OHLCV aggregation.
+    """
+    _IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+    def _run():
+        import time as _t
+        client = None
+        last_refresh = 0.0
+        first = True
+
+        while True:
+            try:
+                now = datetime.now(_IST_TZ)
+                if (9, 0) <= (now.hour, now.minute) <= (15, 35):
+                    now_ts = _t.time()
+                    # Refresh client every 5 minutes to pick up token renewals
+                    if client is None or (now_ts - last_refresh) > 300:
+                        client = _dhan_client()
+                        last_refresh = now_ts
+
+                    resp = client.ticker_data({"NSE_EQ": [13], "BSE_EQ": [51]})
+                    if first:
+                        logger.info("Index poller first response: %s", resp)
+                        first = False
+
+                    items = (resp or {}).get("data") or []
+                    ts = int(_t.time()) + 19800   # IST-as-UTC epoch
+                    stored = 0
+                    with _db_lock:
+                        db = get_db()
+                        for item in items:
+                            sid     = str(item.get("security_id") or "")
+                            ltp_raw = item.get("LTP") or item.get("last_price") or item.get("ltp")
+                            if sid and ltp_raw is not None:
+                                try:
+                                    db.execute(
+                                        "INSERT INTO tick_data (security_id, ts, price) VALUES (?,?,?)",
+                                        (sid, ts, float(ltp_raw)),
+                                    )
+                                    stored += 1
+                                except (ValueError, TypeError):
+                                    pass
+                        if stored:
+                            db.commit()
+            except Exception as _e:
+                logger.debug("Index poller error: %s", _e)
+                client = None   # force re-create on next tick
+
+            _t.sleep(3)
+
+    threading.Thread(target=_run, daemon=True, name="index-poller").start()
+    logger.info("Index tick poller started (NIFTY/SENSEX REST ticker_data, 3s interval)")
 
 
 def _auto_import_scheduler():
@@ -4445,8 +4505,10 @@ if __name__ == "__main__":
     # Start background scheduler for mid-session auto-imports (enables 15s tick data)
     threading.Thread(target=_auto_import_scheduler, daemon=True, name="auto-import").start()
     logger.info("Auto-import scheduler started (triggers at 10:00, 12:00, 14:00, 15:00, 16:00 IST)")
-    # Always subscribe to NIFTY and SENSEX index ticks (for 15s/custom interval charts)
-    # IDX_I (segment 0) is rejected by MarketFeed; use NSE_EQ/BSE_EQ instead.
+    # Start REST poller for NIFTY/SENSEX index ticks (MarketFeed.Ticker doesn't emit index ticks)
+    _start_index_poller()
+    # Subscribe option instruments via MarketFeed.Ticker for option premium ticks
+    # (Index instruments don't work here; handled by REST poller above)
     try:
         n = subscribe_ticks([("13", "NSE_EQ"), ("51", "BSE_EQ")])
         logger.info("Startup: subscribed to NIFTY (13/NSE_EQ) + SENSEX (51/BSE_EQ) tick feed (%d new)", n)
