@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v142"
+APP_VERSION = "v143"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -314,9 +314,13 @@ def _start_index_poller():
     _IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
     def _poll_once(client):
-        """Call ticker_data and write any results to tick_data. Returns stored count."""
-        resp = client.ticker_data({"NSE_EQ": [13], "BSE_EQ": [51]})
-        items = (resp or {}).get("data") or []
+        """Call ticker_data and write any results to tick_data. Returns (resp, stored)."""
+        # dhanhq uses "NSE"/"BSE" segment keys for ticker_data (not "NSE_EQ"/"BSE_EQ")
+        resp = client.ticker_data({"NSE": [13], "BSE": [51]})
+        if not isinstance(resp, dict):
+            logger.info("Index poller ticker_data raw: type=%s val=%.300s", type(resp).__name__, str(resp))
+            return resp, 0
+        items = resp.get("data") or []
         ts = int(time.time()) + 19800   # IST-as-UTC epoch
         stored = 0
         with _db_lock:
