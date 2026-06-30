@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v135"
+APP_VERSION = "v136"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3661,10 +3661,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip on" data-v="SHORT" onclick="togD(this)">Short</div>
     <div class="chip on" data-v="LONG"  onclick="togD(this)">Long</div>
   </div>
-  <div class="chips" id="indChips">
-    <div class="chip on" id="rsiToggle" onclick="toggleIndicator('rsi')">RSI</div>
-    <div class="chip on" id="macdToggle" onclick="toggleIndicator('macd')">MACD</div>
-  </div>
+  <button class="hbtn" id="tickBtn" onclick="setTick()" title="15-second tick chart (today only)">15s</button>
   <span id="ivl">&#8212;</span>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -3786,6 +3783,8 @@ var typeOn=new Set(['CE','PE']);
 var dirOn=new Set(['SHORT','LONG']);
 var allTrades=[], candles=[], curInterval='1m';
 var selId=null, isolateId=null;
+var _curTick=0; // 0 = normal 1m chart; 15 = 15s tick chart
+var _TICK_SIDS={{NIFTY:'13',SENSEX:'51'}};
 var _savedNotes=[];
 
 function setChartMsg(main,sub) {{
@@ -4017,6 +4016,12 @@ window.addEventListener('DOMContentLoaded', function() {{
   setInterval(autoImport, 120000);
 }});
 
+function _exitTickMode() {{
+  if(!_curTick) return;
+  _curTick=0;
+  var btn=document.getElementById('tickBtn');
+  if(btn) {{btn.style.background='';btn.style.borderColor='';btn.style.color='';}}
+}}
 function shiftDay(d) {{
   if(!curDate) return;
   var p=curDate.split('-');
@@ -4025,12 +4030,12 @@ function shiftDay(d) {{
   dt.setUTCDate(dt.getUTCDate()+d);
   curDate=dt.toISOString().slice(0,10);
   document.getElementById('dp').value=curDate;
-  loadAll();
+  _exitTickMode(); loadAll();
 }}
-function onDate() {{ curDate=document.getElementById('dp').value; loadAll(); }}
+function onDate() {{ curDate=document.getElementById('dp').value; _exitTickMode(); loadAll(); }}
 function setU(el) {{
   document.querySelectorAll('#uChips .chip').forEach(function(c){{c.classList.remove('on');}});
-  el.classList.add('on'); curU=el.dataset.v; loadAll();
+  el.classList.add('on'); curU=el.dataset.v; _exitTickMode(); loadAll();
 }}
 function _filtered(){{
   return allTrades.filter(function(t){{
@@ -4051,8 +4056,50 @@ function togD(el) {{
 }}
 function loadAll() {{ loadChart(); loadTrades(); }}
 
+function setTick() {{
+  // Toggle 15s tick mode on/off
+  var btn=document.getElementById('tickBtn');
+  if(_curTick) {{
+    _curTick=0;
+    if(btn) {{btn.style.background='';btn.style.borderColor='';btn.style.color='';}}
+  }} else {{
+    var now=new Date(Date.now()+19800000);
+    var today=now.toISOString().slice(0,10);
+    if(curDate!==today) {{ alert('15s tick data is only available for today.'); return; }}
+    if(!_TICK_SIDS[curU]) {{ alert('No tick data collected for '+curU+'.'); return; }}
+    _curTick=15;
+    if(btn) {{btn.style.background='#1a2a1a';btn.style.borderColor='#3a6a3a';btn.style.color='#4fc3f7';}}
+  }}
+  loadChart();
+}}
 async function loadChart() {{
   if (!series) {{ setChartMsg('Chart not ready',''); return; }}
+  // 15s tick chart mode — uses stored index ticks instead of Dhan OHLCV API
+  if(_curTick) {{
+    var sid=_TICK_SIDS[curU];
+    if(!sid) {{ setChartMsg('No tick data for '+curU,''); return; }}
+    setChartMsg('Loading 15s ticks...','');
+    try {{
+      var r=await fetch(_root+'/api/tick-candles?security_id='+sid+'&seconds=15&date='+curDate);
+      var d=await r.json();
+      if(d.error||!d.candles||!d.candles.length) {{
+        setChartMsg(d.error||'No tick data for this date','');
+        return;
+      }}
+      candles=d.candles; curInterval='15s';
+      document.getElementById('ivl').textContent='15s';
+      series.setData(candles);
+      hideChartMsg();
+      updateIndicators();
+      var _y=+curDate.slice(0,4),_m=+curDate.slice(5,7)-1,_dd=+curDate.slice(8,10);
+      var _r={{from:Date.UTC(_y,_m,_dd,9,0,0)/1000, to:Date.UTC(_y,_m,_dd,15,35,0)/1000}};
+      try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
+      putMarkers(_filtered());
+    }} catch(e) {{
+      setChartMsg('Tick chart error: '+e.message,'');
+    }}
+    return;
+  }}
   setChartMsg('Loading chart...','');
   try {{
     var ctl=new AbortController(), tid=setTimeout(function(){{ctl.abort();}},20000);
