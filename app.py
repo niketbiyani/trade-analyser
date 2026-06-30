@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v137"
+APP_VERSION = "v138"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -2958,6 +2958,24 @@ def api_tick_subscribe():
     return jsonify({"ok": True, "added": added, "total": len(_tick_subscribed)})
 
 
+@app.route("/api/tick-stats")
+def api_tick_stats():
+    """Quick summary of collected tick data — count per security_id for today."""
+    today = str(date.today())
+    rows = get_db().execute(
+        "SELECT security_id, COUNT(*) as n, MIN(ts) as first, MAX(ts) as last"
+        " FROM tick_data WHERE security_id IN ('13','51') GROUP BY security_id"
+    ).fetchall()
+    result = {}
+    for r in rows:
+        result[r["security_id"]] = {
+            "count": r["n"],
+            "first_ist": datetime.utcfromtimestamp(r["first"] - 19800).strftime("%H:%M:%S") if r["first"] else None,
+            "last_ist":  datetime.utcfromtimestamp(r["last"]  - 19800).strftime("%H:%M:%S") if r["last"]  else None,
+        }
+    return jsonify({"today": today, "ticks": result})
+
+
 @app.route("/api/tick-candles")
 def api_tick_candles():
     security_id = request.args.get("security_id") or ""
@@ -2968,11 +2986,13 @@ def api_tick_candles():
     trade_date = request.args.get("date") or str(date.today())
     if not security_id:
         return jsonify({"candles": [], "error": "security_id required"}), 400
-    # Day boundaries as IST-as-UTC epoch (same convention as stored ticks)
+    # Day boundaries: ticks stored as time.time()+19800 (UTC epoch for IST clock time).
+    # datetime(date,9,15).timestamp() on a UTC server already equals that epoch value
+    # for 09:15 IST, so no extra +19800 offset needed.
     try:
         dp = [int(x) for x in trade_date.split("-")]
-        day_start = int(datetime(dp[0], dp[1], dp[2], 9, 15, 0).timestamp()) + 19800
-        day_end   = int(datetime(dp[0], dp[1], dp[2], 15, 30, 0).timestamp()) + 19800
+        day_start = int(datetime(dp[0], dp[1], dp[2], 9, 15, 0).timestamp())
+        day_end   = int(datetime(dp[0], dp[1], dp[2], 15, 30, 0).timestamp())
     except Exception:
         return jsonify({"candles": [], "error": "Invalid date"}), 400
     rows = get_db().execute(
