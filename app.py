@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v136"
+APP_VERSION = "v137"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -4021,6 +4021,7 @@ function _exitTickMode() {{
   _curTick=0;
   var btn=document.getElementById('tickBtn');
   if(btn) {{btn.style.background='';btn.style.borderColor='';btn.style.color='';}}
+  // No loadChart() here — callers (shiftDay/setU/onDate) do that
 }}
 function shiftDay(d) {{
   if(!curDate) return;
@@ -4057,18 +4058,12 @@ function togD(el) {{
 function loadAll() {{ loadChart(); loadTrades(); }}
 
 function setTick() {{
-  // Toggle 15s tick mode on/off
   var btn=document.getElementById('tickBtn');
-  if(_curTick) {{
-    _curTick=0;
-    if(btn) {{btn.style.background='';btn.style.borderColor='';btn.style.color='';}}
-  }} else {{
-    var now=new Date(Date.now()+19800000);
-    var today=now.toISOString().slice(0,10);
-    if(curDate!==today) {{ alert('15s tick data is only available for today.'); return; }}
-    if(!_TICK_SIDS[curU]) {{ alert('No tick data collected for '+curU+'.'); return; }}
-    _curTick=15;
-    if(btn) {{btn.style.background='#1a2a1a';btn.style.borderColor='#3a6a3a';btn.style.color='#4fc3f7';}}
+  _curTick=_curTick?0:15;
+  if(btn) {{
+    btn.style.background  =_curTick?'#1a2a1a':'';
+    btn.style.borderColor =_curTick?'#3a6a3a':'';
+    btn.style.color       =_curTick?'#4fc3f7':'';
   }}
   loadChart();
 }}
