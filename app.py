@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v141"
+APP_VERSION = "v142"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -313,11 +313,45 @@ def _start_index_poller():
     """
     _IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
+    def _poll_once(client):
+        """Call ticker_data and write any results to tick_data. Returns stored count."""
+        resp = client.ticker_data({"NSE_EQ": [13], "BSE_EQ": [51]})
+        items = (resp or {}).get("data") or []
+        ts = int(time.time()) + 19800   # IST-as-UTC epoch
+        stored = 0
+        with _db_lock:
+            db = get_db()
+            for item in items:
+                sid     = str(item.get("security_id") or "")
+                ltp_raw = item.get("LTP") or item.get("last_price") or item.get("ltp")
+                if sid and ltp_raw is not None:
+                    try:
+                        db.execute(
+                            "INSERT INTO tick_data (security_id, ts, price) VALUES (?,?,?)",
+                            (sid, ts, float(ltp_raw)),
+                        )
+                        stored += 1
+                    except (ValueError, TypeError):
+                        pass
+            if stored:
+                db.commit()
+        return resp, stored
+
     def _run():
         import time as _t
         client = None
         last_refresh = 0.0
-        first = True
+
+        # Startup probe — always fires once at startup regardless of market hours.
+        # Logs the raw response so we can verify the API format immediately.
+        try:
+            client = _dhan_client()
+            last_refresh = _t.time()
+            resp, stored = _poll_once(client)
+            logger.info("Index poller startup probe: resp=%s stored=%d", resp, stored)
+        except Exception as _e:
+            logger.info("Index poller startup probe error: %s", _e)
+            client = None
 
         while True:
             try:
@@ -328,31 +362,7 @@ def _start_index_poller():
                     if client is None or (now_ts - last_refresh) > 300:
                         client = _dhan_client()
                         last_refresh = now_ts
-
-                    resp = client.ticker_data({"NSE_EQ": [13], "BSE_EQ": [51]})
-                    if first:
-                        logger.info("Index poller first response: %s", resp)
-                        first = False
-
-                    items = (resp or {}).get("data") or []
-                    ts = int(_t.time()) + 19800   # IST-as-UTC epoch
-                    stored = 0
-                    with _db_lock:
-                        db = get_db()
-                        for item in items:
-                            sid     = str(item.get("security_id") or "")
-                            ltp_raw = item.get("LTP") or item.get("last_price") or item.get("ltp")
-                            if sid and ltp_raw is not None:
-                                try:
-                                    db.execute(
-                                        "INSERT INTO tick_data (security_id, ts, price) VALUES (?,?,?)",
-                                        (sid, ts, float(ltp_raw)),
-                                    )
-                                    stored += 1
-                                except (ValueError, TypeError):
-                                    pass
-                        if stored:
-                            db.commit()
+                    _poll_once(client)
             except Exception as _e:
                 logger.debug("Index poller error: %s", _e)
                 client = None   # force re-create on next tick
