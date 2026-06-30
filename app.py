@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v144"
+APP_VERSION = "v145"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -314,32 +314,41 @@ def _start_index_poller():
     _IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
     def _poll_once(client):
-        """Call ticker_data and write any results to tick_data. Returns (resp, stored)."""
+        """Call ticker_data and write any results to tick_data. Returns (resp, stored).
+
+        Actual response structure (confirmed from live log):
+          resp["data"]["data"] = {"NSE_EQ": {"13": {"last_price": X}}, "BSE_EQ": {...}}
+        BSE_EQ/51 (SENSEX) returns {} — Dhan has no REST spot for BSE index.
+        """
         resp = client.ticker_data({"NSE_EQ": [13], "BSE_EQ": [51]})
         if not isinstance(resp, dict):
-            logger.info("Index poller raw (non-dict): type=%s val=%.300s", type(resp).__name__, str(resp))
             return resp, 0
-        items = resp.get("data")
-        if not isinstance(items, list):
-            # Dhan returns data as a string error message on failure
-            logger.info("Index poller raw response: %s", resp)
+        outer = resp.get("data")
+        if not isinstance(outer, dict):
+            return resp, 0
+        segment_map = outer.get("data") or {}
+        if not isinstance(segment_map, dict):
             return resp, 0
         ts = int(time.time()) + 19800   # IST-as-UTC epoch
         stored = 0
         with _db_lock:
             db = get_db()
-            for item in items:
-                sid     = str(item.get("security_id") or "")
-                ltp_raw = item.get("LTP") or item.get("last_price") or item.get("ltp")
-                if sid and ltp_raw is not None:
-                    try:
-                        db.execute(
-                            "INSERT INTO tick_data (security_id, ts, price) VALUES (?,?,?)",
-                            (sid, ts, float(ltp_raw)),
-                        )
-                        stored += 1
-                    except (ValueError, TypeError):
-                        pass
+            for _seg, instruments in segment_map.items():
+                if not isinstance(instruments, dict):
+                    continue
+                for sid_str, info in instruments.items():
+                    if not isinstance(info, dict):
+                        continue
+                    ltp_raw = info.get("last_price") or info.get("LTP") or info.get("ltp")
+                    if ltp_raw is not None:
+                        try:
+                            db.execute(
+                                "INSERT INTO tick_data (security_id, ts, price) VALUES (?,?,?)",
+                                (sid_str, ts, float(ltp_raw)),
+                            )
+                            stored += 1
+                        except (ValueError, TypeError):
+                            pass
             if stored:
                 db.commit()
         return resp, stored
