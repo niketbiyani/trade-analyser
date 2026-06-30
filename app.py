@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v139"
+APP_VERSION = "v140"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -235,33 +235,25 @@ _tick_feed       = None
 
 
 def _tick_on_data(*args):
-    # dhanhq may call on_ticks(data) [1 arg] or on_ticks(feed, data) [2 args]
+    # dhanhq calls on_ticks(feed, data) — use *args to handle any arity variation
     data = args[-1] if args else None
-    logger.info("RAW TICK args=%d type=%s val=%.300s", len(args), type(data).__name__, str(data))
     if not isinstance(data, dict):
         return
     try:
-        sec_id = str(
-            data.get("security_id") or data.get("securityId") or
-            data.get("Security Id") or ""
-        )
-        ltp = (
-            data.get("LTP") or data.get("ltp") or data.get("last_price") or
-            data.get("LastTradedPrice") or data.get("last_traded_price")
-        )
-        if not sec_id or ltp is None:
-            logger.info("TICK_SKIP sec_id=%r ltp=%r keys=%s", sec_id, ltp, list(data.keys()))
+        raw_sid = data.get("security_id")
+        ltp     = data.get("LTP")
+        if raw_sid is None or ltp is None:
             return
-        price = float(ltp)
-        ts    = int(time.time()) + 19800   # IST-as-UTC epoch
+        sec_id = str(raw_sid)   # Dhan sends security_id as int; normalise to str
+        price  = float(ltp)
+        ts     = int(time.time()) + 19800   # IST-as-UTC epoch
         with _db_lock:
             db = get_db()
             db.execute("INSERT INTO tick_data (security_id, ts, price) VALUES (?,?,?)",
                        (sec_id, ts, price))
             db.commit()
-        logger.info("TICK_STORED sec_id=%s price=%s", sec_id, price)
     except Exception as e:
-        logger.warning("tick_on_data error: %s", e)
+        logger.debug("tick_on_data error: %s", e)
 
 
 def _start_tick_feed(instruments: list) -> None:
