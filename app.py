@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v145"
+APP_VERSION = "v146"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -1237,7 +1237,10 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
             return 0
         return len(data.get("timestamp") or data.get("timestamps") or [])
 
-    # Approach 1: historical minute data (type="1") — works for any past date
+    # Approach 1: historical minute data (type="1") — works for dates older than intraday window.
+    # Dhan's historical endpoint can return daily OHLCV (1 bar/day) for recent dates instead
+    # of minute candles.  Require >=50 candles so a single daily bar doesn't pass as 1m data
+    # and cause a visually blank chart (daily timestamp falls outside 9:00–15:35 visible range).
     try:
         resp = _with_timeout(
             dhan.dhan_http.post,
@@ -1252,10 +1255,14 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                 "type":            "1",
             },
         )
-        logger.info("Hist-1m raw [%s %s]: %s", security_id, exchange_segment, str(resp)[:300])
-        if _candle_count(resp) > 0:
-            logger.info("Dhan hist-1m [%s %s %s]: %d candles", security_id, exchange_segment, day, _candle_count(resp))
+        cnt = _candle_count(resp)
+        logger.info("Hist-1m [%s %s %s→%s]: %d candles, raw=%s",
+                    security_id, exchange_segment, fd, day, cnt, str(resp)[:200])
+        if cnt >= 50:
+            logger.info("Dhan hist-1m accepted [%s %s %s]: %d candles", security_id, exchange_segment, day, cnt)
             return resp, ""
+        elif cnt > 0:
+            logger.info("Hist-1m returned only %d candles (likely daily OHLCV) — falling through to intraday", cnt)
     except Exception as e:
         logger.warning("Historical minute API error: %s", e)
 
@@ -3684,7 +3691,7 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
             justify-content: center; color: var(--dim); font-size: 12px;
             background: var(--bg); pointer-events: none; flex-direction: column; gap: 8px }}
 #chartMsg.hide {{ display: none }}
-#chartMsgSub {{ font-size: 10px; color: #333; max-width: 600px; text-align: center;
+#chartMsgSub {{ font-size: 10px; color: #666; max-width: 600px; text-align: center;
                word-break: break-word; padding: 0 16px }}
 .pane-btn {{ position:absolute; right:70px; z-index:10; background:rgba(20,20,20,0.75);
   border:1px solid #333; color:#666; font-size:10px; padding:1px 5px; border-radius:3px;
