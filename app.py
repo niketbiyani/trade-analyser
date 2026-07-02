@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v147"
+APP_VERSION = "v148"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -316,11 +316,14 @@ def _start_index_poller():
     def _poll_once(client):
         """Call ticker_data and write any results to tick_data. Returns (resp, stored).
 
-        Actual response structure (confirmed from live log):
-          resp["data"]["data"] = {"NSE_EQ": {"13": {"last_price": X}}, "BSE_EQ": {...}}
-        BSE_EQ/51 (SENSEX) returns {} — Dhan has no REST spot for BSE index.
+        Use IDX_I segment for both NIFTY (13) and SENSEX (51) — these are index instruments,
+        not NSE_EQ equities. NSE_EQ/13 was returning last_price=6937 (a random equity), not
+        the NIFTY 50 spot price (~24000). IDX_I is the correct segment for index spot data.
+
+        Actual response structure expected:
+          resp["data"]["data"] = {"IDX_I": {"13": {"last_price": X}, "51": {"last_price": Y}}}
         """
-        resp = client.ticker_data({"NSE_EQ": [13], "BSE_EQ": [51]})
+        resp = client.ticker_data({"IDX_I": [13, 51]})
         if not isinstance(resp, dict):
             return resp, 0
         outer = resp.get("data")
@@ -2445,6 +2448,25 @@ def api_test_chart():
     d = request.args.get("date") or str(date.today())
     candles = _make_test_candles(d)
     return jsonify({"candles": candles, "interval": "1m", "error": ""})
+
+
+@app.route("/api/debug-ticker")
+def api_debug_ticker():
+    """Test ticker_data with various segment/id combinations.
+    Usage: /api/debug-ticker   (tries IDX_I, NSE_EQ, BSE_EQ for ids 13 and 51)
+    """
+    try:
+        dhan = _dhan_client()
+        results = {}
+        for seg, ids in [("IDX_I", [13, 51]), ("NSE_EQ", [13]), ("BSE_EQ", [51])]:
+            try:
+                resp = dhan.ticker_data({seg: ids})
+                results[seg] = resp
+            except Exception as e:
+                results[seg] = {"error": str(e)}
+        return jsonify({"ok": True, "results": results})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/debug-chart")
