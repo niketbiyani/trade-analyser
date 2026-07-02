@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v150"
+APP_VERSION = "v151"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -1282,36 +1282,49 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
     except Exception as e:
         logger.warning("Historical minute API error: %s", e)
 
-    # Approach 2: intraday feed (last 5 trading days, works during/after market hours)
-    try:
-        resp = _with_timeout(
-            dhan.intraday_minute_data,
-            security_id=security_id,
-            exchange_segment=exchange_segment,
-            instrument_type=instrument_type,
-            from_date=f"{fd} 09:00:00",
-            to_date=f"{day} 15:30:00",
-        )
-        logger.info("Intraday raw [%s %s]: %s", security_id, exchange_segment, str(resp)[:300])
-        if _is_auth_error(resp):
-            logger.info("Chart auth error — refreshing token and retrying")
-            try:
-                import token_manager  # noqa: PLC0415
-                if token_manager.refresh_token():
-                    dhan = _dhan_client()
-                    resp = _with_timeout(
-                        dhan.intraday_minute_data,
-                        security_id=security_id,
-                        exchange_segment=exchange_segment,
-                        instrument_type=instrument_type,
-                        from_date=f"{fd} 09:00:00",
-                        to_date=f"{day} 15:30:00",
-                    )
-            except Exception as e:
-                logger.warning("Token refresh failed during chart load: %s", e)
-        return resp, ""
-    except Exception as e:
-        return {}, str(e)
+    # Approach 2: intraday feed (last 5 trading days, works during/after market hours).
+    # Retry up to 3x when Dhan transiently returns a single daily OHLCV candle instead
+    # of 375 minute candles — same symptom as the historical endpoint but from intraday.
+    last_resp = {}
+    for _attempt in range(3):
+        try:
+            resp = _with_timeout(
+                dhan.intraday_minute_data,
+                security_id=security_id,
+                exchange_segment=exchange_segment,
+                instrument_type=instrument_type,
+                from_date=f"{fd} 09:00:00",
+                to_date=f"{day} 15:30:00",
+            )
+            cnt = _candle_count(resp)
+            logger.info("Intraday [%s %s attempt %d]: %d candles, raw=%s",
+                        security_id, exchange_segment, _attempt + 1, cnt, str(resp)[:200])
+            if _is_auth_error(resp):
+                logger.info("Chart auth error — refreshing token and retrying")
+                try:
+                    import token_manager  # noqa: PLC0415
+                    if token_manager.refresh_token():
+                        dhan = _dhan_client()
+                except Exception as e:
+                    logger.warning("Token refresh failed during chart load: %s", e)
+                last_resp = resp
+                break   # auth errors won't improve with more retries
+            last_resp = resp
+            if cnt >= 50:
+                return resp, ""
+            logger.warning("Intraday returned only %d candles (attempt %d/3) — may be daily OHLCV",
+                           cnt, _attempt + 1)
+            if _attempt < 2:
+                time.sleep(1.5)
+        except Exception as e:
+            logger.warning("Intraday chart error (attempt %d/3): %s", _attempt + 1, e)
+            last_resp = {}
+            if _attempt < 2:
+                time.sleep(1.5)
+    # All attempts exhausted — return best response we got (may have <50 candles)
+    if last_resp:
+        return last_resp, ""
+    return {}, "Intraday returned no data after 3 attempts"
 
 
 def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
@@ -4266,7 +4279,7 @@ async function loadChart() {{
       var r=await fetch(_root+'/api/chart?underlying='+curU+'&date='+curDate,{{signal:ctl.signal}});
       clearTimeout(tid);
       _d=await r.json();
-      if((_d.candles||[]).length) break;          // got data — stop retrying
+      if((_d.candles||[]).length>=50) break;       // got real 1m data — stop retrying
       if(_d.error) break;                          // hard error — no point retrying
     }} catch(e) {{
       _d={{candles:[],error:e.name==='AbortError'?'Chart load timed out':'Chart error: '+e.message}};
@@ -4278,7 +4291,7 @@ async function loadChart() {{
   candles=d.candles||[]; curInterval=d.interval||'1m';
   document.getElementById('ivl').textContent=d.interval||'--';
   if(d.warmup_log) console.log('[warmup]', d.warmup_log);
-  if (candles.length) {{
+  if (candles.length>=50) {{
     series.setData(candles);
     hideChartMsg();
     updateIndicators();
@@ -4287,6 +4300,7 @@ async function loadChart() {{
     try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
     putMarkers(_filtered());
   }}
+  else if (candles.length>0) setChartMsg('Chart data incomplete ('+candles.length+' candles) — Dhan returned daily OHLCV instead of 1m', '');
   else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
 }}
 
