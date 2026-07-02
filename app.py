@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v152"
+APP_VERSION = "v153"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -1442,8 +1442,10 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
                      idx["security_id"], idx["exchange_segment"], day, dhan_err)
         return []
     candles = _parse_dhan_candles(raw_resp, day)
-    # Store on successful fetch for past dates (today is still accumulating)
-    if candles and day != today:
+    # Only cache when we have real 1m data (>=50 candles).
+    # A Dhan glitch returning 1 daily OHLCV candle must NOT be cached — it would
+    # occupy the timestamp slot and block the correct candle via INSERT OR IGNORE.
+    if len(candles) >= 50 and day != today:
         _candles_to_cache(idx["security_id"], candles)
     return candles
 
