@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v135`
+**Current version:** `v148`
 
 ---
 
@@ -83,25 +83,34 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 ### Tick data collection
 
-Continuously collects 1-second (or faster) index ticks from Dhan's MarketFeed and stores them in `tick_data`. This powers the future 5s/15s chart feature.
+Collects NIFTY and SENSEX index spot prices every 3 seconds via REST polling and stores them in `tick_data`. This powers the 15s chart feature.
 
-**`subscribe_ticks(instruments)`** — wraps `dhanhq.MarketFeed.Ticker`. Each instrument is `(security_id, exchange_segment_string)`.
+**`_start_index_poller()`** — background daemon thread. Calls `ticker_data({"IDX_I": [13, 51]})` every 3 seconds during market hours (9:00–15:35 IST). Writes results to `tick_data`. Heartbeat log every 60s shows `in_mkt` flag and tick count.
 
-**`_tick_callback(inst, type, packet)`** — called on every tick; writes `(security_id, ts, price)` to `tick_data` table. `ts` is IST-as-UTC epoch (parse IST string naively with `.timestamp()`).
+**Confirmed segment mapping for `ticker_data` REST API (CRITICAL — differs from WebSocket):**
+- `IDX_I` segment: works for NIFTY (13) and SENSEX (51) — returns correct spot prices
+- `NSE_EQ` segment: FAILS for index instruments (returns failure or wrong equity price)
+- `BSE_EQ` segment: FAILS for SENSEX (returns failure)
 
-**Startup subscription** (at `__main__`):
 ```python
-subscribe_ticks([("13", "NSE_EQ"), ("51", "BSE_EQ")])
+# Correct — use IDX_I for all index spot data via ticker_data
+client.ticker_data({"IDX_I": [13, 51]})
+# Returns: {"data": {"data": {"IDX_I": {"13": {"last_price": 24005.85}, "51": {"last_price": 76922.64}}}}}
 ```
-- NIFTY: `security_id="13"`, `NSE_EQ`
-- SENSEX: `security_id="51"`, `BSE_EQ`
 
-**CRITICAL**: `IDX_I` (segment 0) does NOT work with `MarketFeed.Ticker` — it returns no ticks. Always use `NSE_EQ` (segment 3) for NIFTY index and `BSE_EQ` (segment 4) for SENSEX index.
+**Why `subscribe_ticks` (MarketFeed.Ticker WebSocket) was abandoned:**
+- MarketFeed.Ticker does NOT emit ticks for index instruments in any segment
+- IDX_I (segment 0) broken in WebSocket; NSE_EQ/BSE_EQ return nothing for index security_ids
+- REST polling via `ticker_data` with IDX_I is the only working approach for index spot prices
 
-Exchange segment int mapping for MarketFeed:
+Exchange segment int mapping for MarketFeed WebSocket (reference only, not used for indices):
 ```
 NSE_FNO=2, BSE_FNO=8, NSE_EQ=3, BSE_EQ=4, IDX_I=0 (broken)
 ```
+
+**`/api/debug-ticker`** — endpoint to probe all three segment variants simultaneously. Use to verify segment/price after any API change.
+
+**`/api/tick-stats`** — returns count + first/last IST timestamps per security_id for today.
 
 **To verify tick collection on VPS:**
 ```bash
@@ -481,12 +490,7 @@ Added in v60–v63. Separate page from the main index chart.
 
 ## Pending / next work
 
-- **5s/15s chart from tick_data** — once NIFTY/SENSEX ticks are confirmed flowing (check after next market open), add a chart interval toggle (1m / 15s / 5s) to the main page. The 15s/5s chart would aggregate `tick_data` rows server-side and render as a separate candle series on the same chart — no new page, no new tab, just toggle the interval in-place.
-- **Verify tick collection** — run the DB check below on next market day (9:15 IST) to confirm ticks are being stored:
-  ```bash
-  sqlite3 /root/trade-analyser/analyser.db \
-    "SELECT security_id, COUNT(*) FROM tick_data WHERE security_id IN ('13','51') GROUP BY security_id;"
-  ```
+- **15s chart from tick_data** — NIFTY and SENSEX ticks confirmed flowing (IDX_I segment, 3s polling, ~1200 ticks/hr each). 15s chart button exists in UI; `/api/tick-candles` endpoint exists and aggregates ticks server-side. Need to verify the full flow during market hours (tick-stats count should grow, 15s button should load a chart).
 - **Spread grouping** — detect and visually group the sell leg + hedge leg of a credit spread (same underlying, same timestamp cluster, opposite strikes). Show as a bracketed pair on the chart with the net credit.
 - **Session summary** — daily stats card: total trades, win rate, gross P&L, best/worst trade.
 - **Export** — CSV export of trade history for a date range.
@@ -513,6 +517,10 @@ Added in v60–v63. Separate page from the main index chart.
 | v129–v133 | Collapsible RSI/MACD panes — separate LWC chart instances in height-based boxes (22px collapsed / 90px expanded); RSI/MACD toggle chips in top bar |
 | v134 | Fix column headers truncating — Type→54px, Lots→52px, Dir→58px |
 | v135 | Fix OPEN→CLOSED trade update: `refreshTradesTable()` now calls `putMarkers()` so exit markers appear on chart; add `_close_stale_open_trades()` at startup to re-import past dates with OPEN trades; extend scheduler to 15:00+16:00 IST triggers; logging for OPEN→CLOSED patch |
+| v136–v145 | Index tick collection via REST polling: replace broken MarketFeed.Ticker WebSocket with `_start_index_poller()` thread; fix ticker_data response parsing (nested dict structure); add `/api/tick-stats` and `/api/tick-candles` endpoints; fix tick-candles IST boundary double-offset bug |
+| v146 | Fix blank chart: historical endpoint returning 1 daily candle (midnight UTC timestamp) passed `>0` check and landed outside 9:00–15:35 visible range → raised threshold to `>=50` candles |
+| v147 | Index poller diagnostics: heartbeat log every 60s, exceptions promoted from DEBUG to WARNING, return value of `_poll_once` now captured |
+| v148 | Fix index poller using wrong segment: `NSE_EQ/13` returned equity price (6937), not NIFTY spot. Switched to `IDX_I` segment — confirmed returns NIFTY=24005 and SENSEX=76922. Add `/api/debug-ticker` endpoint |
 
 ---
 
