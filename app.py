@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v151"
+APP_VERSION = "v152"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -158,6 +158,16 @@ def _init_db(conn: sqlite3.Connection) -> None:
                 updated_at   REAL DEFAULT 0,
                 PRIMARY KEY (date, underlying, option_type, strike, entry_time)
             );
+            CREATE TABLE IF NOT EXISTS candle_1m (
+                security_id  TEXT    NOT NULL,
+                ts           INTEGER NOT NULL,
+                open         REAL    NOT NULL,
+                high         REAL    NOT NULL,
+                low          REAL    NOT NULL,
+                close        REAL    NOT NULL,
+                PRIMARY KEY (security_id, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_candle_lookup ON candle_1m(security_id, ts);
         """)
     # migrate existing DBs that lack the direction column
     try:
@@ -1375,8 +1385,55 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
 
 
 
+def _candles_from_cache(security_id: str, trade_date: str) -> list[dict]:
+    """Return cached 1m candles for a past date. Empty list = not cached or incomplete."""
+    try:
+        dp = [int(x) for x in trade_date.split("-")]
+        day_start = int(datetime(dp[0], dp[1], dp[2], 9,  0, 0).timestamp())
+        day_end   = int(datetime(dp[0], dp[1], dp[2], 15, 35, 0).timestamp())
+        rows = get_db().execute(
+            "SELECT ts, open, high, low, close FROM candle_1m"
+            " WHERE security_id=? AND ts>=? AND ts<=? ORDER BY ts",
+            (security_id, day_start, day_end),
+        ).fetchall()
+        if len(rows) < 50:
+            return []
+        return [{"time": r["ts"], "open": r["open"], "high": r["high"],
+                 "low": r["low"], "close": r["close"]} for r in rows]
+    except Exception as e:
+        logger.warning("candle cache read error: %s", e)
+        return []
+
+
+def _candles_to_cache(security_id: str, candles: list[dict]) -> None:
+    """Write-through: persist parsed candles to candle_1m. Skips on error."""
+    if not candles:
+        return
+    try:
+        with _db_lock:
+            db = get_db()
+            db.executemany(
+                "INSERT OR IGNORE INTO candle_1m (security_id, ts, open, high, low, close)"
+                " VALUES (?,?,?,?,?,?)",
+                [(security_id, c["time"], c["open"], c["high"], c["low"], c["close"])
+                 for c in candles],
+            )
+            db.commit()
+        logger.info("Cached %d candles for %s", len(candles), security_id)
+    except Exception as e:
+        logger.warning("candle cache write error: %s", e)
+
+
 def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
-    """Fetch candles for a single day using the given index config."""
+    """Fetch candles for a single day — cache first, Dhan API on miss."""
+    today = str(date.today())
+    # Past dates: serve from local cache when available (instant, no API call)
+    if day != today:
+        cached = _candles_from_cache(idx["security_id"], day)
+        if cached:
+            logger.info("Cache hit [%s %s]: %d candles", idx["security_id"], day, len(cached))
+            return cached
+
     raw_resp, dhan_err = _raw_dhan_chart(
         idx["security_id"], idx["exchange_segment"], idx["instrument_type"], day
     )
@@ -1384,7 +1441,11 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
         logger.error("Dhan chart error [%s %s %s]: %s",
                      idx["security_id"], idx["exchange_segment"], day, dhan_err)
         return []
-    return _parse_dhan_candles(raw_resp, day)
+    candles = _parse_dhan_candles(raw_resp, day)
+    # Store on successful fetch for past dates (today is still accumulating)
+    if candles and day != today:
+        _candles_to_cache(idx["security_id"], candles)
+    return candles
 
 
 def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[dict], str]:
@@ -1436,6 +1497,7 @@ def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[d
         # Use utcfromtimestamp: candle["time"] is IST-as-UTC epoch so UTC
         # datetime == IST clock time, giving the correct trading date.
         day_groups: dict[str, list] = {}
+        today = str(date.today())
         for c in batch:
             dt = datetime.utcfromtimestamp(c["time"]).strftime("%Y-%m-%d")
             day_groups.setdefault(dt, []).append(c)
@@ -1444,6 +1506,9 @@ def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[d
         result: list[dict] = []
         for d in keep_days:
             result.extend(day_groups[d])
+            # Cache each complete warmup day (not today — still accumulating)
+            if d != today and len(day_groups[d]) >= 50:
+                _candles_to_cache(idx["security_id"], day_groups[d])
         summary = " | ".join(f"{d}: {len(day_groups[d])} candles" for d in keep_days)
         logger.info("Warmup batch OK: %d days, %d candles", len(keep_days), len(result))
         return result, summary
