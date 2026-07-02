@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v146"
+APP_VERSION = "v147"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -357,6 +357,8 @@ def _start_index_poller():
         import time as _t
         client = None
         last_refresh = 0.0
+        _hb_next   = 0.0   # next heartbeat time
+        _hb_stored = 0     # ticks stored since last heartbeat
 
         # Startup probe — always fires once at startup regardless of market hours.
         # Logs the raw response so we can verify the API format immediately.
@@ -366,21 +368,32 @@ def _start_index_poller():
             resp, stored = _poll_once(client)
             logger.info("Index poller startup probe: resp=%s stored=%d", resp, stored)
         except Exception as _e:
-            logger.info("Index poller startup probe error: %s", _e)
+            logger.warning("Index poller startup probe error: %s", _e)
             client = None
 
         while True:
             try:
-                now = datetime.now(_IST_TZ)
-                if (9, 0) <= (now.hour, now.minute) <= (15, 35):
-                    now_ts = _t.time()
+                now    = datetime.now(_IST_TZ)
+                now_ts = _t.time()
+                in_mkt = (9, 0) <= (now.hour, now.minute) <= (15, 35)
+                if in_mkt:
                     # Refresh client every 5 minutes to pick up token renewals
                     if client is None or (now_ts - last_refresh) > 300:
+                        logger.info("Index poller: (re)creating dhan client")
                         client = _dhan_client()
                         last_refresh = now_ts
-                    _poll_once(client)
+                    _, stored = _poll_once(client)
+                    _hb_stored += stored
+                    if stored == 0:
+                        logger.debug("Index poller: poll returned stored=0")
+                # Heartbeat every 60s (logs even outside market hours)
+                if now_ts >= _hb_next:
+                    logger.info("Index poller heartbeat: in_mkt=%s stored_last_60s=%d",
+                                in_mkt, _hb_stored)
+                    _hb_stored = 0
+                    _hb_next   = now_ts + 60
             except Exception as _e:
-                logger.debug("Index poller error: %s", _e)
+                logger.warning("Index poller error: %s", _e)
                 client = None   # force re-create on next tick
 
             _t.sleep(3)
