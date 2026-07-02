@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v149"
+APP_VERSION = "v150"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -4255,33 +4255,39 @@ async function loadChart() {{
     }}
     return;
   }}
-  setChartMsg('Loading chart...','');
-  try {{
-    var ctl=new AbortController(), tid=setTimeout(function(){{ctl.abort();}},20000);
-    var r=await fetch(_root+'/api/chart?underlying='+curU+'&date='+curDate,{{signal:ctl.signal}});
-    clearTimeout(tid);
-    var d=await r.json();
-    candles=d.candles||[]; curInterval=d.interval||'1m';
-    document.getElementById('ivl').textContent=d.interval||'--';
-    if(d.warmup_log) console.log('[warmup]', d.warmup_log);
-    if (candles.length) {{
-      // Show all loaded candles (warmup days + trade date).
-      // Batch warmup ensures consecutive trading days so no gaps.
-      series.setData(candles);
-      hideChartMsg();
-      updateIndicators();
-      // Pin visible window to today's trading hours (9:00–15:35 IST).
-      var _y=+curDate.slice(0,4),_m=+curDate.slice(5,7)-1,_dd=+curDate.slice(8,10);
-      var _r={{from:Date.UTC(_y,_m,_dd,9,0,0)/1000, to:Date.UTC(_y,_m,_dd,15,35,0)/1000}};
-      try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
-      // Re-place markers now that candles are loaded — loadTrades() may have
-      // run first (it's a fast DB call) and snapped to stale/empty candles.
-      putMarkers(_filtered());
+  // Auto-retry up to 3 attempts with 1.5s pause — Dhan API returns empty transiently
+  var _maxTry=3, _attempt=0, _d=null;
+  while(_attempt < _maxTry) {{
+    _attempt++;
+    var _label=_attempt>1?' (retry '+_attempt+'/'+_maxTry+')':'';
+    setChartMsg('Loading chart...'+_label,'');
+    try {{
+      var ctl=new AbortController(), tid=setTimeout(function(){{ctl.abort();}},20000);
+      var r=await fetch(_root+'/api/chart?underlying='+curU+'&date='+curDate,{{signal:ctl.signal}});
+      clearTimeout(tid);
+      _d=await r.json();
+      if((_d.candles||[]).length) break;          // got data — stop retrying
+      if(_d.error) break;                          // hard error — no point retrying
+    }} catch(e) {{
+      _d={{candles:[],error:e.name==='AbortError'?'Chart load timed out':'Chart error: '+e.message}};
+      if(e.name==='AbortError') break;             // timeout — don't retry
     }}
-    else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
-  }} catch(e) {{
-    setChartMsg(e.name==='AbortError'?'Chart load timed out':'Chart error: '+e.message,'');
+    if(_attempt < _maxTry) await new Promise(function(res){{setTimeout(res,1500);}});
   }}
+  var d=_d||{{candles:[],error:'No response'}};
+  candles=d.candles||[]; curInterval=d.interval||'1m';
+  document.getElementById('ivl').textContent=d.interval||'--';
+  if(d.warmup_log) console.log('[warmup]', d.warmup_log);
+  if (candles.length) {{
+    series.setData(candles);
+    hideChartMsg();
+    updateIndicators();
+    var _y=+curDate.slice(0,4),_m=+curDate.slice(5,7)-1,_dd=+curDate.slice(8,10);
+    var _r={{from:Date.UTC(_y,_m,_dd,9,0,0)/1000, to:Date.UTC(_y,_m,_dd,15,35,0)/1000}};
+    try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
+    putMarkers(_filtered());
+  }}
+  else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
 }}
 
 async function loadSample() {{
