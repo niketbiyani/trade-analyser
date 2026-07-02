@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v148"
+APP_VERSION = "v149"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -3091,18 +3091,27 @@ def api_tick_subscribe():
 
 @app.route("/api/tick-stats")
 def api_tick_stats():
-    """Quick summary of collected tick data — count per security_id for today."""
+    """Quick summary of collected tick data — count per security_id for today (IST)."""
     today = str(date.today())
+    # Ticks stored as time.time()+19800 (IST-as-UTC epoch).  On a UTC server,
+    # datetime(y,m,d,H,M,S).timestamp() already equals the IST-as-UTC epoch for
+    # that IST clock time, so no extra offset is needed for the boundary.
+    dp = [int(x) for x in today.split("-")]
+    today_start = int(datetime(dp[0], dp[1], dp[2], 0,  0,  0).timestamp())
+    today_end   = int(datetime(dp[0], dp[1], dp[2], 23, 59, 59).timestamp())
     rows = get_db().execute(
         "SELECT security_id, COUNT(*) as n, MIN(ts) as first, MAX(ts) as last"
-        " FROM tick_data WHERE security_id IN ('13','51') GROUP BY security_id"
+        " FROM tick_data WHERE security_id IN ('13','51')"
+        "  AND ts>=? AND ts<=? GROUP BY security_id",
+        (today_start, today_end),
     ).fetchall()
     result = {}
     for r in rows:
+        # utcfromtimestamp(ts) gives IST clock time because ts is IST-as-UTC epoch.
         result[r["security_id"]] = {
             "count": r["n"],
-            "first_ist": datetime.utcfromtimestamp(r["first"] - 19800).strftime("%H:%M:%S") if r["first"] else None,
-            "last_ist":  datetime.utcfromtimestamp(r["last"]  - 19800).strftime("%H:%M:%S") if r["last"]  else None,
+            "first_ist": datetime.utcfromtimestamp(r["first"]).strftime("%H:%M:%S") if r["first"] else None,
+            "last_ist":  datetime.utcfromtimestamp(r["last"]).strftime("%H:%M:%S")  if r["last"]  else None,
         }
     return jsonify({"today": today, "ticks": result})
 
