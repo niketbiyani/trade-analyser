@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ──────────────────────────────────────────────────────
 
-APP_VERSION = "v153"
+APP_VERSION = "v154"
 
 PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
@@ -1284,11 +1284,12 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
         cnt = _candle_count(resp)
         logger.info("Hist-1m [%s %s %s→%s]: %d candles, raw=%s",
                     security_id, exchange_segment, fd, day, cnt, str(resp)[:200])
-        if cnt >= 50:
-            logger.info("Dhan hist-1m accepted [%s %s %s]: %d candles", security_id, exchange_segment, day, cnt)
+        min_ok = _min_expected_candles(day)
+        if cnt >= min_ok:
+            logger.info("Dhan hist-1m accepted [%s %s %s]: %d candles (min=%d)", security_id, exchange_segment, day, cnt, min_ok)
             return resp, ""
         elif cnt > 0:
-            logger.info("Hist-1m returned only %d candles (likely daily OHLCV) — falling through to intraday", cnt)
+            logger.info("Hist-1m returned only %d candles (min=%d) — falling through to intraday", cnt, min_ok)
     except Exception as e:
         logger.warning("Historical minute API error: %s", e)
 
@@ -1320,10 +1321,11 @@ def _raw_dhan_chart(security_id: str, exchange_segment: str,
                 last_resp = resp
                 break   # auth errors won't improve with more retries
             last_resp = resp
-            if cnt >= 50:
+            min_ok = _min_expected_candles(day)
+            if cnt >= min_ok:
                 return resp, ""
-            logger.warning("Intraday returned only %d candles (attempt %d/3) — may be daily OHLCV",
-                           cnt, _attempt + 1)
+            logger.warning("Intraday returned only %d candles (min=%d, attempt %d/3) — may be daily OHLCV",
+                           cnt, min_ok, _attempt + 1)
             if _attempt < 2:
                 time.sleep(1.5)
         except Exception as e:
@@ -1385,6 +1387,28 @@ def _parse_dhan_candles(resp, trade_date: str) -> list[dict]:
 
 
 
+def _min_expected_candles(trade_date: str) -> int:
+    """Minimum acceptable 1m candle count for a date.
+
+    Past date  → 300 (80% of 375 — tolerates rare early-close / data gaps).
+    Today      → 80% of elapsed market minutes (floor 5), so pre-9:15 = 0.
+    Future     → 0.
+    """
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist  = datetime.now(_IST)
+    today    = now_ist.date().isoformat()
+    if trade_date < today:
+        return 300          # full past day: 9:15–15:30 = 375 min, accept ≥80%
+    if trade_date == today:
+        mkt_open  = now_ist.replace(hour=9,  minute=15, second=0, microsecond=0)
+        mkt_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+        if now_ist <= mkt_open:
+            return 0        # pre-market — nothing expected yet
+        elapsed = int((min(now_ist, mkt_close) - mkt_open).total_seconds() / 60)
+        return max(5, int(elapsed * 0.8))
+    return 0                # future date
+
+
 def _candles_from_cache(security_id: str, trade_date: str) -> list[dict]:
     """Return cached 1m candles for a past date. Empty list = not cached or incomplete."""
     try:
@@ -1396,7 +1420,7 @@ def _candles_from_cache(security_id: str, trade_date: str) -> list[dict]:
             " WHERE security_id=? AND ts>=? AND ts<=? ORDER BY ts",
             (security_id, day_start, day_end),
         ).fetchall()
-        if len(rows) < 50:
+        if len(rows) < _min_expected_candles(trade_date):
             return []
         return [{"time": r["ts"], "open": r["open"], "high": r["high"],
                  "low": r["low"], "close": r["close"]} for r in rows]
@@ -1442,10 +1466,10 @@ def _fetch_day_candles(idx: dict, day: str) -> list[dict]:
                      idx["security_id"], idx["exchange_segment"], day, dhan_err)
         return []
     candles = _parse_dhan_candles(raw_resp, day)
-    # Only cache when we have real 1m data (>=50 candles).
-    # A Dhan glitch returning 1 daily OHLCV candle must NOT be cached — it would
-    # occupy the timestamp slot and block the correct candle via INSERT OR IGNORE.
-    if len(candles) >= 50 and day != today:
+    # Only cache when we have enough candles for a real 1m dataset.
+    # A Dhan glitch (1 daily OHLCV) must NOT be cached — it occupies the timestamp
+    # slot and blocks the correct candle from being stored via INSERT OR IGNORE.
+    if len(candles) >= _min_expected_candles(day) and day != today:
         _candles_to_cache(idx["security_id"], candles)
     return candles
 
@@ -1509,7 +1533,7 @@ def _fetch_warmup_candles(idx: dict, from_day: str, to_day: str) -> tuple[list[d
         for d in keep_days:
             result.extend(day_groups[d])
             # Cache each complete warmup day (not today — still accumulating)
-            if d != today and len(day_groups[d]) >= 50:
+            if d != today and len(day_groups[d]) >= _min_expected_candles(d):
                 _candles_to_cache(idx["security_id"], day_groups[d])
         summary = " | ".join(f"{d}: {len(day_groups[d])} candles" for d in keep_days)
         logger.info("Warmup batch OK: %d days, %d candles", len(keep_days), len(result))
@@ -2799,7 +2823,8 @@ def api_chart():
     u = request.args.get("underlying") or "NIFTY"
     d = request.args.get("date")       or str(date.today())
     candles, interval, err, warmup_log = chart_candles(u, d)
-    return jsonify({"candles": candles, "interval": interval, "error": err, "warmup_log": warmup_log})
+    return jsonify({"candles": candles, "interval": interval, "error": err,
+                    "warmup_log": warmup_log, "expected_min": _min_expected_candles(d)})
 
 
 @app.route("/api/dates")
@@ -4346,7 +4371,7 @@ async function loadChart() {{
       var r=await fetch(_root+'/api/chart?underlying='+curU+'&date='+curDate,{{signal:ctl.signal}});
       clearTimeout(tid);
       _d=await r.json();
-      if((_d.candles||[]).length>=50) break;       // got real 1m data — stop retrying
+      if((_d.candles||[]).length>=(_d.expected_min||50)) break;  // got real 1m data — stop retrying
       if(_d.error) break;                          // hard error — no point retrying
     }} catch(e) {{
       _d={{candles:[],error:e.name==='AbortError'?'Chart load timed out':'Chart error: '+e.message}};
@@ -4358,7 +4383,8 @@ async function loadChart() {{
   candles=d.candles||[]; curInterval=d.interval||'1m';
   document.getElementById('ivl').textContent=d.interval||'--';
   if(d.warmup_log) console.log('[warmup]', d.warmup_log);
-  if (candles.length>=50) {{
+  var _emin=d.expected_min||50;
+  if (candles.length>=_emin) {{
     series.setData(candles);
     hideChartMsg();
     updateIndicators();
@@ -4367,7 +4393,7 @@ async function loadChart() {{
     try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
     putMarkers(_filtered());
   }}
-  else if (candles.length>0) setChartMsg('Chart data incomplete ('+candles.length+' candles) — Dhan returned daily OHLCV instead of 1m', '');
+  else if (candles.length>0) setChartMsg('Chart data incomplete ('+candles.length+'/'+_emin+' candles expected) — Dhan returned daily OHLCV instead of 1m', '');
   else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
 }}
 

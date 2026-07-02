@@ -12,7 +12,7 @@ Single-VPS Flask app, runs on port 5556. Companion to the risk-management platfo
 
 **Branch for all work:** `claude/admiring-einstein-prd40v`
 
-**Current version:** `v148`
+**Current version:** `v154`
 
 ---
 
@@ -521,6 +521,9 @@ Added in v60–v63. Separate page from the main index chart.
 | v146 | Fix blank chart: historical endpoint returning 1 daily candle (midnight UTC timestamp) passed `>0` check and landed outside 9:00–15:35 visible range → raised threshold to `>=50` candles |
 | v147 | Index poller diagnostics: heartbeat log every 60s, exceptions promoted from DEBUG to WARNING, return value of `_poll_once` now captured |
 | v148 | Fix index poller using wrong segment: `NSE_EQ/13` returned equity price (6937), not NIFTY spot. Switched to `IDX_I` segment — confirmed returns NIFTY=24005 and SENSEX=76922. Add `/api/debug-ticker` endpoint |
+| v149–v152 | (internal) Candle cache: `candle_1m` SQLite table; `_candles_from_cache`/`_candles_to_cache`; write-through on successful fetch; cache hit bypasses Dhan API for past dates |
+| v153 | Server-side intraday retry 3× with 1.5s pause; client-side retry 3× on <50 candles; `_fetch_warmup_candles` caches each warmup day; fix tick-stats timestamp double-offset and missing date filter |
+| v154 | Replace hardcoded `>=50` candle threshold with `_min_expected_candles(date)`: past days→300, today→80% of elapsed market minutes. Server passes `expected_min` in `/api/chart` response; JS uses it for retry/display decisions |
 
 ---
 
