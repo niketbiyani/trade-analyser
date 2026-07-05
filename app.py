@@ -2951,11 +2951,11 @@ async function loadLadder(expiry){{
       var peLast=row.pe_last!=null?row.pe_last.toFixed(2):'—';
       tr.innerHTML=
         '<td class="ce-cell'+(row.ce_ticker?'':' null-cell')+'"'
-          +(row.ce_ticker?' onclick="loadChart(\''+row.ce_ticker+'\',\''+row.strike+' CE\')" title="Load CE chart"':'')+'>'
+          +(row.ce_ticker?' onclick="loadChart(\\\\\\\'"+row.ce_ticker+"\\\\\\\',\\\\\\'"+row.strike+" CE\\\\\\\')" title="Load CE chart"':'')+'>'
           +ceLast+'</td>'
         +'<td class="strike-cell">'+row.strike.toLocaleString('en-IN')+'</td>'
         +'<td class="pe-cell'+(row.pe_ticker?'':' null-cell')+'"'
-          +(row.pe_ticker?' onclick="loadChart(\''+row.pe_ticker+'\',\''+row.strike+' PE\')" title="Load PE chart"':'')+'>'
+          +(row.pe_ticker?' onclick="loadChart(\\\\\\\'"+row.pe_ticker+"\\\\\\\',\\\\\\'"+row.strike+" PE\\\\\\\')" title="Load PE chart"':'')+'>'
           +peLast+'</td>';
       body.appendChild(tr);
     }});
