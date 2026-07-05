@@ -173,6 +173,17 @@ def _init_db(conn: sqlite3.Connection) -> None:
                 PRIMARY KEY (security_id, ts)
             );
             CREATE INDEX IF NOT EXISTS idx_candle_lookup ON candle_1m(security_id, ts);
+            CREATE TABLE IF NOT EXISTS ohlcv_seconds (
+                symbol      TEXT    NOT NULL,
+                seconds     INTEGER NOT NULL,
+                ts          INTEGER NOT NULL,
+                open        REAL    NOT NULL,
+                high        REAL    NOT NULL,
+                low         REAL    NOT NULL,
+                close       REAL    NOT NULL,
+                PRIMARY KEY (symbol, seconds, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ohlcv_seconds ON ohlcv_seconds(symbol, seconds, ts);
             CREATE TABLE IF NOT EXISTS option_ohlcv (
                 ticker  TEXT    NOT NULL,
                 ts      INTEGER NOT NULL,
@@ -1039,6 +1050,41 @@ def _process_option_zip_bg(job_id: str, zip_path: str) -> None:
 
 
 # ── End historical option CSV helpers ─────────────────────────────────────────
+
+
+def _parse_tv_timestamp(ts_str: str) -> int:
+    """Convert a TradingView CSV timestamp string to an IST-as-UTC UNIX timestamp."""
+    from datetime import datetime, timezone
+    import zoneinfo
+    ts_str = ts_str.strip()
+    try:
+        val = float(ts_str)
+        if val > 1e11:
+            val = val / 1000.0
+        dt = datetime.fromtimestamp(val, tz=timezone.utc)
+    except ValueError:
+        for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S%z"):
+            try:
+                dt = datetime.strptime(ts_str, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            import dateutil.parser as _dp
+            dt = _dp.parse(ts_str)
+            
+    # Normalise timezone to IST
+    ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+    if dt.tzinfo is not None:
+        dt_ist = dt.astimezone(ist_tz)
+    else:
+        dt_utc = dt.replace(tzinfo=timezone.utc)
+        dt_ist = dt_utc.astimezone(ist_tz)
+        
+    # Preserving the hour digits as-if-UTC for LightweightCharts
+    import calendar as _calendar
+    dt_as_utc = datetime(dt_ist.year, dt_ist.month, dt_ist.day, dt_ist.hour, dt_ist.minute, dt_ist.second)
+    return int(_calendar.timegm(dt_as_utc.timetuple()))
 
 
 def _aggregate_partial_fills(trades: list[dict]) -> list[dict]:
@@ -2760,10 +2806,12 @@ var _curIvl=1,_curUl='NIFTY',_curExpiry='',_pollTimer=null;
   _macdSignal=_chart.addSeries(LightweightCharts.LineSeries,{{
     color:'#f0883e',lineWidth:1,lastValueVisible:false,priceLineVisible:false
   }},2);
-  var panes=_chart.panes();
-  if(panes[0])panes[0].setStretchFactor(5);
-  if(panes[1])panes[1].setStretchFactor(1.2);
-  if(panes[2])panes[2].setStretchFactor(1.2);
+  try{{
+    var panes=_chart.panes();
+    if(panes[0])panes[0].setStretchFactor(5);
+    if(panes[1])panes[1].setStretchFactor(1.2);
+    if(panes[2])panes[2].setStretchFactor(1.2);
+  }}catch(pe){{console.warn('Pane stretch failed:',pe);}}
   new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
 }})();
 
@@ -3683,6 +3731,252 @@ def api_option_upload_stats():
 # ── End historical option CSV upload API ──────────────────────────────────────
 
 
+# ── TradingView 5s/15s Custom Seconds Data API & UI ───────────────────────────
+
+@app.route("/api/upload-seconds-csv", methods=["POST"])
+def api_upload_seconds_csv():
+    """Parse and load TradingView Premium 5s or 15s CSV candles for NIFTY/SENSEX."""
+    f = request.files.get("file")
+    symbol = request.form.get("symbol", "NIFTY").upper()
+    try:
+        seconds = int(request.form.get("seconds") or 15)
+    except ValueError:
+        seconds = 15
+
+    if not f:
+        return jsonify({"ok": False, "error": "No file uploaded"}), 400
+
+    try:
+        content = f.read().decode("utf-8-sig", errors="replace")
+        import csv as _csv, io as _io
+        reader = _csv.DictReader(_io.StringIO(content))
+
+        # Detect columns case-insensitively
+        fieldnames = reader.fieldnames or []
+        time_col = next((c for c in fieldnames if c.lower() in ("time", "timestamp", "date")), None)
+        open_col = next((c for c in fieldnames if c.lower() == "open"), None)
+        high_col = next((c for c in fieldnames if c.lower() == "high"), None)
+        low_col  = next((c for c in fieldnames if c.lower() == "low"), None)
+        close_col = next((c for c in fieldnames if c.lower() == "close"), None)
+
+        if not all((time_col, open_col, high_col, low_col, close_col)):
+            return jsonify({"ok": False, "error": f"Missing columns in CSV. Found headers: {fieldnames}"}), 400
+
+        rows_buf = []
+        for row in reader:
+            ts_str = row[time_col]
+            if not ts_str:
+                continue
+            try:
+                ts = _parse_tv_timestamp(ts_str)
+                o  = float(row[open_col])
+                h  = float(row[high_col])
+                l  = float(row[low_col])
+                c  = float(row[close_col])
+                rows_buf.append((symbol, seconds, ts, o, h, l, c))
+            except Exception:
+                continue
+
+        if not rows_buf:
+            return jsonify({"ok": False, "error": "No valid rows found in CSV. Make sure date and price values are correct."}), 400
+
+        # Bulk insert
+        db = get_db()
+        with _db_lock:
+            db.executemany(
+                "INSERT OR REPLACE INTO ohlcv_seconds (symbol, seconds, ts, open, high, low, close)"
+                " VALUES (?,?,?,?,?,?,?)",
+                rows_buf
+            )
+            db.commit()
+
+        logger.info("Uploaded %d TV %ds candles for %s", len(rows_buf), seconds, symbol)
+        return jsonify({"ok": True, "count": len(rows_buf), "symbol": symbol, "seconds": seconds})
+    except Exception as e:
+        logger.error("upload-seconds-csv: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/seconds-stats")
+def api_seconds_stats():
+    """Summary stats of currently uploaded custom TV seconds data."""
+    from datetime import datetime
+    db = get_db()
+    rows = db.execute(
+        "SELECT symbol, seconds, COUNT(*) as count, MIN(ts) as min_ts, MAX(ts) as max_ts"
+        " FROM ohlcv_seconds GROUP BY symbol, seconds"
+    ).fetchall()
+
+    res = []
+    for r in rows:
+        min_date = datetime.fromtimestamp(r["min_ts"]).strftime("%Y-%m-%d")
+        max_date = datetime.fromtimestamp(r["max_ts"]).strftime("%Y-%m-%d")
+        res.append({
+            "symbol":  r["symbol"],
+            "seconds": r["seconds"],
+            "count":   r["count"],
+            "range":   f"{min_date} to {max_date}",
+        })
+    return jsonify(res)
+
+
+@app.route("/upload-seconds")
+def upload_seconds():
+    """Page to upload custom TradingView 5s/15s historical data."""
+    return _upload_seconds_page()
+
+
+def _upload_seconds_page() -> str:
+    ver  = APP_VERSION
+    root = APP_ROOT
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Upload TV Seconds Data — Trade Analyser {ver}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:13px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:20px;}}
+.card{{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:24px;width:100%;max-width:480px;box-shadow:0 8px 24px rgba(0,0,0,0.5);}}
+h1{{font-size:16px;font-weight:600;margin-bottom:8px;color:#e6edf3;letter-spacing:-.2px;display:flex;align-items:center;gap:8px;}}
+.subtitle{{font-size:11px;color:#8b949e;margin-bottom:20px;line-height:1.4;}}
+a.back{{color:#58a6ff;text-decoration:none;font-size:11px;display:inline-block;margin-bottom:16px;}}
+a.back:hover{{text-decoration:underline;}}
+.form-group{{margin-bottom:16px;}}
+label{{display:block;font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;}}
+select, input[type=file]{{width:100%;background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:8px 12px;border-radius:6px;font:inherit;outline:none;transition:border-color .15s;}}
+select:focus{{border-color:#58a6ff;}}
+button{{background:linear-gradient(135deg,#238636,#196c2e);border:none;color:#fff;width:100%;padding:10px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;font-family:'Inter',sans-serif;transition:opacity .15s;margin-top:8px;}}
+button:hover{{opacity:.9;}}
+button:disabled{{opacity:.5;cursor:not-allowed;}}
+#status{{margin-top:16px;font-size:12px;text-align:center;padding:10px;border-radius:6px;display:none;}}
+#status.success{{background:rgba(56,139,253,0.1);color:#58a6ff;border:1px solid rgba(56,139,253,0.2);}}
+#status.error{{background:rgba(248,81,81,0.1);color:#f85149;border:1px solid rgba(248,81,81,0.2);}}
+.stats-box{{margin-top:24px;border-top:1px solid #21262d;padding-top:16px;}}
+.stats-title{{font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;}}
+.stat-row{{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #161b22;font-size:12px;align-items:center;}}
+.stat-row:last-child{{border-bottom:none;}}
+.stat-val{{font-weight:600;color:#e6edf3;text-align:right;font-size:11px;}}
+.stat-range{{font-size:10px;color:#8b949e;display:block;font-weight:400;}}
+</style>
+</head>
+<body>
+<div class="card">
+  <a href="{root}/" class="back">&#8592; Back to Main</a>
+  <h1>&#128229; Upload TradingView Seconds Data</h1>
+  <div class="subtitle">Upload historical 5-second or 15-second index OHLCV CSV export files from TradingView Premium (NIFTY / SENSEX).</div>
+
+  <form id="uploadForm" onsubmit="handleSubmit(event)">
+    <div class="form-group">
+      <label>Index / Symbol</label>
+      <select id="symbol" name="symbol">
+        <option value="NIFTY">NIFTY</option>
+        <option value="SENSEX">SENSEX</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Interval</label>
+      <select id="seconds" name="seconds">
+        <option value="5">5 Seconds</option>
+        <option value="15" selected>15 Seconds</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>TradingView CSV File</label>
+      <input type="file" id="file" name="file" accept=".csv" required>
+    </div>
+
+    <button type="submit" id="btn">Upload and Save</button>
+  </form>
+
+  <div id="status"></div>
+
+  <div class="stats-box">
+    <div class="stats-title">Uploaded Seconds Data Stats</div>
+    <div id="statsList">Loading stats…</div>
+  </div>
+</div>
+
+<script>
+var _root = '{root}';
+
+async function loadStats() {{
+  var list = document.getElementById('statsList');
+  try {{
+    var r = await fetch(_root + '/api/seconds-stats');
+    var data = await r.json();
+    if (!data.length) {{
+      list.innerHTML = '<div style="font-size:11px;color:#484f58;text-align:center;padding:12px;">No custom seconds data loaded yet</div>';
+      return;
+    }}
+    list.innerHTML = '';
+    data.forEach(function(row) {{
+      var div = document.createElement('div');
+      div.className = 'stat-row';
+      div.innerHTML = '<span><b>' + row.symbol + '</b> (' + row.seconds + 's)</span>'
+        + '<div class="stat-val">' + row.count.toLocaleString('en-IN') + ' bars'
+        + '<span class="stat-range">' + row.range + '</span></div>';
+      list.appendChild(div);
+    }});
+  }} catch(e) {{
+    list.textContent = 'Error loading stats';
+  }}
+}}
+
+async function handleSubmit(e) {{
+  e.preventDefault();
+  var form = document.getElementById('uploadForm');
+  var btn = document.getElementById('btn');
+  var status = document.getElementById('status');
+
+  btn.disabled = true;
+  btn.textContent = 'Uploading & parsing…';
+  status.style.display = 'none';
+
+  var fd = new FormData(form);
+  try {{
+    var r = await fetch(_root + '/api/upload-seconds-csv', {{
+      method: 'POST',
+      body: fd
+    }});
+    var d = await r.json();
+    if (d.ok) {{
+      status.className = 'success';
+      status.textContent = '✓ Successfully loaded ' + d.count.toLocaleString('en-IN') + ' bars for ' + d.symbol + ' (' + d.seconds + 's)';
+      status.style.display = 'block';
+      form.reset();
+      loadStats();
+    }} else {{
+      status.className = 'error';
+      status.textContent = 'Error: ' + (d.error || 'Upload failed');
+      status.style.display = 'block';
+    }}
+  }} catch(err) {{
+    status.className = 'error';
+    status.textContent = 'Network error: ' + err.message;
+    status.style.display = 'block';
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = 'Upload and Save';
+  }}
+}}
+
+loadStats();
+</script>
+</body>
+</html>"""
+
+
+# ── End TradingView Custom Seconds Data API & UI ──────────────────────────────
+
+
+
+
 @app.route("/api/option-list")
 def api_option_list():
     """Return distinct options from the trades database for the picker dropdown."""
@@ -4080,6 +4374,23 @@ def api_tick_candles():
         day_end   = int(datetime(dp[0], dp[1], dp[2], 15, 30, 0).timestamp())
     except Exception:
         return jsonify({"candles": [], "error": "Invalid date"}), 400
+    sym_map = {"13": "NIFTY", "51": "SENSEX"}
+    symbol = sym_map.get(security_id)
+    if symbol:
+        rows = get_db().execute(
+            "SELECT ts, open, high, low, close FROM ohlcv_seconds"
+            " WHERE symbol=? AND seconds=? AND ts>=? AND ts<=?"
+            " ORDER BY ts",
+            (symbol, seconds, day_start, day_end)
+        ).fetchall()
+        if rows:
+            candles = [
+                {"time": r["ts"], "open": r["open"], "high": r["high"], "low": r["low"], "close": r["close"]}
+                for r in rows
+            ]
+            logger.info("TV candles: %s %s %ds -> %d candles from DB", symbol, trade_date, seconds, len(candles))
+            return jsonify({"candles": candles, "error": ""})
+
     rows = get_db().execute(
         "SELECT ts, price FROM tick_data WHERE security_id=? AND ts>=? AND ts<=? ORDER BY ts",
         (security_id, day_start, day_end),
@@ -4768,11 +5079,13 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip on" data-v="LONG"  onclick="togD(this)">Long</div>
   </div>
   <button class="hbtn on" id="btn1m"  onclick="set1m()"  title="Switch to 1-minute chart">1m</button>
-  <button class="hbtn"    id="btn15s" onclick="setTick()" title="Switch to 15-second tick chart (today only)">15s</button>
+  <button class="hbtn"    id="btn15s" onclick="setTick(15)" title="Switch to 15-second chart">15s</button>
+  <button class="hbtn"    id="btn5s"  onclick="setTick(5)" title="Switch to 5-second chart">5s</button>
   <span id="ivl" style="display:none">&#8212;</span>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <span id="autoImpStatus"></span>
+  <a href="{root}/upload-seconds" class="hbtn" style="text-decoration:none">&#128229; TV Upload</a>
   <a href="{root}/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
   <a href="{root}/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
   <a href="{root}/option-ladder" class="hbtn" style="text-decoration:none">&#128693; ATM Ladder</a>
@@ -5125,9 +5438,10 @@ window.addEventListener('DOMContentLoaded', function() {{
 }});
 
 function _setTickBtns(tickActive) {{
-  var b1=document.getElementById('btn1m'), b15=document.getElementById('btn15s');
+  var b1=document.getElementById('btn1m'), b15=document.getElementById('btn15s'), b5=document.getElementById('btn5s');
   if(b1)  b1.className ='hbtn'+(tickActive?'':' on');
-  if(b15) b15.className='hbtn'+(tickActive?' on':'');
+  if(b15) b15.className='hbtn'+(tickActive && _curTick===15?' on':'');
+  if(b5)  b5.className='hbtn'+(tickActive && _curTick===5?' on':'');
 }}
 function _exitTickMode() {{
   if(!_curTick) return;
@@ -5175,27 +5489,27 @@ function togD(el) {{
 }}
 function loadAll() {{ loadChart(); loadTrades(); }}
 
-function setTick() {{
-  _curTick=15;
+function setTick(seconds) {{
+  _curTick=seconds || 15;
   _setTickBtns(true);
   loadChart();
 }}
 async function loadChart() {{
   if (!series) {{ setChartMsg('Chart not ready',''); return; }}
-  // 15s tick chart mode — uses stored index ticks instead of Dhan OHLCV API
+  // N-second tick/uploaded chart mode
   if(_curTick) {{
     var sid=_TICK_SIDS[curU];
     if(!sid) {{ setChartMsg('No tick data for '+curU,''); return; }}
-    setChartMsg('Loading 15s ticks...','');
+    setChartMsg('Loading '+_curTick+'s ticks...','');
     try {{
-      var r=await fetch(_root+'/api/tick-candles?security_id='+sid+'&seconds=15&date='+curDate);
+      var r=await fetch(_root+'/api/tick-candles?security_id='+sid+'&seconds='+_curTick+'&date='+curDate);
       var d=await r.json();
       if(d.error||!d.candles||!d.candles.length) {{
         setChartMsg(d.error||'No tick data for this date','');
         return;
       }}
-      candles=d.candles; curInterval='15s';
-      document.getElementById('ivl').textContent='15s';
+      candles=d.candles; curInterval=_curTick+'s';
+      document.getElementById('ivl').textContent=_curTick+'s';
       series.setData(candles);
       hideChartMsg();
       updateIndicators();
