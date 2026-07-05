@@ -70,6 +70,11 @@ _cache_lock:   threading.Lock = threading.Lock()
 _trades_cache: dict           = {}  # date -> list[dict]  (all fields, notes resolved)
 _dates_cache:  list           = []  # sorted desc, max 90 entries
 
+# ── Option CSV upload job tracking ───────────────────────────────────
+_upload_jobs:      dict           = {}  # job_id -> status dict
+_upload_jobs_lock: threading.Lock = threading.Lock()
+
+
 
 def _rebuild_cache(conn: sqlite3.Connection | None = None) -> None:
     """Reload all trades from DB into the in-memory cache."""
@@ -168,6 +173,27 @@ def _init_db(conn: sqlite3.Connection) -> None:
                 PRIMARY KEY (security_id, ts)
             );
             CREATE INDEX IF NOT EXISTS idx_candle_lookup ON candle_1m(security_id, ts);
+            CREATE TABLE IF NOT EXISTS option_ohlcv (
+                ticker  TEXT    NOT NULL,
+                ts      INTEGER NOT NULL,
+                open    REAL    NOT NULL,
+                high    REAL    NOT NULL,
+                low     REAL    NOT NULL,
+                close   REAL    NOT NULL,
+                volume  INTEGER DEFAULT 0,
+                oi      INTEGER DEFAULT 0,
+                PRIMARY KEY (ticker, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ohlcv_ticker ON option_ohlcv(ticker);
+            CREATE TABLE IF NOT EXISTS option_ohlcv_meta (
+                ticker      TEXT PRIMARY KEY,
+                underlying  TEXT NOT NULL,
+                expiry      TEXT NOT NULL,
+                option_type TEXT NOT NULL,
+                strike      REAL NOT NULL,
+                row_count   INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_ohlcv_meta ON option_ohlcv_meta(underlying, expiry, strike);
         """)
     # migrate existing DBs that lack the direction column
     try:
@@ -798,7 +824,225 @@ def _parse_csv_trades(content: str) -> tuple[list[dict], str]:
     return result, ""
 
 
+# ── Historical option CSV upload helpers ─────────────────────────────────────
+
+import calendar as _calendar
+import re as _re_opt
+
+
+def _parse_option_ticker(ticker: str) -> dict | None:
+    """Parse a ticker like 'NIFTY05MAY26C26550' into metadata dict.
+
+    Returns {underlying, expiry (YYYY-MM-DD), option_type (CE/PE), strike (float)}
+    or None if the ticker is unrecognised or not an index option.
+    """
+    t = ticker.strip().upper().replace(" ", "")
+    # Longest-match on underlying name first to avoid NIFTY matching BANKNIFTY
+    pattern = (
+        r"^(BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX|NIFTY)"
+        r"(\d{2}[A-Z]{3}\d{2})"   # e.g. 05MAY26
+        r"([CP])"                  # C = CE, P = PE
+        r"(\d+(?:\.\d+)?)$"       # strike, may have decimal
+    )
+    m = _re_opt.match(pattern, t)
+    if not m:
+        return None
+    underlying, date_part, type_char, strike_str = m.groups()
+    try:
+        expiry_dt = datetime.strptime(date_part, "%d%b%y")
+        expiry = expiry_dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+    return {
+        "underlying":  underlying,
+        "expiry":      expiry,
+        "option_type": "CE" if type_char == "C" else "PE",
+        "strike":      float(strike_str),
+    }
+
+
+def _ts_to_epoch(ts_str: str) -> int:
+    """Convert '21-04-2026 09:15:00' (IST naive) → IST-as-UTC epoch.
+
+    Treats the timestamp as IST but stores as if UTC so LightweightCharts
+    (which renders in UTC) shows the correct IST hour digits.
+    Matches the convention used for tick_data: ts = time.time() + 19800.
+    """
+    try:
+        dt = datetime.strptime(ts_str.strip(), "%d-%m-%Y %H:%M:%S")
+        return int(_calendar.timegm(dt.timetuple()))  # as-if-UTC → IST hours preserved
+    except ValueError:
+        return 0
+
+
+def _is_spot_ticker(ticker: str) -> bool:
+    """Return True if the ticker represents a spot/index price file (not an option)."""
+    t = ticker.strip().lower()
+    return t in ("nifty 50", "nifty50", "nifty_spot", "nifty spot",
+                 "sensex", "banknifty", "bank nifty")
+
+
+def _normalise_spot_ticker(ticker: str) -> str:
+    """Map a spot ticker name to a canonical UNDERLYING_SPOT key."""
+    t = ticker.strip().lower()
+    if "bank" in t:
+        return "BANKNIFTY_SPOT"
+    if "sensex" in t:
+        return "SENSEX_SPOT"
+    return "NIFTY_SPOT"
+
+
+def _process_option_zip_bg(job_id: str, zip_path: str) -> None:
+    """Background worker: read ZIP, parse every CSV, bulk-insert into option_ohlcv.
+
+    Updates _upload_jobs[job_id] with progress so the frontend can poll.
+    Cleans up the temp ZIP file when done.
+    """
+    import zipfile, io as _io, csv as _csv, os as _os, tempfile as _tmp
+
+    def _update(status: str, **kw):
+        with _upload_jobs_lock:
+            _upload_jobs[job_id].update({"status": status, **kw})
+
+    try:
+        _update("scanning")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv") and not n.startswith("__MACOSX")]
+
+        total_files  = len(csv_names)
+        files_done   = 0
+        rows_inserted = 0
+        rows_skipped  = 0
+        errors        = []
+
+        _update("running", total_files=total_files, files_done=0, rows_inserted=0)
+
+        db = get_db()
+        # Enable WAL for faster bulk inserts
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
+
+        BATCH = 5000   # rows per executemany call
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for csv_name in csv_names:
+                try:
+                    with zf.open(csv_name) as raw:
+                        content = raw.read().decode("utf-8-sig", errors="replace")
+
+                    reader = _csv.DictReader(_io.StringIO(content))
+                    rows_buf: list[tuple] = []
+                    meta_ticker = None
+                    meta        = None
+                    is_spot     = False
+
+                    for row in reader:
+                        raw_ticker = (row.get("Ticker") or "").strip()
+                        ts_str     = (row.get("Timestamp") or "").strip()
+                        if not ts_str:
+                            continue
+                        ts = _ts_to_epoch(ts_str)
+                        if ts == 0:
+                            continue
+
+                        # Determine ticker on first valid row
+                        if meta_ticker is None and raw_ticker:
+                            if _is_spot_ticker(raw_ticker):
+                                is_spot      = True
+                                meta_ticker  = _normalise_spot_ticker(raw_ticker)
+                                meta = {
+                                    "underlying":  meta_ticker.replace("_SPOT", ""),
+                                    "expiry":      "SPOT",
+                                    "option_type": "SPOT",
+                                    "strike":      0.0,
+                                }
+                            else:
+                                parsed = _parse_option_ticker(raw_ticker)
+                                if parsed is None:
+                                    # Try to derive ticker from filename
+                                    fname = _os.path.basename(csv_name).replace(".csv", "")
+                                    parsed = _parse_option_ticker(fname)
+                                if parsed:
+                                    meta_ticker = raw_ticker.strip().upper().replace(" ", "")
+                                    meta        = parsed
+                                else:
+                                    break  # unrecognised — skip whole file
+
+                        if meta_ticker is None:
+                            continue
+
+                        try:
+                            o  = float(row.get("Open")   or 0)
+                            h  = float(row.get("High")   or 0)
+                            l  = float(row.get("Low")    or 0)
+                            c  = float(row.get("Close")  or 0)
+                            v  = int(float(row.get("Volume") or 0))
+                            oi = int(float(row.get("OI")     or 0))
+                        except (ValueError, TypeError):
+                            continue
+
+                        rows_buf.append((meta_ticker, ts, o, h, l, c, v, oi))
+
+                    if not rows_buf or meta_ticker is None or meta is None:
+                        files_done += 1
+                        continue
+
+                    # Bulk insert
+                    inserted_here = 0
+                    with _db_lock:
+                        for i in range(0, len(rows_buf), BATCH):
+                            chunk = rows_buf[i:i + BATCH]
+                            cur = db.executemany(
+                                "INSERT OR IGNORE INTO option_ohlcv"
+                                " (ticker,ts,open,high,low,close,volume,oi)"
+                                " VALUES (?,?,?,?,?,?,?,?)",
+                                chunk,
+                            )
+                            inserted_here += cur.rowcount
+                        db.execute(
+                            "INSERT INTO option_ohlcv_meta"
+                            " (ticker,underlying,expiry,option_type,strike,row_count)"
+                            " VALUES (?,?,?,?,?,?)"
+                            " ON CONFLICT(ticker) DO UPDATE SET"
+                            " row_count=row_count+excluded.row_count",
+                            (meta_ticker, meta["underlying"], meta["expiry"],
+                             meta["option_type"], meta["strike"], inserted_here),
+                        )
+                        db.commit()
+
+                    rows_inserted += inserted_here
+                    rows_skipped  += len(rows_buf) - inserted_here
+
+                except Exception as fe:
+                    errors.append(f"{csv_name}: {fe}")
+                    logger.warning("option zip: error in %s: %s", csv_name, fe)
+
+                files_done += 1
+                if files_done % 50 == 0:
+                    _update("running", total_files=total_files, files_done=files_done,
+                            rows_inserted=rows_inserted)
+
+        _update("done", total_files=total_files, files_done=files_done,
+                rows_inserted=rows_inserted, rows_skipped=rows_skipped,
+                errors=errors[:20])
+        logger.info("option zip upload done: %d files, %d rows inserted, %d skipped",
+                    files_done, rows_inserted, rows_skipped)
+
+    except Exception as e:
+        logger.error("option zip upload failed: %s", e)
+        _update("error", message=str(e))
+    finally:
+        try:
+            _os.unlink(zip_path)
+        except Exception:
+            pass
+
+
+# ── End historical option CSV helpers ─────────────────────────────────────────
+
+
 def _aggregate_partial_fills(trades: list[dict]) -> list[dict]:
+
     """Merge partial fills that share the same orderId into one record (summed qty, weighted avg price)."""
     seen: dict = {}
     result: list[dict] = []
@@ -2292,132 +2536,229 @@ loadDates().then(function(){{
 
 
 def _option_expiry_page() -> str:
-    today = str(date.today())
-    ver   = APP_VERSION
-    root  = APP_ROOT
+    ver  = APP_VERSION
+    root = APP_ROOT
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Historical Options — Trade Analyser {ver}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
-body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
-#hdr{{display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;}}
-#hdr a{{color:#555;text-decoration:none;font-size:11px;}}
-#hdr a:hover{{color:#aaa;}}
-.htitle{{font-weight:600;font-size:14px;color:#ccc;}}
-.badge{{font-size:10px;color:#555;}}
-.ibtn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
-.ibtn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
-#ctrlBar{{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;flex-wrap:wrap;}}
-.cf{{display:flex;flex-direction:column;gap:3px;}}
-.cf label{{font-size:10px;color:#555;}}
-.cf select,.cf input{{background:#111;border:1px solid #2a2a2a;color:#ccc;padding:4px 6px;border-radius:3px;font-size:12px;}}
-.cf input::placeholder{{color:#444;}}
-.type-row{{display:flex;gap:4px;}}
-.ldbtn{{background:#1a2a1a;border:1px solid #3a6a3a;color:#4fc3f7;padding:4px 14px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;align-self:flex-end;margin-top:14px;}}
-.ldbtn:hover{{background:#224422;}}
-.rfbtn{{background:#111;border:1px solid #2a2a2a;color:#555;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:11px;align-self:flex-end;margin-top:14px;}}
-.rfbtn:hover{{border-color:#555;color:#aaa;}}
-#rfStatus{{font-size:11px;color:#555;align-self:flex-end;margin-top:16px;}}
-#chartArea{{flex:1;min-height:0;position:relative;}}
-#chartEl{{width:100%;height:100%;}}
-#chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
-#msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
-#errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:90%;text-align:center;}}
+body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:13px;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
+
+/* ── Header ── */
+#hdr{{display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid #161b22;flex-shrink:0;background:#0d1117;}}
+#hdr a{{color:#484f58;text-decoration:none;font-size:11px;transition:color .15s;}}
+#hdr a:hover{{color:#8b949e;}}
+.htitle{{font-weight:600;font-size:14px;color:#e6edf3;letter-spacing:-.2px;}}
+.badge{{font-size:10px;color:#484f58;background:#161b22;padding:2px 6px;border-radius:10px;}}
+.ivl-group{{margin-left:auto;display:flex;gap:3px;}}
+.ivlbtn{{background:#161b22;border:1px solid #21262d;color:#8b949e;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:'Inter',sans-serif;transition:all .15s;}}
+.ivlbtn.on{{background:#1f2d1f;border-color:#238636;color:#3fb950;font-weight:600;}}
+.ivlbtn:hover:not(.on){{border-color:#30363d;color:#c9d1d9;}}
+
+/* ── Main layout ── */
+#main{{display:flex;flex:1;min-height:0;}}
+
+/* ── Left panel ── */
+#left{{width:300px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid #161b22;background:#0d1117;overflow:hidden;}}
+#uploadZone{{padding:12px;border-bottom:1px solid #161b22;flex-shrink:0;}}
+.ul-title{{font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;}}
+.ul-row{{display:flex;gap:6px;align-items:center;}}
+#uploadBtn{{background:linear-gradient(135deg,#238636,#196c2e);border:none;color:#fff;padding:5px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;transition:opacity .15s;white-space:nowrap;}}
+#uploadBtn:hover{{opacity:.85;}}
+#uploadBtn:disabled{{opacity:.5;cursor:not-allowed;}}
+#fileInput{{display:none;}}
+.ul-stats{{font-size:10px;color:#484f58;margin-top:6px;line-height:1.6;}}
+.ul-stats b{{color:#8b949e;}}
+
+/* Progress bar */
+#progressWrap{{margin-top:8px;display:none;}}
+#progressBar{{height:4px;background:#21262d;border-radius:2px;overflow:hidden;margin-bottom:4px;}}
+#progressFill{{height:100%;background:linear-gradient(90deg,#238636,#3fb950);width:0%;transition:width .3s;border-radius:2px;}}
+#progressText{{font-size:10px;color:#8b949e;}}
+
+/* Underlying chips */
+#ulRow{{padding:8px 12px;border-bottom:1px solid #161b22;flex-shrink:0;display:flex;gap:4px;flex-wrap:wrap;}}
+.ulchip{{background:#161b22;border:1px solid #21262d;color:#8b949e;padding:3px 10px;border-radius:12px;cursor:pointer;font-size:11px;font-weight:500;transition:all .15s;}}
+.ulchip.on{{background:#0d2d6e;border-color:#388bfd;color:#58a6ff;}}
+
+/* Expiry list */
+#expirySection{{flex:0 0 auto;border-bottom:1px solid #161b22;}}
+#expirySectionTitle{{padding:8px 12px 4px;font-size:10px;font-weight:600;color:#484f58;text-transform:uppercase;letter-spacing:.5px;display:flex;justify-content:space-between;align-items:center;}}
+#expiryCount{{font-size:10px;color:#484f58;font-weight:400;text-transform:none;letter-spacing:0;}}
+#expiryList{{max-height:160px;overflow-y:auto;padding:0 8px 6px;}}
+.exp-item{{padding:5px 8px;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:background .12s;}}
+.exp-item:hover{{background:#161b22;}}
+.exp-item.on{{background:#1f2d1f;}}
+.exp-date{{font-weight:500;color:#c9d1d9;font-size:12px;}}
+.exp-item.on .exp-date{{color:#3fb950;}}
+.exp-meta{{font-size:10px;color:#484f58;}}
+#expiryEmpty{{padding:16px 12px;font-size:11px;color:#484f58;text-align:center;}}
+
+/* Strike ladder */
+#ladderSection{{flex:1;min-height:0;display:flex;flex-direction:column;}}
+#ladderTitle{{padding:7px 12px 4px;font-size:10px;font-weight:600;color:#484f58;text-transform:uppercase;letter-spacing:.5px;flex-shrink:0;display:flex;justify-content:space-between;}}
+#ladderSpot{{font-size:10px;color:#f0883e;font-weight:500;text-transform:none;letter-spacing:0;}}
+#ladderScroll{{flex:1;overflow-y:auto;}}
+#ladderTable{{width:100%;border-collapse:collapse;font-size:12px;}}
+#ladderTable thead th{{position:sticky;top:0;background:#0d1117;padding:4px 6px;font-size:10px;font-weight:600;color:#484f58;text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid #21262d;z-index:2;}}
+#ladderTable thead th:first-child{{text-align:right;}}
+#ladderTable thead th:last-child{{text-align:left;}}
+#ladderTable thead th:nth-child(2){{text-align:center;color:#8b949e;}}
+.lrow td{{padding:4px 6px;border-bottom:1px solid #0d1117;cursor:pointer;}}
+.lrow:hover td{{background:#161b22;}}
+.lrow.atm td{{background:#1a1a0a !important;}}
+.lrow.atm .strike-cell{{color:#f0883e;font-weight:700;}}
+.ce-cell{{text-align:right;color:#58a6ff;font-variant-numeric:tabular-nums;}}
+.pe-cell{{text-align:left;color:#f0883e;font-variant-numeric:tabular-nums;}}
+.strike-cell{{text-align:center;color:#8b949e;font-weight:600;font-variant-numeric:tabular-nums;}}
+.ce-cell:hover{{color:#a5d6ff;text-decoration:underline;}}
+.pe-cell:hover{{color:#ffc680;text-decoration:underline;}}
+.null-cell{{color:#21262d;text-align:center;}}
+#ladderEmpty{{padding:20px 12px;font-size:11px;color:#484f58;text-align:center;}}
+
+/* Scrollbar */
+::-webkit-scrollbar{{width:4px;height:4px;}}
+::-webkit-scrollbar-track{{background:transparent;}}
+::-webkit-scrollbar-thumb{{background:#21262d;border-radius:2px;}}
+
+/* ── Right panel — chart ── */
+#right{{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;}}
+#chartTitle{{padding:7px 14px;font-size:12px;font-weight:500;color:#8b949e;flex-shrink:0;border-bottom:1px solid #161b22;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+#chartEl{{flex:1;min-height:0;}}
+#chartMsg{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#484f58;font-size:13px;text-align:center;pointer-events:none;z-index:3;line-height:1.8;}}
 </style>
 </head>
 <body>
 <div id="hdr">
   <a href="{root}/">&#8592; Main</a>
   <a href="{root}/option-chart">Option Chart</a>
-  <a href="{root}/option-ladder">ATM Ladder</a>
   <span class="htitle">Historical Options</span>
   <span class="badge">{ver}</span>
-  <div style="margin-left:auto;display:flex;gap:4px;">
-    <button class="ibtn on" id="ivl1"  onclick="setIvl(1)">1m</button>
-    <button class="ibtn"    id="ivl3"  onclick="setIvl(3)">3m</button>
-    <button class="ibtn"    id="ivl5"  onclick="setIvl(5)">5m</button>
-    <button class="ibtn"    id="ivl15" onclick="setIvl(15)">15m</button>
+  <div class="ivl-group">
+    <button class="ivlbtn on" id="ivl1"  onclick="setIvl(1)">1m</button>
+    <button class="ivlbtn"    id="ivl3"  onclick="setIvl(3)">3m</button>
+    <button class="ivlbtn"    id="ivl5"  onclick="setIvl(5)">5m</button>
+    <button class="ivlbtn"    id="ivl15" onclick="setIvl(15)">15m</button>
   </div>
 </div>
-<div id="ctrlBar">
-  <div class="cf">
-    <label>Underlying</label>
-    <select id="f-ul" style="width:110px;">
-      <option>NIFTY</option><option>SENSEX</option>
-      <option>BANKNIFTY</option><option>FINNIFTY</option><option>MIDCPNIFTY</option>
-    </select>
-  </div>
-  <div class="cf">
-    <label>Expiry date</label>
-    <input type="date" id="f-expiry" style="width:130px;">
-  </div>
-  <div class="cf">
-    <label>Strike</label>
-    <input type="number" id="f-strike" placeholder="e.g. 25000" step="50" style="width:100px;">
-  </div>
-  <div class="cf">
-    <label>Type</label>
-    <div class="type-row" style="margin-top:4px;">
-      <button class="ibtn on" id="t-ce" onclick="setType('CE')">CE</button>
-      <button class="ibtn"    id="t-pe" onclick="setType('PE')">PE</button>
+
+<div id="main">
+  <!-- LEFT PANEL -->
+  <div id="left">
+
+    <!-- Upload zone -->
+    <div id="uploadZone">
+      <div class="ul-title">Data Upload</div>
+      <div class="ul-row">
+        <button id="uploadBtn" onclick="triggerUpload()">&#8593; Upload ZIP</button>
+        <input type="file" id="fileInput" accept=".zip" onchange="onFileSelected(this)">
+        <span id="uploadStatus" style="font-size:11px;color:#484f58;"></span>
+      </div>
+      <div id="progressWrap">
+        <div id="progressBar"><div id="progressFill"></div></div>
+        <div id="progressText"></div>
+      </div>
+      <div class="ul-stats" id="dbStats">Loading…</div>
+    </div>
+
+    <!-- Underlying chips -->
+    <div id="ulRow">
+      <span class="ulchip on" onclick="setUl('NIFTY',this)">NIFTY</span>
+      <span class="ulchip" onclick="setUl('BANKNIFTY',this)">BANKNIFTY</span>
+      <span class="ulchip" onclick="setUl('SENSEX',this)">SENSEX</span>
+      <span class="ulchip" onclick="setUl('FINNIFTY',this)">FINNIFTY</span>
+    </div>
+
+    <!-- Expiry list -->
+    <div id="expirySection">
+      <div id="expirySectionTitle">
+        Expiries
+        <span id="expiryCount"></span>
+      </div>
+      <div id="expiryList"><div id="expiryEmpty">Upload a ZIP to see expiries</div></div>
+    </div>
+
+    <!-- Strike ladder -->
+    <div id="ladderSection">
+      <div id="ladderTitle">
+        Strike Ladder
+        <span id="ladderSpot"></span>
+      </div>
+      <div id="ladderScroll">
+        <div id="ladderEmpty">Select an expiry to see strikes</div>
+        <table id="ladderTable" style="display:none">
+          <thead><tr>
+            <th style="width:40%">CE</th>
+            <th style="width:20%">Strike</th>
+            <th style="width:40%">PE</th>
+          </tr></thead>
+          <tbody id="ladderBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /left -->
+
+  <!-- RIGHT PANEL -->
+  <div id="right">
+    <div id="chartTitle">Select an expiry and click a strike to load its chart</div>
+    <div id="chartEl"></div>
+    <div id="chartMsg">
+      <div style="font-size:28px;margin-bottom:8px;opacity:.3">&#128202;</div>
+      Select an expiry on the left,<br>then click a CE or PE strike to load its chart
     </div>
   </div>
-  <button class="ldbtn" onclick="loadChart()">Load</button>
-  <button class="rfbtn" id="rfBtn" onclick="refreshInstruments()" title="Download Dhan instrument master to find security IDs for options not yet traded">&#8635; Refresh Instruments</button>
-  <span id="rfStatus"></span>
 </div>
-<div id="chartArea">
-  <div id="chartTitle">Enter underlying, expiry date, and strike above then click Load</div>
-  <div id="chartEl"></div>
-  <div id="msgEl" style="display:none"></div>
-  <div id="errBanner"></div>
-</div>
+
 <script>
 var _root='{root}';
-var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_optType='CE';
+var _chart=null,_series=null,_markersPlugin=null;
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
-var TODAY='{today}';
+var _curIvl=1,_curUl='NIFTY',_curExpiry='',_pollTimer=null;
 
+/* ── Chart init ── */
 (function initChart(){{
   var el=document.getElementById('chartEl');
   _chart=LightweightCharts.createChart(el,{{
-    layout:{{background:{{color:'#0d0d0d'}},textColor:'#aaa'}},
-    grid:{{vertLines:{{color:'#1a1a1a'}},horzLines:{{color:'#1a1a1a'}}}},
+    layout:{{background:{{color:'#0a0a0f'}},textColor:'#8b949e'}},
+    grid:{{vertLines:{{color:'#161b22'}},horzLines:{{color:'#161b22'}}}},
     crosshair:{{mode:0}},
-    rightPriceScale:{{borderColor:'#2a2a2a'}},
-    timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false}},
+    rightPriceScale:{{borderColor:'#21262d'}},
+    timeScale:{{borderColor:'#21262d',timeVisible:true,secondsVisible:false}},
   }});
   _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
-    upColor:'#3fb950',downColor:'#f85149',
-    borderUpColor:'#3fb950',borderDownColor:'#f85149',
-    wickUpColor:'#3fb950',wickDownColor:'#f85149',
+    upColor:'#238636',downColor:'#da3633',
+    borderUpColor:'#2ea043',borderDownColor:'#f85149',
+    wickUpColor:'#2ea043',wickDownColor:'#f85149',
   }});
   _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
   _ema20s=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    color:'#388bfd',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
   }});
   _ema50s=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#FF9800',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    color:'#f0883e',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
   }});
   _rsiSeries=_chart.addSeries(LightweightCharts.LineSeries,{{
     color:'#58a6ff',lineWidth:1,lastValueVisible:true,priceLineVisible:false
   }},1);
-  _rsiSeries.createPriceLine({{price:70,color:'#2a2a2a',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
-  _rsiSeries.createPriceLine({{price:30,color:'#2a2a2a',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+  _rsiSeries.createPriceLine({{price:70,color:'#21262d',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+  _rsiSeries.createPriceLine({{price:30,color:'#21262d',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
   _macdHist=_chart.addSeries(LightweightCharts.HistogramSeries,{{
-    color:'#555',lastValueVisible:false,priceLineVisible:false
+    color:'#484f58',lastValueVisible:false,priceLineVisible:false
   }},2);
   _macdLine=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#2196F3',lineWidth:1,lastValueVisible:false,priceLineVisible:false
+    color:'#388bfd',lineWidth:1,lastValueVisible:false,priceLineVisible:false
   }},2);
   _macdSignal=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#FF5722',lineWidth:1,lastValueVisible:false,priceLineVisible:false
+    color:'#f0883e',lineWidth:1,lastValueVisible:false,priceLineVisible:false
   }},2);
   var panes=_chart.panes();
   if(panes[0])panes[0].setStretchFactor(5);
@@ -2426,7 +2767,8 @@ var TODAY='{today}';
   new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
 }})();
 
-function _emaArr(closes,p){{
+/* ── Indicators ── */
+function _ema(closes,p){{
   var out=new Array(closes.length).fill(null);
   if(closes.length<p)return out;
   var s=0;for(var j=0;j<p;j++)s+=closes[j];
@@ -2437,104 +2779,274 @@ function _emaArr(closes,p){{
 function calcIndicators(data){{
   var closes=data.map(function(c){{return c.close;}}),times=data.map(function(c){{return c.time;}}),n=data.length;
   function toS(arr){{var o=[];for(var i=0;i<arr.length;i++)if(arr[i]!==null)o.push({{time:times[i],value:parseFloat(arr[i].toFixed(4))}});return o;}}
-  var e20=_emaArr(closes,20),e50=_emaArr(closes,50);
-  var e12=_emaArr(closes,12),e26=_emaArr(closes,26);
+  var e20=_ema(closes,20),e50=_ema(closes,50);
+  var e12=_ema(closes,12),e26=_ema(closes,26);
   var macdArr=new Array(n).fill(null);
   for(var i=0;i<n;i++)if(e12[i]!==null&&e26[i]!==null)macdArr[i]=e12[i]-e26[i];
   var fm=macdArr.findIndex(function(v){{return v!==null;}});
   var sigArr=new Array(n).fill(null);
-  if(fm>=0){{var ms=macdArr.slice(fm),es=_emaArr(ms,9);for(var i=0;i<ms.length;i++)sigArr[fm+i]=es[i];}}
+  if(fm>=0){{var ms=macdArr.slice(fm),es=_ema(ms,9);for(var i=0;i<ms.length;i++)sigArr[fm+i]=es[i];}}
   var rsiArr=new Array(n).fill(null);
   if(n>14){{var g=0,l=0;for(var i=1;i<=14;i++){{var d=closes[i]-closes[i-1];if(d>0)g+=d;else l-=d;}}var ag=g/14,al=l/14;rsiArr[14]=al===0?100:100-(100/(1+ag/al));for(var i=15;i<n;i++){{var d=closes[i]-closes[i-1],gv=d>0?d:0,lv=d<0?-d:0;ag=(ag*13+gv)/14;al=(al*13+lv)/14;rsiArr[i]=al===0?100:100-(100/(1+ag/al));}}}}
   var hist=[];
-  for(var i=0;i<n;i++){{if(macdArr[i]!==null&&sigArr[i]!==null){{var v=macdArr[i]-sigArr[i];hist.push({{time:times[i],value:parseFloat(v.toFixed(4)),color:v>=0?'rgba(38,166,154,0.7)':'rgba(239,83,80,0.7)'}});}}}}
+  for(var i=0;i<n;i++){{if(macdArr[i]!==null&&sigArr[i]!==null){{var v=macdArr[i]-sigArr[i];hist.push({{time:times[i],value:parseFloat(v.toFixed(4)),color:v>=0?'rgba(35,134,54,0.7)':'rgba(218,54,51,0.7)'}});}}}}
   return{{ema20:toS(e20),ema50:toS(e50),rsi:toS(rsiArr),macdLine:toS(macdArr),sigLine:toS(sigArr),histogram:hist}};
 }}
-function updateIndicators(data){{
-  if(!data.length||!_ema20s)return;
-  var ind=calcIndicators(data);
-  _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
-  if(_rsiSeries)_rsiSeries.setData(ind.rsi);
-  if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
-}}
 
+/* ── Interval ── */
 function setIvl(n){{
   _curIvl=n;
   [1,3,5,15].forEach(function(v){{
     var b=document.getElementById('ivl'+v);
-    if(b)b.className='ibtn'+(v===n?' on':'');
+    if(b)b.className='ivlbtn'+(v===n?' on':'');
   }});
-}}
-function setType(t){{
-  _optType=t;
-  ['CE','PE'].forEach(function(v){{
-    document.getElementById('t-'+v.toLowerCase()).className='ibtn'+(v===t?' on':'');
-  }});
-}}
-function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
-function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
-function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'block':'none';e.textContent=m||'';}}
-
-function fromDateFor(expDate){{
-  var p=(expDate||TODAY).split('-');
-  var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
-  dt.setUTCDate(dt.getUTCDate()-30);
-  return dt.toISOString().slice(0,10);
+  if(_curTicker)loadChart(_curTicker,_curTickerLabel);
 }}
 
-async function loadChart(){{
-  var ul=document.getElementById('f-ul').value;
-  var expiry=document.getElementById('f-expiry').value;
-  var strike=document.getElementById('f-strike').value;
-  if(!expiry){{showErr('Select an expiry date');return;}}
-  if(!strike){{showErr('Enter a strike price');return;}}
-  showMsg('Loading…');showErr('');
-  var qs='underlying='+encodeURIComponent(ul)
-    +'&option_type='+encodeURIComponent(_optType)
-    +'&strike='+encodeURIComponent(strike)
-    +'&expiry='+encodeURIComponent(expiry)
-    +'&from_date='+encodeURIComponent(fromDateFor(expiry))
-    +'&to_date='+encodeURIComponent(expiry)
-    +'&interval='+_curIvl;
+/* ── Underlying ── */
+function setUl(ul,el){{
+  _curUl=ul;
+  document.querySelectorAll('.ulchip').forEach(function(c){{c.className='ulchip';}});
+  el.className='ulchip on';
+  _curExpiry='';
+  loadExpiries();
+}}
+
+/* ── DB stats ── */
+async function loadStats(){{
   try{{
-    var r=await fetch(_root+'/api/option-candles?'+qs);
+    var r=await fetch(_root+'/api/option-upload-stats');
     var d=await r.json();
-    if(d.error){{showMsg('');showErr(d.error);return;}}
+    var el=document.getElementById('dbStats');
+    if(!d.tickers&&!d.expiries){{
+      el.innerHTML='No data yet — upload a ZIP to get started';
+    }}else{{
+      el.innerHTML='<b>'+d.tickers+'</b> tickers &nbsp;·&nbsp; <b>'+d.expiries+'</b> expiries &nbsp;·&nbsp; <b>'+fmtNum(d.total_rows)+'</b> rows'
+        +(d.spot_rows?' &nbsp;·&nbsp; spot: <b>'+fmtNum(d.spot_rows)+'</b>':'');
+    }}
+  }}catch(e){{document.getElementById('dbStats').textContent='Stats unavailable';}}
+}}
+
+/* ── Expiry list ── */
+async function loadExpiries(){{
+  var list=document.getElementById('expiryList');
+  var empty=document.getElementById('expiryEmpty');
+  list.innerHTML='<div id="expiryEmpty" style="padding:12px;font-size:11px;color:#484f58;text-align:center">Loading…</div>';
+  try{{
+    var r=await fetch(_root+'/api/option-expiries?underlying='+_curUl);
+    var data=await r.json();
+    document.getElementById('expiryCount').textContent=data.length?'('+data.length+')':'';
+    if(!data.length){{
+      list.innerHTML='<div id="expiryEmpty" style="padding:12px;font-size:11px;color:#484f58;text-align:center">No data for '+_curUl+'</div>';
+      return;
+    }}
+    list.innerHTML='';
+    data.forEach(function(exp){{
+      var div=document.createElement('div');
+      div.className='exp-item';
+      div.dataset.expiry=exp.expiry;
+      div.innerHTML='<span class="exp-date">'+exp.expiry+'</span>'
+        +'<span class="exp-meta">'+exp.strike_count+' strikes</span>';
+      div.onclick=function(){{selectExpiry(exp.expiry,div);}};
+      list.appendChild(div);
+    }});
+  }}catch(e){{
+    list.innerHTML='<div style="padding:12px;font-size:11px;color:#f85149;">Error loading expiries</div>';
+  }}
+}}
+
+function selectExpiry(expiry,el){{
+  _curExpiry=expiry;
+  document.querySelectorAll('.exp-item').forEach(function(e){{e.className='exp-item';}});
+  el.className='exp-item on';
+  loadLadder(expiry);
+}}
+
+/* ── Strike ladder ── */
+var _spotClose=null,_curTicker=null,_curTickerLabel='';
+
+async function loadLadder(expiry){{
+  var empty=document.getElementById('ladderEmpty');
+  var table=document.getElementById('ladderTable');
+  var body=document.getElementById('ladderBody');
+  var spotEl=document.getElementById('ladderSpot');
+  empty.style.display='block';empty.textContent='Loading…';
+  table.style.display='none';
+  body.innerHTML='';
+  try{{
+    var r=await fetch(_root+'/api/option-strikes?underlying='+_curUl+'&expiry='+expiry);
+    var d=await r.json();
+    if(!d.ok||!d.ladder||!d.ladder.length){{
+      empty.textContent='No strikes found for this expiry';
+      return;
+    }}
+    _spotClose=d.spot_close;
+    if(_spotClose){{
+      spotEl.textContent='Spot ≈ '+_spotClose.toFixed(2);
+    }}else{{
+      spotEl.textContent='';
+    }}
+    // Find ATM strike (closest to spot)
+    var atmStrike=null;
+    if(_spotClose){{
+      var minDiff=Infinity;
+      d.ladder.forEach(function(row){{
+        var diff=Math.abs(row.strike-_spotClose);
+        if(diff<minDiff){{minDiff=diff;atmStrike=row.strike;}}
+      }});
+    }}
+    // Build rows
+    d.ladder.forEach(function(row){{
+      var tr=document.createElement('tr');
+      tr.className='lrow'+(row.strike===atmStrike?' atm':'');
+      var ceLast=row.ce_last!=null?row.ce_last.toFixed(2):'—';
+      var peLast=row.pe_last!=null?row.pe_last.toFixed(2):'—';
+      tr.innerHTML=
+        '<td class="ce-cell'+(row.ce_ticker?'':' null-cell')+'"'
+          +(row.ce_ticker?' onclick="loadChart(\''+row.ce_ticker+'\',\''+row.strike+' CE\')" title="Load CE chart"':'')+'>'
+          +ceLast+'</td>'
+        +'<td class="strike-cell">'+row.strike.toLocaleString('en-IN')+'</td>'
+        +'<td class="pe-cell'+(row.pe_ticker?'':' null-cell')+'"'
+          +(row.pe_ticker?' onclick="loadChart(\''+row.pe_ticker+'\',\''+row.strike+' PE\')" title="Load PE chart"':'')+'>'
+          +peLast+'</td>';
+      body.appendChild(tr);
+    }});
+    empty.style.display='none';
+    table.style.display='table';
+    // Scroll ATM into view
+    var atmRow=body.querySelector('.atm');
+    if(atmRow)atmRow.scrollIntoView({{block:'center',behavior:'smooth'}});
+  }}catch(e){{
+    empty.textContent='Error loading strikes';
+  }}
+}}
+
+/* ── Chart load ── */
+async function loadChart(ticker,label){{
+  _curTicker=ticker;_curTickerLabel=label;
+  var titleEl=document.getElementById('chartTitle');
+  var msgEl=document.getElementById('chartMsg');
+  msgEl.innerHTML='<div style="font-size:22px;margin-bottom:8px;opacity:.4">&#9203;</div>Loading…';
+  msgEl.style.display='block';
+  titleEl.textContent='Loading '+label+'…';
+  try{{
+    var r=await fetch(_root+'/api/option-ohlcv?ticker='+encodeURIComponent(ticker)+'&interval='+_curIvl);
+    var d=await r.json();
     var c=d.candles||[];
-    if(!c.length){{showMsg('No data returned — option may be outside Dhan rolling window');return;}}
+    if(!c.length){{
+      msgEl.innerHTML='<div style="font-size:22px;margin-bottom:8px;opacity:.4">&#128683;</div>No data for '+label;
+      return;
+    }}
     _series.setData(c);
-    updateIndicators(c);
+    var ind=calcIndicators(c);
+    _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
+    if(_rsiSeries)_rsiSeries.setData(ind.rsi);
+    if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
     _markersPlugin.setMarkers([]);
     _chart.timeScale().fitContent();
-    hideMsg();
-    document.getElementById('chartTitle').textContent=
-      ul+' '+strike+' '+_optType+' exp:'+expiry+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
-  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
+    msgEl.style.display='none';
+    var parts=ticker.split('');
+    titleEl.textContent=_curUl+' · '+label+' · exp:'+_curExpiry+' · '+_curIvl+'m · '+c.length+' bars';
+  }}catch(e){{
+    msgEl.innerHTML='<div style="font-size:22px;margin-bottom:8px;opacity:.4">&#9888;</div>Error: '+e.message;
+  }}
 }}
 
-async function refreshInstruments(){{
-  var btn=document.getElementById('rfBtn');
-  var st=document.getElementById('rfStatus');
-  btn.disabled=true;btn.textContent='Downloading…';st.textContent='';
+/* ── Upload ── */
+function triggerUpload(){{document.getElementById('fileInput').click();}}
+
+function onFileSelected(input){{
+  var file=input.files[0];
+  if(!file)return;
+  doUpload(file);
+  input.value='';
+}}
+
+async function doUpload(file){{
+  var btn=document.getElementById('uploadBtn');
+  var statusEl=document.getElementById('uploadStatus');
+  var progressWrap=document.getElementById('progressWrap');
+  var progressFill=document.getElementById('progressFill');
+  var progressText=document.getElementById('progressText');
+
+  btn.disabled=true;
+  statusEl.textContent='Uploading '+fmtBytes(file.size)+'…';
+  progressWrap.style.display='block';
+  progressFill.style.width='2%';
+  progressText.textContent='Sending to server…';
+
   try{{
-    var r=await fetch(_root+'/api/refresh-instruments',{{method:'POST'}});
+    var fd=new FormData();
+    fd.append('file',file);
+    var r=await fetch(_root+'/api/upload-option-csv',{{method:'POST',body:fd}});
     var d=await r.json();
-    if(d.ok){{st.textContent='Cached '+d.count+' contracts';st.style.color='#3fb950';}}
-    else{{st.textContent=d.error||'Failed';st.style.color='#f85149';}}
-  }}catch(e){{st.textContent='Error: '+e.message;st.style.color='#f85149';}}
-  btn.disabled=false;btn.textContent='↻ Refresh Instruments';
+    if(!d.ok){{statusEl.textContent='Error: '+(d.error||'Unknown');btn.disabled=false;return;}}
+    statusEl.textContent='Processing…';
+    progressFill.style.width='5%';
+    pollJob(d.job_id,btn,statusEl,progressFill,progressText);
+  }}catch(e){{
+    statusEl.textContent='Upload failed: '+e.message;
+    btn.disabled=false;progressWrap.style.display='none';
+  }}
 }}
 
-// Pressing Enter in any input triggers load
-document.addEventListener('keydown',function(e){{if(e.key==='Enter')loadChart();}});
+function pollJob(jobId,btn,statusEl,fill,text){{
+  if(_pollTimer)clearInterval(_pollTimer);
+  _pollTimer=setInterval(async function(){{
+    try{{
+      var r=await fetch(_root+'/api/upload-status/'+jobId);
+      var d=await r.json();
+      if(d.status==='scanning'){{
+        text.textContent='Scanning ZIP…';fill.style.width='8%';
+      }}else if(d.status==='running'){{
+        var pct=d.total_files?Math.min(95,Math.round(d.files_done/d.total_files*90)+5):10;
+        fill.style.width=pct+'%';
+        text.textContent=fmtNum(d.files_done)+' / '+fmtNum(d.total_files)+' files · '+fmtNum(d.rows_inserted)+' rows';
+        statusEl.textContent='Processing…';
+      }}else if(d.status==='done'){{
+        clearInterval(_pollTimer);
+        fill.style.width='100%';
+        text.textContent='Done · '+fmtNum(d.rows_inserted)+' rows inserted, '+fmtNum(d.rows_skipped)+' skipped';
+        statusEl.textContent='✓ Complete';
+        statusEl.style.color='#3fb950';
+        btn.disabled=false;
+        setTimeout(function(){{
+          document.getElementById('progressWrap').style.display='none';
+          statusEl.textContent='';statusEl.style.color='';
+        }},4000);
+        loadStats();
+        loadExpiries();
+      }}else if(d.status==='error'){{
+        clearInterval(_pollTimer);
+        statusEl.textContent='Error: '+(d.message||'Unknown');
+        statusEl.style.color='#f85149';
+        btn.disabled=false;
+      }}
+    }}catch(e){{/* network blip — keep polling */}}
+  }},2000);
+}}
+
+/* ── Utilities ── */
+function fmtNum(n){{return(n||0).toLocaleString('en-IN');}}
+function fmtBytes(b){{
+  if(b>1073741824)return(b/1073741824).toFixed(1)+' GB';
+  if(b>1048576)return(b/1048576).toFixed(1)+' MB';
+  return(b/1024).toFixed(0)+' KB';
+}}
+
+/* ── Init ── */
+loadStats();
+loadExpiries();
 </script>
 </body>
 </html>"""
 
 
 app = Flask(__name__)
-app.config['APPLICATION_ROOT'] = APP_ROOT
+app.config['APPLICATION_ROOT']   = APP_ROOT
+app.config['MAX_CONTENT_LENGTH'] = 1_500 * 1024 * 1024  # 1.5 GB — allows 700 MB ZIP uploads
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
 
 
 @app.route("/")
@@ -2946,6 +3458,229 @@ def option_chart():
 @app.route("/option-expiry")
 def option_expiry():
     return _option_expiry_page()
+
+
+# ── Historical option CSV upload API ─────────────────────────────────────────
+
+@app.route("/api/upload-option-csv", methods=["POST"])
+def api_upload_option_csv():
+    """Accept a ZIP of option CSV files, save to disk, start background processing.
+    Returns {ok, job_id} immediately; poll /api/upload-status/<job_id> for progress.
+    """
+    import os as _os, tempfile as _tmp, uuid as _uuid
+
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"ok": False, "error": "No file uploaded"}), 400
+    if not f.filename.lower().endswith(".zip"):
+        return jsonify({"ok": False, "error": "Please upload a .zip file"}), 400
+
+    # Save to a temp file alongside the DB (same filesystem for fast rename)
+    tmp_fd, tmp_path = _tmp.mkstemp(
+        suffix=".zip",
+        dir=_os.path.dirname(DB_PATH),
+        prefix="opt_upload_",
+    )
+    try:
+        _os.close(tmp_fd)
+        f.save(tmp_path)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Could not save upload: {e}"}), 500
+
+    job_id = _uuid.uuid4().hex
+    with _upload_jobs_lock:
+        _upload_jobs[job_id] = {
+            "status":      "queued",
+            "total_files": 0,
+            "files_done":  0,
+            "rows_inserted": 0,
+            "rows_skipped":  0,
+            "errors":      [],
+        }
+
+    t = threading.Thread(
+        target=_process_option_zip_bg,
+        args=(job_id, tmp_path),
+        daemon=True,
+        name=f"opt-upload-{job_id[:8]}",
+    )
+    t.start()
+    logger.info("Started option ZIP upload job %s from %s", job_id, f.filename)
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/upload-status/<job_id>")
+def api_upload_status(job_id: str):
+    """Poll the progress of an ongoing or completed option CSV upload job."""
+    with _upload_jobs_lock:
+        job = _upload_jobs.get(job_id)
+    if job is None:
+        return jsonify({"ok": False, "error": "Unknown job ID"}), 404
+    return jsonify({"ok": True, **job})
+
+
+@app.route("/api/option-expiries")
+def api_option_expiries():
+    """Return distinct expiries with strike counts from the uploaded option data."""
+    underlying = (request.args.get("underlying") or "NIFTY").upper()
+    rows = get_db().execute(
+        "SELECT expiry, COUNT(DISTINCT strike) AS strike_count,"
+        " SUM(CASE WHEN option_type='CE' THEN 1 ELSE 0 END) AS ce_count,"
+        " SUM(CASE WHEN option_type='PE' THEN 1 ELSE 0 END) AS pe_count"
+        " FROM option_ohlcv_meta"
+        " WHERE underlying=? AND expiry != 'SPOT'"
+        " GROUP BY expiry ORDER BY expiry",
+        (underlying,),
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/option-strikes")
+def api_option_strikes():
+    """Return the strike ladder for a given underlying+expiry.
+
+    Also returns the ATM spot close (from NIFTY_SPOT) for the expiry date
+    so the frontend can highlight the nearest ATM strike.
+    """
+    underlying = (request.args.get("underlying") or "NIFTY").upper()
+    expiry     = request.args.get("expiry") or ""
+    if not expiry:
+        return jsonify({"ok": False, "error": "expiry required"}), 400
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT option_type, strike, ticker"
+        " FROM option_ohlcv_meta"
+        " WHERE underlying=? AND expiry=?"
+        " ORDER BY strike",
+        (underlying, expiry),
+    ).fetchall()
+
+    # Build ladder: strike → {ce_ticker, pe_ticker, ce_last, pe_last}
+    ladder: dict[float, dict] = {}
+    for r in rows:
+        s = r["strike"]
+        if s not in ladder:
+            ladder[s] = {"strike": s, "ce_ticker": None, "pe_ticker": None,
+                         "ce_last": None, "pe_last": None}
+        if r["option_type"] == "CE":
+            ladder[s]["ce_ticker"] = r["ticker"]
+        else:
+            ladder[s]["pe_ticker"] = r["ticker"]
+
+    # Fetch last-close for each ticker (for ladder preview column)
+    for s, entry in ladder.items():
+        for key, tkey in [("ce_last", "ce_ticker"), ("pe_last", "pe_ticker")]:
+            t = entry.get(tkey)
+            if t:
+                row = db.execute(
+                    "SELECT close FROM option_ohlcv WHERE ticker=? ORDER BY ts DESC LIMIT 1",
+                    (t,),
+                ).fetchone()
+                entry[key] = row["close"] if row else None
+
+    # ATM: use NIFTY_SPOT close on the expiry date at 15:29 (last traded minute)
+    spot_ticker = underlying + "_SPOT"
+    # Convert expiry date to epoch range for that day 09:15–15:30 IST
+    try:
+        import calendar as _cal
+        from datetime import datetime as _dt
+        exp_day = _dt.strptime(expiry, "%Y-%m-%d")
+        ts_open  = int(_cal.timegm(exp_day.replace(hour=9, minute=15).timetuple()))
+        ts_close = int(_cal.timegm(exp_day.replace(hour=15, minute=30).timetuple()))
+        spot_row = db.execute(
+            "SELECT close FROM option_ohlcv WHERE ticker=? AND ts BETWEEN ? AND ?"
+            " ORDER BY ts DESC LIMIT 1",
+            (spot_ticker, ts_open, ts_close),
+        ).fetchone()
+        spot_close = spot_row["close"] if spot_row else None
+    except Exception:
+        spot_close = None
+
+    return jsonify({
+        "ok":         True,
+        "ladder":     sorted(ladder.values(), key=lambda x: x["strike"]),
+        "spot_close": spot_close,
+    })
+
+
+@app.route("/api/option-ohlcv")
+def api_option_ohlcv():
+    """Return OHLCV candles for a ticker, optionally aggregated to a wider interval.
+
+    Query params:
+      ticker   — e.g. NIFTY05MAY26C26550
+      interval — minutes: 1 (default), 3, 5, 15
+    """
+    ticker   = (request.args.get("ticker") or "").strip()
+    interval = int(request.args.get("interval") or 1)
+    if not ticker:
+        return jsonify({"error": "ticker required"}), 400
+    if interval not in (1, 3, 5, 15):
+        interval = 1
+
+    rows = get_db().execute(
+        "SELECT ts, open, high, low, close, volume, oi"
+        " FROM option_ohlcv WHERE ticker=? ORDER BY ts",
+        (ticker,),
+    ).fetchall()
+
+    if not rows:
+        return jsonify({"candles": [], "ticker": ticker, "count": 0})
+
+    if interval == 1:
+        candles = [
+            {"time": r["ts"], "open": r["open"], "high": r["high"],
+             "low": r["low"], "close": r["close"],
+             "volume": r["volume"], "oi": r["oi"]}
+            for r in rows
+        ]
+    else:
+        # Aggregate: bucket by floor(ts / (interval * 60))
+        bucket_secs = interval * 60
+        buckets: dict[int, dict] = {}
+        for r in rows:
+            bucket = (r["ts"] // bucket_secs) * bucket_secs
+            if bucket not in buckets:
+                buckets[bucket] = {
+                    "time": bucket, "open": r["open"],
+                    "high": r["high"], "low": r["low"], "close": r["close"],
+                    "volume": r["volume"], "oi": r["oi"],
+                }
+            else:
+                b = buckets[bucket]
+                b["high"]   = max(b["high"], r["high"])
+                b["low"]    = min(b["low"],  r["low"])
+                b["close"]  = r["close"]
+                b["volume"] += r["volume"]
+                b["oi"]     = r["oi"]
+        candles = sorted(buckets.values(), key=lambda x: x["time"])
+
+    return jsonify({"candles": candles, "ticker": ticker, "count": len(candles)})
+
+
+@app.route("/api/option-upload-stats")
+def api_option_upload_stats():
+    """Summary of what is currently in the option_ohlcv store."""
+    db = get_db()
+    stats = db.execute(
+        "SELECT COUNT(DISTINCT ticker) AS tickers,"
+        " COUNT(DISTINCT expiry) AS expiries,"
+        " SUM(row_count) AS total_rows"
+        " FROM option_ohlcv_meta WHERE expiry != 'SPOT'"
+    ).fetchone()
+    spot = db.execute(
+        "SELECT COUNT(*) AS spot_rows FROM option_ohlcv WHERE ticker LIKE '%_SPOT'"
+    ).fetchone()
+    return jsonify({
+        "tickers":    stats["tickers"] or 0,
+        "expiries":   stats["expiries"] or 0,
+        "total_rows": stats["total_rows"] or 0,
+        "spot_rows":  spot["spot_rows"] or 0,
+    })
+
+
+# ── End historical option CSV upload API ──────────────────────────────────────
 
 
 @app.route("/api/option-list")
