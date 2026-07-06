@@ -3224,8 +3224,19 @@ async function doUpload(file){{
     var fd=new FormData();
     fd.append('file',file);
     var r=await fetch(_root+'/api/upload-option-csv',{{method:'POST',body:fd}});
+    if (!r.ok) {{
+      var text = await r.text();
+      if (r.status === 413) {{
+        statusEl.textContent = 'Upload failed: File is too large (Nginx limit). Configure client_max_body_size in Nginx.';
+      }} else {{
+        statusEl.textContent = 'Upload failed (' + r.status + '): ' + text.slice(0, 100);
+      }}
+      btn.disabled=false;
+      progressWrap.style.display='none';
+      return;
+    }}
     var d=await r.json();
-    if(!d.ok){{statusEl.textContent='Error: '+(d.error||'Unknown');btn.disabled=false;return;}}
+    if(!d.ok){{statusEl.textContent='Error: '+(d.error||'Unknown');btn.disabled=false;progressWrap.style.display='none';return;}}
     statusEl.textContent='Processing…';
     progressFill.style.width='5%';
     pollJob(d.job_id,btn,statusEl,progressFill,progressText);
@@ -4183,6 +4194,19 @@ async function handleSubmit(e) {{
       method: 'POST',
       body: fd
     }});
+    if (!r.ok) {{
+      var text = await r.text();
+      status.className = 'error';
+      if (r.status === 413) {{
+        status.textContent = 'Upload failed: File is too large (Nginx limit). Configure client_max_body_size in Nginx.';
+      }} else {{
+        status.textContent = 'Upload failed (' + r.status + '): ' + text.slice(0, 100);
+      }}
+      status.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Upload & parse';
+      return;
+    }}
     var d = await r.json();
     if (d.ok) {{
       status.className = 'success';
@@ -6096,6 +6120,17 @@ async function doImportCsv(){{
   var fd=new FormData(); fd.append('file',inp.files[0]);
   try{{
     var r=await fetch(_root+'/api/import-csv',{{method:'POST',body:fd}});
+    if (!r.ok) {{
+      var text = await r.text();
+      res.style.color='#ef5350';
+      if (r.status === 413) {{
+        res.textContent = 'Upload failed: File is too large (Nginx limit). Configure client_max_body_size in Nginx.';
+      }} else {{
+        res.textContent = 'Upload failed (' + r.status + '): ' + text.slice(0, 100);
+      }}
+      btn.disabled=false; btn.textContent='Upload & Import';
+      return;
+    }}
     var d=await r.json();
     if(d.ok){{
       res.style.color='#4caf50';
