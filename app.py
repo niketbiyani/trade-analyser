@@ -5351,12 +5351,12 @@ function _syncTimeScales() {{
   var charts = [_chartInst, _rsiChart, _macdChart];
   charts.forEach(function(src, si) {{
     if (!src) return;
-    src.timeScale().subscribeVisibleLogicalRangeChange(function(range) {{
+    src.timeScale().subscribeVisibleTimeRangeChange(function(range) {{
       if (_syncingRange || !range) return;
       _syncingRange = true;
       charts.forEach(function(tgt, ti) {{
         if (!tgt || ti === si) return;
-        try {{ tgt.timeScale().setVisibleLogicalRange(range); }} catch(e) {{}}
+        try {{ tgt.timeScale().setVisibleRange(range); }} catch(e) {{}}
       }});
       _syncingRange = false;
     }});
