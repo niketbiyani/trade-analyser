@@ -3231,9 +3231,16 @@ async function loadChart(ticker,label){{
   }}
 }}
 
+function _tsForLocal(ds, ts){{
+  if(!ds || !ts) return null;
+  var p=ds.split('-'), q=ts.split(':');
+  var sec=q[2]?+q[2]:0;
+  return Date.UTC(+p[0],+p[1]-1,+p[2],+q[0],+q[1],sec)/1000;
+}}
+
 function scrollChartToActiveTime(){{
   if(!_series || !_curCandles || !_curCandles.length)return;
-  var targetTs = tsFor(_curTradeDate, _curTime);
+  var targetTs = _tsForLocal(_curTradeDate, _curTime);
   var targetIndex = -1;
   if (targetTs) {{
     var minDiff = Infinity;
@@ -3997,13 +4004,15 @@ def api_option_strikes():
         ).fetchone()
         spot_close = spot_row["close"] if spot_row else None
 
-    # Fetch last-close for all option tickers on this trade_date up to ts_query in one single query!
+    # Fetch last-close per ticker up to ts_query using a correlated subquery
     if ts_query > 0 and ladder:
         price_rows = db.execute(
-            "SELECT ticker, close FROM option_ohlcv"
+            "SELECT ticker, close FROM option_ohlcv o1"
             " WHERE ticker IN (SELECT ticker FROM option_ohlcv_meta WHERE underlying=? AND expiry=?)"
-            "   AND ts BETWEEN ? AND ?"
-            " GROUP BY ticker",
+            "   AND ts = ("
+            "     SELECT MAX(ts) FROM option_ohlcv o2"
+            "     WHERE o2.ticker = o1.ticker AND o2.ts BETWEEN ? AND ?"
+            "   )",
             (underlying, expiry, ts_open, ts_query)
         ).fetchall()
         
