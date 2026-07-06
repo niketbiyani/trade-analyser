@@ -5198,7 +5198,7 @@ var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
-var _syncingRange=false;
+var _syncingRange=false, _activeChart=null;
 var _rsiVisible=true, _macdVisible=true;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
@@ -5283,24 +5283,24 @@ function initChart() {{
     _syncTimeScales();
 
     // ── Active Chart Hover Tracking ──────────────────────────────────────────
-    var activeChart = null;
+    _activeChart = null;
     var cBox=document.getElementById('chartBox'), rBox=document.getElementById('rsiBox'), mBox=document.getElementById('macdBox');
     if(cBox){{
-      cBox.addEventListener('mouseenter', function() {{ activeChart = 'main'; }});
-      cBox.addEventListener('touchstart', function() {{ activeChart = 'main'; }}, {{passive:true}});
+      cBox.addEventListener('mouseenter', function() {{ _activeChart = 'main'; }});
+      cBox.addEventListener('touchstart', function() {{ _activeChart = 'main'; }}, {{passive:true}});
     }}
     if(rBox){{
-      rBox.addEventListener('mouseenter', function() {{ activeChart = 'rsi'; }});
-      rBox.addEventListener('touchstart', function() {{ activeChart = 'rsi'; }}, {{passive:true}});
+      rBox.addEventListener('mouseenter', function() {{ _activeChart = 'rsi'; }});
+      rBox.addEventListener('touchstart', function() {{ _activeChart = 'rsi'; }}, {{passive:true}});
     }}
     if(mBox){{
-      mBox.addEventListener('mouseenter', function() {{ activeChart = 'macd'; }});
-      mBox.addEventListener('touchstart', function() {{ activeChart = 'macd'; }}, {{passive:true}});
+      mBox.addEventListener('mouseenter', function() {{ _activeChart = 'macd'; }});
+      mBox.addEventListener('touchstart', function() {{ _activeChart = 'macd'; }}, {{passive:true}});
     }}
     var cArea=document.getElementById('chartsArea');
     if(cArea){{
       cArea.addEventListener('mouseleave', function() {{
-        activeChart = null;
+        _activeChart = null;
         if(_chartInst) _chartInst.clearCrosshairPosition();
         if(_rsiChart) _rsiChart.clearCrosshairPosition();
         if(_macdChart) _macdChart.clearCrosshairPosition();
@@ -5309,7 +5309,7 @@ function initChart() {{
 
     // ── Sync crosshairs across all three charts ──────────────────────────────
     _chartInst.subscribeCrosshairMove(function(param) {{
-      if (activeChart !== 'main') return;
+      if (_activeChart !== 'main') return;
       try {{
         if (param.time) {{
           _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
@@ -5321,7 +5321,7 @@ function initChart() {{
       }} catch(e) {{}}
     }});
     _rsiChart.subscribeCrosshairMove(function(param) {{
-      if (activeChart !== 'rsi') return;
+      if (_activeChart !== 'rsi') return;
       try {{
         if (param.time) {{
           _chartInst.setCrosshairPosition(0, param.time, series);
@@ -5333,7 +5333,7 @@ function initChart() {{
       }} catch(e) {{}}
     }});
     _macdChart.subscribeCrosshairMove(function(param) {{
-      if (activeChart !== 'macd') return;
+      if (_activeChart !== 'macd') return;
       try {{
         if (param.time) {{
           _chartInst.setCrosshairPosition(0, param.time, series);
@@ -5368,10 +5368,13 @@ function initChart() {{
 }}
 function _syncTimeScales() {{
   var charts = [_chartInst, _rsiChart, _macdChart];
+  var roles = ['main', 'rsi', 'macd'];
   charts.forEach(function(src, si) {{
     if (!src) return;
     src.timeScale().subscribeVisibleTimeRangeChange(function(range) {{
       if (_syncingRange || !range) return;
+      var isMaster = (_activeChart === roles[si]) || (si === 0 && _activeChart === null);
+      if (!isMaster) return;
       _syncingRange = true;
       charts.forEach(function(tgt, ti) {{
         if (!tgt || ti === si) return;
