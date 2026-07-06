@@ -2715,10 +2715,8 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
     <div id="uploadZone">
       <div class="ul-title">Data Upload</div>
       <div class="ul-row" style="flex-wrap:wrap;gap:8px;">
-        <button id="uploadBtn" onclick="triggerUpload(false)" style="flex:1;">&#8593; Upload ZIP</button>
-        <button id="uploadFolderBtn" onclick="triggerUpload(true)" style="flex:1;background:linear-gradient(135deg,#0052cc,#003d99);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600;transition:opacity .15s;white-space:nowrap;">&#128193; Upload Folder</button>
-        <input type="file" id="fileInput" accept=".zip" onchange="onFileSelected(this)" style="display:none;">
-        <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none;" onchange="onFolderSelected(this)">
+        <button id="uploadBtn" onclick="triggerUpload()" style="flex:1;">&#8593; Upload ZIP(s)</button>
+        <input type="file" id="fileInput" accept=".zip" multiple onchange="onFileSelected(this)" style="display:none;">
         <span id="uploadStatus" style="font-size:11px;color:#484f58;width:100%;"></span>
       </div>
       <div id="progressWrap">
@@ -3272,30 +3270,15 @@ function scrollChartToActiveTime(){{
 }}
 
 /* ── Upload ── */
-function triggerUpload(isFolder){{
-  if(isFolder){{
-    document.getElementById('folderInput').click();
-  }}else{{
-    document.getElementById('fileInput').click();
-  }}
+function triggerUpload(){{
+  document.getElementById('fileInput').click();
 }}
 
 function onFileSelected(input){{
-  var file=input.files[0];
-  if(!file)return;
-  doUpload([file]);
-  input.value='';
-}}
-
-function onFolderSelected(input){{
   var files=Array.from(input.files).filter(function(f){{
-    var name = f.name.toLowerCase();
-    return (name.endsWith('.csv') || name.endsWith('.zip')) && !name.startsWith('._');
+    return f.name.toLowerCase().endsWith('.zip');
   }});
-  if(!files.length){{
-    document.getElementById('uploadStatus').textContent='No CSV or ZIP files found in selected folder.';
-    return;
-  }}
+  if(!files.length)return;
   doUpload(files);
   input.value='';
 }}
@@ -4252,6 +4235,9 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
       <label>Index / Symbol</label>
       <select id="symbol" name="symbol">
         <option value="NIFTY">NIFTY</option>
+        <option value="BANKNIFTY">BANKNIFTY</option>
+        <option value="FINNIFTY">FINNIFTY</option>
+        <option value="MIDCPNIFTY">MIDCPNIFTY</option>
         <option value="SENSEX">SENSEX</option>
       </select>
     </div>
@@ -5596,7 +5582,7 @@ var dirOn=new Set(['SHORT','LONG']);
 var allTrades=[], candles=[], curInterval='1m';
 var selId=null, isolateId=null;
 var _curTick=0; // 0 = normal 1m chart; 15 = 15s tick chart
-var _TICK_SIDS={{NIFTY:'13',SENSEX:'51'}};
+var _TICK_SIDS={{NIFTY:'13',BANKNIFTY:'25',FINNIFTY:'27',MIDCPNIFTY:'442',SENSEX:'51'}};
 var _savedNotes=[];
 
 function setChartMsg(main,sub) {{
