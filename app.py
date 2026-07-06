@@ -2634,18 +2634,21 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
 .ulchip{{background:#161b22;border:1px solid #21262d;color:#8b949e;padding:3px 10px;border-radius:12px;cursor:pointer;font-size:11px;font-weight:500;transition:all .15s;}}
 .ulchip.on{{background:#0d2d6e;border-color:#388bfd;color:#58a6ff;}}
 
-/* Expiry list */
+/* Expiry Calendar */
 #expirySection{{flex:0 0 auto;border-bottom:1px solid #161b22;}}
-#expirySectionTitle{{padding:8px 12px 4px;font-size:10px;font-weight:600;color:#484f58;text-transform:uppercase;letter-spacing:.5px;display:flex;justify-content:space-between;align-items:center;}}
-#expiryCount{{font-size:10px;color:#484f58;font-weight:400;text-transform:none;letter-spacing:0;}}
-#expiryList{{max-height:160px;overflow-y:auto;padding:0 8px 6px;}}
-.exp-item{{padding:5px 8px;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:background .12s;}}
-.exp-item:hover{{background:#161b22;}}
-.exp-item.on{{background:#1f2d1f;}}
-.exp-date{{font-weight:500;color:#c9d1d9;font-size:12px;}}
-.exp-item.on .exp-date{{color:#3fb950;}}
-.exp-meta{{font-size:10px;color:#484f58;}}
-#expiryEmpty{{padding:16px 12px;font-size:11px;color:#484f58;text-align:center;}}
+#expiryCalendar{{padding:8px 12px;background:#0d1117;}}
+.cal-nav{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}}
+.cal-title{{font-size:11px;font-weight:600;color:#e6edf3;text-transform:uppercase;letter-spacing:.5px;}}
+.cal-btn{{background:#161b22;border:1px solid #21262d;color:#8b949e;width:20px;height:20px;border-radius:4px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;user-select:none;}}
+.cal-btn:hover{{border-color:#30363d;color:#c9d1d9;}}
+.cal-grid{{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center;}}
+.cal-header{{font-size:9px;font-weight:600;color:#484f58;padding:2px 0;}}
+.cal-day{{font-size:11px;color:#484f58;padding:4px 0;border-radius:4px;user-select:none;}}
+.cal-day.empty{{visibility:hidden;}}
+.cal-day.has-expiry{{color:#c9d1d9;background:#161b22;cursor:pointer;border:1px solid #21262d;font-weight:500;}}
+.cal-day.has-expiry:hover{{background:#21262d;border-color:#30363d;}}
+.cal-day.has-expiry.selected{{background:#1f2d1f;border-color:#238636;color:#3fb950;font-weight:600;}}
+.selected-cell{{background:#1f2d1f !important;color:#3fb950 !important;font-weight:600;outline:1px solid #238636;}}
 
 /* Strike ladder */
 #ladderSection{{flex:1;min-height:0;display:flex;flex-direction:column;}}
@@ -2724,11 +2727,14 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
 
     <!-- Expiry list -->
     <div id="expirySection">
-      <div id="expirySectionTitle">
-        Expiries
-        <span id="expiryCount"></span>
+      <div id="expiryCalendar">
+        <div class="cal-nav">
+          <button class="cal-btn" onclick="navMonth(-1)">◀</button>
+          <div class="cal-title" id="calTitle">Calendar</div>
+          <button class="cal-btn" onclick="navMonth(1)">▶</button>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
       </div>
-      <div id="expiryList"><div id="expiryEmpty">Upload a ZIP to see expiries</div></div>
     </div>
 
     <!-- Strike ladder -->
@@ -2754,7 +2760,13 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
 
   <!-- RIGHT PANEL -->
   <div id="right">
-    <div id="chartTitle">Select an expiry and click a strike to load its chart</div>
+    <div id="chartHeader" style="display:flex;align-items:center;border-bottom:1px solid #161b22;flex-shrink:0;background:#0d1117;padding-right:12px;">
+      <div id="chartTitle" style="flex:1;padding:7px 14px;font-size:12px;font-weight:500;color:#8b949e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Select an expiry and click a strike to load its chart</div>
+      <div id="strikeNav" style="display:none;gap:4px;align-items:center;">
+        <button class="cal-btn" onclick="navigateStrike(-1)" title="Previous strike (lower)">◀</button>
+        <button class="cal-btn" onclick="navigateStrike(1)" title="Next strike (higher)">▶</button>
+      </div>
+    </div>
     <div id="chartEl"></div>
     <div id="chartMsg">
       <div style="font-size:28px;margin-bottom:8px;opacity:.3">&#128202;</div>
@@ -2769,6 +2781,8 @@ var _chart=null,_series=null,_markersPlugin=null;
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
 var _curIvl=1,_curUl='NIFTY',_curExpiry='',_pollTimer=null;
+var _ladderData=[],_curStrikeIndex=null,_curOptionType=null;
+var _expiryData=[],_currentCalMonth=new Date().getMonth(),_currentCalYear=new Date().getFullYear();
 
 /* ── Chart init ── */
 (function initChart(){{
@@ -2875,43 +2889,129 @@ async function loadStats(){{
   }}catch(e){{document.getElementById('dbStats').textContent='Stats unavailable';}}
 }}
 
-/* ── Expiry list ── */
-async function loadExpiries(){{
-  var list=document.getElementById('expiryList');
-  var empty=document.getElementById('expiryEmpty');
-  list.innerHTML='<div id="expiryEmpty" style="padding:12px;font-size:11px;color:#484f58;text-align:center">Loading…</div>';
-  try{{
-    var r=await fetch(_root+'/api/option-expiries?underlying='+_curUl);
-    var data=await r.json();
-    document.getElementById('expiryCount').textContent=data.length?'('+data.length+')':'';
-    if(!data.length){{
-      list.innerHTML='<div id="expiryEmpty" style="padding:12px;font-size:11px;color:#484f58;text-align:center">No data for '+_curUl+'</div>';
-      return;
+/* ── Calendar & Expiries ── */
+function renderCalendar() {{
+  var grid = document.getElementById('calGrid');
+  if(!grid)return;
+  var monthNames=["January","February","March","April","May","June","July","August","September","October","November","December"];
+  document.getElementById('calTitle').textContent=monthNames[_currentCalMonth]+" "+_currentCalYear;
+  grid.innerHTML='';
+  
+  var days=["Su","Mo","Tu","We","Th","Fr","Sa"];
+  days.forEach(function(d){{
+    var cell=document.createElement('div');
+    cell.className='cal-header';
+    cell.textContent=d;
+    grid.appendChild(cell);
+  }});
+  
+  var firstDay=new Date(_currentCalYear,_currentCalMonth,1).getDay();
+  var daysInMonth=new Date(_currentCalYear,_currentCalMonth+1,0).getDate();
+  
+  for(var i=0;i<firstDay;i++){{
+    var cell=document.createElement('div');
+    cell.className='cal-day empty';
+    grid.appendChild(cell);
+  }}
+  
+  for(var day=1;day<=daysInMonth;day++){{
+    var cell=document.createElement('div');
+    cell.className='cal-day';
+    cell.textContent=day;
+    
+    var yyyy=_currentCalYear;
+    var mm=String(_currentCalMonth+1).padStart(2,'0');
+    var dd=String(day).padStart(2,'0');
+    var dateStr=yyyy+"-"+mm+"-"+dd;
+    
+    var exp=_expiryData.find(function(e){{return e.expiry===dateStr;}});
+    if(exp){{
+      cell.classList.add('has-expiry');
+      cell.title=exp.strike_count+' strikes available';
+      if(dateStr===_curExpiry){{
+        cell.classList.add('selected');
+      }}
+      (function(dStr,cEl){{
+        cell.onclick=function(){{
+          _curExpiry=dStr;
+          document.querySelectorAll('.cal-day.has-expiry').forEach(function(el){{el.classList.remove('selected');}});
+          cEl.classList.add('selected');
+          loadLadder(dStr);
+        }};
+      }})(dateStr,cell);
     }}
-    list.innerHTML='';
-    data.forEach(function(exp){{
-      var div=document.createElement('div');
-      div.className='exp-item';
-      div.dataset.expiry=exp.expiry;
-      div.innerHTML='<span class="exp-date">'+exp.expiry+'</span>'
-        +'<span class="exp-meta">'+exp.strike_count+' strikes</span>';
-      div.onclick=function(){{selectExpiry(exp.expiry,div);}};
-      list.appendChild(div);
-    }});
-  }}catch(e){{
-    list.innerHTML='<div style="padding:12px;font-size:11px;color:#f85149;">Error loading expiries</div>';
+    grid.appendChild(cell);
   }}
 }}
 
-function selectExpiry(expiry,el){{
-  _curExpiry=expiry;
-  document.querySelectorAll('.exp-item').forEach(function(e){{e.className='exp-item';}});
-  el.className='exp-item on';
-  loadLadder(expiry);
+function navMonth(dir){{
+  _currentCalMonth+=dir;
+  if(_currentCalMonth<0){{_currentCalMonth=11;_currentCalYear--;}}
+  else if(_currentCalMonth>11){{_currentCalMonth=0;_currentCalYear++;}}
+  renderCalendar();
+}}
+
+async function loadExpiries(){{
+  var grid = document.getElementById('calGrid');
+  if(grid) grid.innerHTML='<div style="grid-column:span 7;padding:12px;font-size:11px;color:#484f58;text-align:center">Loading…</div>';
+  try{{
+    var r=await fetch(_root+'/api/option-expiries?underlying='+_curUl);
+    _expiryData=await r.json();
+    if(_expiryData.length && !_curExpiry){{
+      var firstExp = _expiryData[0].expiry;
+      _curExpiry = firstExp;
+      var dParts = firstExp.split("-");
+      _currentCalYear = parseInt(dParts[0]);
+      _currentCalMonth = parseInt(dParts[1]) - 1;
+      loadLadder(firstExp);
+    }}
+    renderCalendar();
+  }}catch(e){{
+    if(grid) grid.innerHTML='<div style="grid-column:span 7;padding:12px;font-size:11px;color:#f85149;text-align:center">Error loading dates</div>';
+  }}
 }}
 
 /* ── Strike ladder ── */
 var _spotClose=null,_curTicker=null,_curTickerLabel='';
+
+function selectStrikeByIndex(index, optionType) {{
+  if (!_ladderData || index < 0 || index >= _ladderData.length) return;
+  var row = _ladderData[index];
+  var ticker = optionType === 'CE' ? row.ce_ticker : row.pe_ticker;
+  if (!ticker) return;
+  
+  _curStrikeIndex = index;
+  _curOptionType = optionType;
+  
+  document.querySelectorAll('#ladderBody td').forEach(function(td) {{
+    td.classList.remove('selected-cell');
+  }});
+  
+  var rows = document.querySelectorAll('#ladderBody tr');
+  var tr = rows[index];
+  if (tr) {{
+    var cellClass = optionType === 'CE' ? '.ce-cell' : '.pe-cell';
+    var cell = tr.querySelector(cellClass);
+    if (cell) cell.classList.add('selected-cell');
+  }}
+  
+  loadChart(ticker, row.strike + " " + optionType);
+}}
+
+function navigateStrike(dir) {{
+  if (!_ladderData || _curStrikeIndex === null) return;
+  var targetIndex = _curStrikeIndex;
+  while (true) {{
+    targetIndex += dir;
+    if (targetIndex < 0 || targetIndex >= _ladderData.length) break;
+    var row = _ladderData[targetIndex];
+    var ticker = _curOptionType === 'CE' ? row.ce_ticker : row.pe_ticker;
+    if (ticker) {{
+      selectStrikeByIndex(targetIndex, _curOptionType);
+      break;
+    }}
+  }}
+}}
 
 async function loadLadder(expiry){{
   var empty=document.getElementById('ladderEmpty');
@@ -2921,6 +3021,10 @@ async function loadLadder(expiry){{
   empty.style.display='block';empty.textContent='Loading…';
   table.style.display='none';
   body.innerHTML='';
+  _ladderData=[];
+  _curStrikeIndex=null;
+  _curOptionType=null;
+  document.getElementById('strikeNav').style.display='none';
   try{{
     var r=await fetch(_root+'/api/option-strikes?underlying='+_curUl+'&expiry='+expiry);
     var d=await r.json();
@@ -2928,6 +3032,7 @@ async function loadLadder(expiry){{
       empty.textContent='No strikes found for this expiry';
       return;
     }}
+    _ladderData=d.ladder;
     _spotClose=d.spot_close;
     if(_spotClose){{
       spotEl.textContent='Spot ≈ '+_spotClose.toFixed(2);
@@ -2938,30 +3043,54 @@ async function loadLadder(expiry){{
     var atmStrike=null;
     if(_spotClose){{
       var minDiff=Infinity;
-      d.ladder.forEach(function(row){{
+      _ladderData.forEach(function(row){{
         var diff=Math.abs(row.strike-_spotClose);
         if(diff<minDiff){{minDiff=diff;atmStrike=row.strike;}}
       }});
     }}
-    // Build rows
-    d.ladder.forEach(function(row){{
+    
+    // Build rows programmatically (avoids single/double quote injection issues)
+    _ladderData.forEach(function(row, index){{
       var tr=document.createElement('tr');
       tr.className='lrow'+(row.strike===atmStrike?' atm':'');
+      
+      // CE
+      var tdCE=document.createElement('td');
       var ceLast=row.ce_last!=null?row.ce_last.toFixed(2):'—';
+      tdCE.textContent=ceLast;
+      if(row.ce_ticker){{
+        tdCE.className='ce-cell';
+        tdCE.title='Load CE chart';
+        tdCE.onclick=function(){{selectStrikeByIndex(index,'CE');}};
+      }}else{{
+        tdCE.className='ce-cell null-cell';
+      }}
+      tr.appendChild(tdCE);
+      
+      // Strike
+      var tdStrike=document.createElement('td');
+      tdStrike.className='strike-cell';
+      tdStrike.textContent=row.strike.toLocaleString('en-IN');
+      tr.appendChild(tdStrike);
+      
+      // PE
+      var tdPE=document.createElement('td');
       var peLast=row.pe_last!=null?row.pe_last.toFixed(2):'—';
-      tr.innerHTML=
-        '<td class="ce-cell'+(row.ce_ticker?'':' null-cell')+'"'
-          +(row.ce_ticker?' onclick="loadChart(\\\\\\\'"+row.ce_ticker+"\\\\\\\',\\\\\\'"+row.strike+" CE\\\\\\\')" title="Load CE chart"':'')+'>'
-          +ceLast+'</td>'
-        +'<td class="strike-cell">'+row.strike.toLocaleString('en-IN')+'</td>'
-        +'<td class="pe-cell'+(row.pe_ticker?'':' null-cell')+'"'
-          +(row.pe_ticker?' onclick="loadChart(\\\\\\\'"+row.pe_ticker+"\\\\\\\',\\\\\\'"+row.strike+" PE\\\\\\\')" title="Load PE chart"':'')+'>'
-          +peLast+'</td>';
+      tdPE.textContent=peLast;
+      if(row.pe_ticker){{
+        tdPE.className='pe-cell';
+        tdPE.title='Load PE chart';
+        tdPE.onclick=function(){{selectStrikeByIndex(index,'PE');}};
+      }}else{{
+        tdPE.className='pe-cell null-cell';
+      }}
+      tr.appendChild(tdPE);
+      
       body.appendChild(tr);
     }});
+    
     empty.style.display='none';
     table.style.display='table';
-    // Scroll ATM into view
     var atmRow=body.querySelector('.atm');
     if(atmRow)atmRow.scrollIntoView({{block:'center',behavior:'smooth'}});
   }}catch(e){{
@@ -2977,6 +3106,7 @@ async function loadChart(ticker,label){{
   msgEl.innerHTML='<div style="font-size:22px;margin-bottom:8px;opacity:.4">&#9203;</div>Loading…';
   msgEl.style.display='block';
   titleEl.textContent='Loading '+label+'…';
+  document.getElementById('strikeNav').style.display='flex';
   try{{
     var r=await fetch(_root+'/api/option-ohlcv?ticker='+encodeURIComponent(ticker)+'&interval='+_curIvl);
     var d=await r.json();
@@ -2993,7 +3123,6 @@ async function loadChart(ticker,label){{
     _markersPlugin.setMarkers([]);
     _chart.timeScale().fitContent();
     msgEl.style.display='none';
-    var parts=ticker.split('');
     titleEl.textContent=_curUl+' · '+label+' · exp:'+_curExpiry+' · '+_curIvl+'m · '+c.length+' bars';
   }}catch(e){{
     msgEl.innerHTML='<div style="font-size:22px;margin-bottom:8px;opacity:.4">&#9888;</div>Error: '+e.message;
