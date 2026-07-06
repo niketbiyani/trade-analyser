@@ -3966,13 +3966,75 @@ def report_page():
   <button onclick="window.print()" style="background:#7c4dff;color:#fff;border:none;
     padding:8px 18px;border-radius:4px;cursor:pointer;font-size:12px">&#128424; Print / Save as PDF</button>
 </div>
+<div class="no-print" style="margin-top:10px; margin-bottom:14px; background:#f9f9f9; padding:12px; border-radius:6px; border:1px solid #ddd; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="font-weight:600; font-size:11px; margin-bottom:8px; text-transform:uppercase; color:#555; letter-spacing:0.3px;">Interactive Filters</div>
+  <div style="display:flex; flex-wrap:wrap; gap:8px;">
+    <div style="display:flex; flex-direction:column; gap:2px;">
+      <label style="font-size:10px; color:#666; font-weight:500;">Direction</label>
+      <select id="f-dir" onchange="filterRows()" style="font-size:11px; padding:4px 8px; border-radius:4px; border:1px solid #ccc; outline:none; background:#fff; cursor:pointer;">
+        <option value="">All</option>
+        <option value="LONG">LONG</option>
+        <option value="SHORT">SHORT</option>
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:2px;">
+      <label style="font-size:10px; color:#666; font-weight:500;">Option Type</label>
+      <select id="f-opt" onchange="filterRows()" style="font-size:11px; padding:4px 8px; border-radius:4px; border:1px solid #ccc; outline:none; background:#fff; cursor:pointer;">
+        <option value="">All</option>
+        <option value="CE">CE</option>
+        <option value="PE">PE</option>
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:2px;">
+      <label style="font-size:10px; color:#666; font-weight:500;">Trade Type</label>
+      <select id="f-tt" onchange="filterRows()" style="font-size:11px; padding:4px 8px; border-radius:4px; border:1px solid #ccc; outline:none; background:#fff; cursor:pointer;">
+        <option value="">All</option>
+        <option value="hedge">HEDGE</option>
+        <option value="scalp">SCALP</option>
+        <option value="short">SHORT</option>
+        <option value="—">Unset</option>
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:2px;">
+      <label style="font-size:10px; color:#666; font-weight:500;">Timeframe</label>
+      <select id="f-tf" onchange="filterRows()" style="font-size:11px; padding:4px 8px; border-radius:4px; border:1px solid #ccc; outline:none; background:#fff; cursor:pointer;">
+        <option value="">All</option>
+        <option value="5s">5s</option>
+        <option value="15s">15s</option>
+        <option value="1m">1m</option>
+        <option value="—">Unset</option>
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:2px;">
+      <label style="font-size:10px; color:#666; font-weight:500;">Rules</label>
+      <select id="f-rf" onchange="filterRows()" style="font-size:11px; padding:4px 8px; border-radius:4px; border:1px solid #ccc; outline:none; background:#fff; cursor:pointer;">
+        <option value="">All</option>
+        <option value="✓ Yes">✓ Yes</option>
+        <option value="✗ No">✗ No</option>
+        <option value="—">Unset</option>
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:2px;">
+      <label style="font-size:10px; color:#666; font-weight:500;">P&amp;L</label>
+      <select id="f-pnl" onchange="filterRows()" style="font-size:11px; padding:4px 8px; border-radius:4px; border:1px solid #ccc; outline:none; background:#fff; cursor:pointer;">
+        <option value="">All</option>
+        <option value="profit">Profit only</option>
+        <option value="loss">Loss only</option>
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:2px; justify-content:flex-end;">
+      <button onclick="resetFilters()" style="background:#eee; border:1px solid #ccc; font-size:11px; padding:4px 12px; border-radius:4px; cursor:pointer; font-weight:500;">Reset Filters</button>
+    </div>
+  </div>
+</div>
+
 <h1>Trade Report{header_u}</h1>
-<div class="sub">{d} &nbsp;&#8226;&nbsp; {len(rows)} trades &nbsp;&#8226;&nbsp; {len(closed)} closed</div>
+<div class="sub" id="sumSub">{d} &nbsp;&#8226;&nbsp; {len(rows)} trades &nbsp;&#8226;&nbsp; {len(closed)} closed</div>
 <div class="summary">
-  <div class="sm"><div class="v" style="color:{total_color}">{total_sign}{total_pnl:,.0f}</div><div class="l">Total P&amp;L</div></div>
-  <div class="sm"><div class="v">{len(winners)}/{len(closed)}</div><div class="l">Winners</div></div>
-  <div class="sm"><div class="v">{win_rate:.0f}%</div><div class="l">Win Rate</div></div>
-  <div class="sm"><div class="v">{len(rows) - len(closed)}</div><div class="l">Open</div></div>
+  <div class="sm"><div class="v" id="sumPnl" style="color:{total_color}">{total_sign}{total_pnl:,.0f}</div><div class="l">Total P&amp;L</div></div>
+  <div class="sm"><div class="v" id="sumWinners">{len(winners)}/{len(closed)}</div><div class="l">Winners</div></div>
+  <div class="sm"><div class="v" id="sumWinRate">{win_rate:.0f}%</div><div class="l">Win Rate</div></div>
+  <div class="sm"><div class="v" id="sumOpen">{len(rows) - len(closed)}</div><div class="l">Open</div></div>
 </div>
 <table>
   <thead><tr>
@@ -4027,6 +4089,94 @@ document.querySelectorAll('th').forEach((th, idx) => {{
     rows.forEach(r => tbody.appendChild(r));
   }});
 }});
+
+function resetFilters() {{
+  document.getElementById('f-dir').value = '';
+  document.getElementById('f-opt').value = '';
+  document.getElementById('f-tt').value = '';
+  document.getElementById('f-tf').value = '';
+  document.getElementById('f-rf').value = '';
+  document.getElementById('f-pnl').value = '';
+  filterRows();
+}}
+
+function filterRows() {{
+  const fDir = document.getElementById('f-dir').value.toUpperCase();
+  const fOpt = document.getElementById('f-opt').value.toUpperCase();
+  const fTt  = document.getElementById('f-tt').value.toLowerCase();
+  const fTf  = document.getElementById('f-tf').value.toLowerCase();
+  const fRf  = document.getElementById('f-rf').value;
+  const fPnl = document.getElementById('f-pnl').value;
+  
+  const tbody = document.querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  
+  let totalRows = 0;
+  let closedCount = 0;
+  let totalPnl = 0;
+  let winnersCount = 0;
+  let openCount = 0;
+  
+  rows.forEach(row => {{
+    const valDir = row.children[1].innerText.trim().toUpperCase();
+    const valOpt = row.children[2].innerText.trim().toUpperCase();
+    const valTt  = row.children[9].innerText.trim().toLowerCase();
+    const valTf  = row.children[10].innerText.trim().toLowerCase();
+    const valRf  = row.children[11].innerText.trim();
+    const valPnlText = row.children[8].innerText.trim();
+    
+    const matchDir = !fDir || valDir === fDir;
+    const matchOpt = !fOpt || valOpt === fOpt;
+    const matchTt  = !fTt  || valTt === fTt;
+    const matchTf  = !fTf  || valTf === fTf;
+    const matchRf  = !fRf  || valRf === fRf;
+    
+    let matchPnl = true;
+    if (fPnl === 'profit') {{
+      matchPnl = valPnlText.startsWith('+');
+    }} else if (fPnl === 'loss') {{
+      matchPnl = valPnlText.startsWith('-');
+    }}
+    
+    const show = matchDir && matchOpt && matchTt && matchTf && matchRf && matchPnl;
+    row.style.display = show ? '' : 'none';
+    
+    if (show) {{
+      totalRows++;
+      
+      let pnlVal = null;
+      let s = valPnlText.replace(/[₹,]/g, '').trim();
+      if (s !== '—' && s !== '--' && s) {{
+        pnlVal = parseFloat(s);
+      }}
+      
+      if (pnlVal !== null) {{
+        closedCount++;
+        totalPnl += pnlVal;
+        if (pnlVal >= 0) {{
+          winnersCount++;
+        }}
+      }} else {{
+        openCount++;
+      }}
+    }}
+  }});
+  
+  const pnlEl = document.getElementById('sumPnl');
+  const sign = totalPnl >= 0 ? '+' : '';
+  pnlEl.textContent = sign + totalPnl.toLocaleString('en-IN');
+  pnlEl.style.color = totalPnl >= 0 ? '#3fb950' : '#f85149';
+  
+  document.getElementById('sumWinners').textContent = winnersCount + '/' + closedCount;
+  
+  const winRate = closedCount > 0 ? Math.round((winnersCount / closedCount) * 100) : 0;
+  document.getElementById('sumWinRate').textContent = winRate + '%';
+  
+  document.getElementById('sumOpen').textContent = openCount;
+  
+  document.getElementById('sumSub').innerHTML = 
+    `{d} &nbsp;&#8226;&nbsp; ${totalRows} trades &nbsp;&#8226;&nbsp; ${closedCount} closed`;
+}}
 </script>
 </body>
 </html>"""
