@@ -2987,7 +2987,7 @@ function setUl(ul,el){{
 
 /* ── DB stats ── */
 async function clearAllOptionData(){{
-  if(!confirm("This will DELETE ALL uploaded option OHLCV data from the database.\n"+"Spot data will also be cleared.\n\nAre you sure?"))return;
+  if(!confirm("This will DELETE ALL uploaded option OHLCV data from the database.\\nSpot data will also be cleared.\\n\\nAre you sure?"))return;
   var btn=document.getElementById("clearBtn");
   btn.disabled=true; btn.textContent="Clearing…";
   try{{
