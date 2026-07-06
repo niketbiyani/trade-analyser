@@ -4175,7 +4175,7 @@ function filterRows() {{
   document.getElementById('sumOpen').textContent = openCount;
   
   document.getElementById('sumSub').innerHTML = 
-    `{d} &nbsp;&#8226;&nbsp; ${totalRows} trades &nbsp;&#8226;&nbsp; ${closedCount} closed`;
+    `{d} &nbsp;&#8226;&nbsp; ${{totalRows}} trades &nbsp;&#8226;&nbsp; ${{closedCount}} closed`;
 }}
 </script>
 </body>
