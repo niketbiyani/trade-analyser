@@ -873,48 +873,96 @@ import re as _re_opt
 
 
 def _parse_option_ticker(ticker: str) -> dict | None:
-    """Parse a ticker like 'NIFTY05MAY26C26550' into metadata dict.
+    """Parse an option ticker into metadata dict.
+
+    Handles multiple formats:
+      A. Fyers/Sensibull: NIFTY11MAR26C26000   (DDMMMYY + C/P + strike)
+      B. TradingView:     NSE:NIFTY2603116000CE (exchange: + YYMMDD + strike + CE/PE)
+      C. TV no prefix:    NIFTY2603116000CE     (YYMMDD + strike + CE/PE)
 
     Returns {underlying, expiry (YYYY-MM-DD), option_type (CE/PE), strike (float)}
-    or None if the ticker is unrecognised or not an index option.
+    or None if unrecognised.
     """
+    import re as _re_local
     t = ticker.strip().upper().replace(" ", "")
-    # Longest-match on underlying name first to avoid NIFTY matching BANKNIFTY
-    pattern = (
-        r"^(BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX|NIFTY)"
-        r"(\d{2}[A-Z]{3}\d{2})"   # e.g. 05MAY26
-        r"([CP])"                  # C = CE, P = PE
-        r"(\d+(?:\.\d+)?)$"       # strike, may have decimal
+    # Strip exchange prefix (NSE:, BSE:, NFO:, IDX:, MCX: etc.)
+    if ":" in t:
+        t = t.split(":", 1)[1]
+
+    _UNDERLYINGS = r"(BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX|NIFTY)"
+
+    # ── Format A: NIFTY11MAR26C26000 (DDMMMYY + C/P + strike) ───────────────
+    m = _re_local.match(
+        _UNDERLYINGS + r"(\d{2}[A-Z]{3}\d{2})([CP])(\d+(?:\.\d+)?)$", t
     )
-    m = _re_opt.match(pattern, t)
-    if not m:
-        return None
-    underlying, date_part, type_char, strike_str = m.groups()
-    try:
-        expiry_dt = datetime.strptime(date_part, "%d%b%y")
-        expiry = expiry_dt.strftime("%Y-%m-%d")
-    except ValueError:
-        return None
-    return {
-        "underlying":  underlying,
-        "expiry":      expiry,
-        "option_type": "CE" if type_char == "C" else "PE",
-        "strike":      float(strike_str),
-    }
+    if m:
+        underlying, date_part, type_char, strike_str = m.groups()
+        try:
+            expiry = datetime.strptime(date_part, "%d%b%y").strftime("%Y-%m-%d")
+            return {"underlying": underlying, "expiry": expiry,
+                    "option_type": "CE" if type_char == "C" else "PE",
+                    "strike": float(strike_str)}
+        except ValueError:
+            pass
+
+    # ── Format B/C: NIFTY2603116000CE (YYMMDD + strike + CE/PE) ─────────────
+    m = _re_local.match(
+        _UNDERLYINGS + r"(\d{6})(\d+(?:\.\d+)?)(CE|PE)$", t
+    )
+    if m:
+        underlying, date_part, strike_str, type_str = m.groups()
+        try:
+            expiry = datetime.strptime(date_part, "%y%m%d").strftime("%Y-%m-%d")
+            return {"underlying": underlying, "expiry": expiry,
+                    "option_type": type_str,
+                    "strike": float(strike_str)}
+        except ValueError:
+            pass
+
+    # ── Format D: NIFTY26MAR6000CE (YYMON + strike + CE/PE, monthly) ─────────
+    m = _re_local.match(
+        _UNDERLYINGS + r"(\d{2}[A-Z]{3})(\d+(?:\.\d+)?)(CE|PE)$", t
+    )
+    if m:
+        underlying, mon_part, strike_str, type_str = m.groups()
+        try:
+            # Monthly expiry — no specific day; use last Thursday approximation
+            # Store as YYYY-MM-01 as placeholder; actual expiry in filename will override
+            expiry_dt = datetime.strptime("01" + mon_part, "%d%b%y")
+            expiry = expiry_dt.strftime("%Y-%m-%d")
+            return {"underlying": underlying, "expiry": expiry,
+                    "option_type": type_str,
+                    "strike": float(strike_str)}
+        except ValueError:
+            pass
+
+    return None
 
 
 def _ts_to_epoch(ts_str: str) -> int:
-    """Convert '21-04-2026 09:15:00' (IST naive) → IST-as-UTC epoch.
+    """Convert a datetime string (IST naive) → IST-as-UTC epoch.
 
-    Treats the timestamp as IST but stores as if UTC so LightweightCharts
-    (which renders in UTC) shows the correct IST hour digits.
-    Matches the convention used for tick_data: ts = time.time() + 19800.
+    Accepts multiple formats:
+      • '21-04-2026 09:15:00'  (DD-MM-YYYY, Sensibull/Fyers)
+      • '2026-04-21 09:15:00'  (YYYY-MM-DD, TradingView ISO)
+      • '21/04/2026 09:15:00'  (DD/MM/YYYY)
+      • '1741589100'            (plain Unix epoch — already IST-as-UTC)
+
+    Stores as IST-as-UTC so LightweightCharts (UTC renderer) shows IST hours.
     """
-    try:
-        dt = datetime.strptime(ts_str.strip(), "%d-%m-%Y %H:%M:%S")
-        return int(_calendar.timegm(dt.timetuple()))  # as-if-UTC → IST hours preserved
-    except ValueError:
-        return 0
+    s = ts_str.strip()
+    # Plain integer → already an epoch
+    if s.isdigit():
+        return int(s)
+    for fmt in ("%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S",
+                "%d/%m/%Y %H:%M:%S", "%Y/%m/%d %H:%M:%S",
+                "%d-%m-%Y %H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return int(_calendar.timegm(dt.timetuple()))
+        except ValueError:
+            continue
+    return 0
 
 
 def _is_spot_ticker(ticker: str) -> bool:
@@ -978,9 +1026,20 @@ def _process_option_zip_bg(job_id: str, zip_path: str) -> None:
                     meta        = None
                     is_spot     = False
 
+                    # Build case-insensitive column map on first row
+                    _fmap = {}
+                    if reader.fieldnames:
+                        for _fn in reader.fieldnames:
+                            _fmap[_fn.lower().strip()] = _fn
+                    def _col(r, *keys):
+                        for k in keys:
+                            v = r.get(_fmap.get(k)) or r.get(k.title()) or r.get(k.upper()) or ""
+                            if v: return v.strip()
+                        return ""
+
                     for row in reader:
-                        raw_ticker = (row.get("Ticker") or "").strip()
-                        ts_str     = (row.get("Timestamp") or "").strip()
+                        raw_ticker = _col(row, "ticker", "symbol", "scrip", "instrument")
+                        ts_str     = _col(row, "timestamp", "time", "date", "datetime")
                         if not ts_str:
                             continue
                         ts = _ts_to_epoch(ts_str)
@@ -1014,12 +1073,12 @@ def _process_option_zip_bg(job_id: str, zip_path: str) -> None:
                             continue
 
                         try:
-                            o  = float(row.get("Open")   or 0)
-                            h  = float(row.get("High")   or 0)
-                            l  = float(row.get("Low")    or 0)
-                            c  = float(row.get("Close")  or 0)
-                            v  = int(float(row.get("Volume") or 0))
-                            oi = int(float(row.get("OI")     or 0))
+                            o  = float(_col(row, "open")   or 0)
+                            h  = float(_col(row, "high")   or 0)
+                            l  = float(_col(row, "low")    or 0)
+                            c  = float(_col(row, "close")  or 0)
+                            v  = int(float(_col(row, "volume", "vol") or 0))
+                            oi = int(float(_col(row, "oi", "openinterest", "open interest") or 0))
                         except (ValueError, TypeError):
                             continue
 
@@ -3951,6 +4010,25 @@ def api_upload_status(job_id: str):
     if job is None:
         return jsonify({"ok": False, "error": "Unknown job ID"}), 404
     return jsonify({"ok": True, **job})
+
+
+@app.route("/api/option-debug")
+def api_option_debug():
+    """Diagnostic: show sample tickers, all expiries, and per-expiry row counts."""
+    db = get_db()
+    expiries = db.execute(
+        "SELECT expiry, underlying, COUNT(DISTINCT ticker) AS tickers, SUM(row_count) AS rows"
+        " FROM option_ohlcv_meta WHERE expiry != 'SPOT'"
+        " GROUP BY expiry, underlying ORDER BY expiry"
+    ).fetchall()
+    samples = db.execute(
+        "SELECT ticker, underlying, expiry, option_type, strike, row_count"
+        " FROM option_ohlcv_meta ORDER BY rowid DESC LIMIT 30"
+    ).fetchall()
+    return jsonify({
+        "expiries": [dict(r) for r in expiries],
+        "recent_tickers": [dict(r) for r in samples],
+    })
 
 
 @app.route("/api/option-expiries")
