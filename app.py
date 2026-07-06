@@ -3784,7 +3784,7 @@ def api_upload_seconds_csv():
         db = get_db()
         with _db_lock:
             db.executemany(
-                "INSERT OR REPLACE INTO ohlcv_seconds (symbol, seconds, ts, open, high, low, close)"
+                "INSERT OR IGNORE INTO ohlcv_seconds (symbol, seconds, ts, open, high, low, close)"
                 " VALUES (?,?,?,?,?,?,?)",
                 rows_buf
             )
@@ -4372,6 +4372,8 @@ def api_tick_candles():
         dp = [int(x) for x in trade_date.split("-")]
         day_start = int(datetime(dp[0], dp[1], dp[2], 9, 15, 0).timestamp())
         day_end   = int(datetime(dp[0], dp[1], dp[2], 15, 30, 0).timestamp())
+        # Look back 7 calendar days to capture 5 trading days (including weekends/holidays)
+        lookback_start = day_start - 7 * 86400
     except Exception:
         return jsonify({"candles": [], "error": "Invalid date"}), 400
     sym_map = {"13": "NIFTY", "51": "SENSEX"}
@@ -4381,20 +4383,20 @@ def api_tick_candles():
             "SELECT ts, open, high, low, close FROM ohlcv_seconds"
             " WHERE symbol=? AND seconds=? AND ts>=? AND ts<=?"
             " ORDER BY ts",
-            (symbol, seconds, day_start, day_end)
+            (symbol, seconds, lookback_start, day_end)
         ).fetchall()
         if rows:
             candles = [
                 {"time": r["ts"], "open": r["open"], "high": r["high"], "low": r["low"], "close": r["close"]}
                 for r in rows
             ]
-            logger.info("TV candles: %s %s %ds -> %d candles from DB", symbol, trade_date, seconds, len(candles))
+            logger.info("TV candles: %s %s %ds -> %d candles from DB (5d lookback)", symbol, trade_date, seconds, len(candles))
             return jsonify({"candles": candles, "error": ""})
 
     rows = get_db().execute(
         "SELECT ts, price FROM tick_data WHERE security_id=? AND ts>=? AND ts<=? ORDER BY ts",
-        (security_id, day_start, day_end),
-    ).fetchall()
+        (security_id, lookback_start, day_end),
+    )      .fetchall()
     if not rows:
         return jsonify({
             "candles": [],
