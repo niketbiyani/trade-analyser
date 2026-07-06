@@ -4235,9 +4235,6 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
       <label>Index / Symbol</label>
       <select id="symbol" name="symbol">
         <option value="NIFTY">NIFTY</option>
-        <option value="BANKNIFTY">BANKNIFTY</option>
-        <option value="FINNIFTY">FINNIFTY</option>
-        <option value="MIDCPNIFTY">MIDCPNIFTY</option>
         <option value="SENSEX">SENSEX</option>
       </select>
     </div>
@@ -5582,7 +5579,7 @@ var dirOn=new Set(['SHORT','LONG']);
 var allTrades=[], candles=[], curInterval='1m';
 var selId=null, isolateId=null;
 var _curTick=0; // 0 = normal 1m chart; 15 = 15s tick chart
-var _TICK_SIDS={{NIFTY:'13',BANKNIFTY:'25',FINNIFTY:'27',MIDCPNIFTY:'442',SENSEX:'51'}};
+var _TICK_SIDS={{NIFTY:'13',SENSEX:'51'}};
 var _savedNotes=[];
 
 function setChartMsg(main,sub) {{
@@ -6129,8 +6126,10 @@ function selTrade(id,entryTime){{
   putMarkers(_filtered());
   if(entryTime&&candles.length){{
     var ts=tsFor(curDate,entryTime);
-    var sec=curInterval==='5m'?300:60;
-    if(ts)chart.timeScale().setVisibleRange({{from:ts-sec*25,to:ts+sec*90}});
+    // Compute visible window based on current interval
+    var _ivlSec = curInterval==='5s'?5:curInterval==='15s'?15:curInterval==='30s'?30:curInterval==='5m'?300:60;
+    // Show ~25 candles before entry and ~90 after so the trade is well-contextualised
+    if(ts)chart.timeScale().setVisibleRange({{from:ts-_ivlSec*25,to:ts+_ivlSec*90}});
   }}
 }}
 async function closeTrade(id,e){{
