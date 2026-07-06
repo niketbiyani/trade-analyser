@@ -2645,9 +2645,11 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
 .cal-header{{font-size:9px;font-weight:600;color:#484f58;padding:2px 0;}}
 .cal-day{{font-size:11px;color:#484f58;padding:4px 0;border-radius:4px;user-select:none;}}
 .cal-day.empty{{visibility:hidden;}}
-.cal-day.has-expiry{{color:#c9d1d9;background:#161b22;cursor:pointer;border:1px solid #21262d;font-weight:500;}}
-.cal-day.has-expiry:hover{{background:#21262d;border-color:#30363d;}}
-.cal-day.has-expiry.selected{{background:#1f2d1f;border-color:#238636;color:#3fb950;font-weight:600;}}
+.cal-day.has-trade{{color:#c9d1d9;background:#161b22;cursor:pointer;border:1px solid #21262d;font-weight:500;}}
+.cal-day.has-trade:hover{{background:#21262d;border-color:#30363d;}}
+.cal-day.is-expiry{{color:#c9d1d9;background:#0d2d1f;cursor:pointer;border:1px solid #238636;font-weight:600;}}
+.cal-day.is-expiry:hover{{background:#1f3d2f;border-color:#3fb950;}}
+.cal-day.selected{{background:#1f2d1f !important;border-color:#238636 !important;color:#3fb950 !important;font-weight:700;outline:1px solid #3fb950;}}
 .selected-cell{{background:#1f2d1f !important;color:#3fb950 !important;font-weight:600;outline:1px solid #238636;}}
 
 /* Strike ladder */
@@ -2725,7 +2727,9 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
       <span class="ulchip" onclick="setUl('FINNIFTY',this)">FINNIFTY</span>
     </div>
 
-    <!-- Expiry list -->
+
+
+    <!-- Expiry Calendar -->
     <div id="expirySection">
       <div id="expiryCalendar">
         <div class="cal-nav">
@@ -2735,6 +2739,13 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
         </div>
         <div class="cal-grid" id="calGrid"></div>
       </div>
+    </div>
+
+    <!-- Time Selection -->
+    <div id="timeSection" style="padding:6px 12px 8px;border-bottom:1px solid #161b22;flex-shrink:0;display:flex;align-items:center;gap:6px;">
+      <span style="font-size:10px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.3px;">Time @ IST</span>
+      <select id="timeIn" onchange="onTimeChanged()" style="flex:1;background:#161b22;border:1px solid #21262d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-family:'Inter',sans-serif;font-size:12px;outline:none;">
+      </select>
     </div>
 
     <!-- Strike ladder -->
@@ -2780,9 +2791,11 @@ var _root='{root}';
 var _chart=null,_series=null,_markersPlugin=null;
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
-var _curIvl=1,_curUl='NIFTY',_curExpiry='',_pollTimer=null;
+var _curIvl=1,_curUl='NIFTY',_curExpiry='',_curTradeDate='',_curTime='15:30',_pollTimer=null;
 var _ladderData=[],_curStrikeIndex=null,_curOptionType=null;
+var _tradeDates=new Set(),_expiryDates=new Set();
 var _expiryData=[],_currentCalMonth=new Date().getMonth(),_currentCalYear=new Date().getFullYear();
+var _curTicker=null,_curTickerLabel='';
 
 /* ── Chart init ── */
 (function initChart(){{
@@ -2827,6 +2840,7 @@ var _expiryData=[],_currentCalMonth=new Date().getMonth(),_currentCalYear=new Da
     if(panes[2])panes[2].setStretchFactor(1.2);
   }}catch(pe){{console.warn('Pane stretch failed:',pe);}}
   new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
+  populateTimeDropdown();
 }})();
 
 /* ── Indicators ── */
@@ -2871,7 +2885,8 @@ function setUl(ul,el){{
   document.querySelectorAll('.ulchip').forEach(function(c){{c.className='ulchip';}});
   el.className='ulchip on';
   _curExpiry='';
-  loadExpiries();
+  _curTradeDate='';
+  loadOptionDates();
 }}
 
 /* ── DB stats ── */
@@ -2924,19 +2939,32 @@ function renderCalendar() {{
     var dd=String(day).padStart(2,'0');
     var dateStr=yyyy+"-"+mm+"-"+dd;
     
-    var exp=_expiryData.find(function(e){{return e.expiry===dateStr;}});
-    if(exp){{
-      cell.classList.add('has-expiry');
-      cell.title=exp.strike_count+' strikes available';
-      if(dateStr===_curExpiry){{
+    var isExp=_expiryDates.has(dateStr);
+    var hasTrade=_tradeDates.has(dateStr);
+    
+    if(isExp){{
+      cell.classList.add('is-expiry');
+      cell.title='Expiry Date';
+    }}else if(hasTrade){{
+      cell.classList.add('has-trade');
+      cell.title='Trade Date';
+    }}
+    
+    if(hasTrade || isExp){{
+      if(dateStr===_curTradeDate){{
         cell.classList.add('selected');
       }}
       (function(dStr,cEl){{
         cell.onclick=function(){{
-          _curExpiry=dStr;
-          document.querySelectorAll('.cal-day.has-expiry').forEach(function(el){{el.classList.remove('selected');}});
+          _curTradeDate=dStr;
+          
+          var upcoming=Array.from(_expiryDates).filter(function(e){{return e>=_curTradeDate;}}).sort();
+          _curExpiry=upcoming.length?upcoming[0]:(Array.from(_expiryDates).sort().pop()||'');
+          
+          document.querySelectorAll('.cal-day').forEach(function(el){{el.classList.remove('selected');}});
           cEl.classList.add('selected');
-          loadLadder(dStr);
+          
+          loadLadder(_curExpiry,_curTradeDate,_curTime);
         }};
       }})(dateStr,cell);
     }}
@@ -2951,29 +2979,60 @@ function navMonth(dir){{
   renderCalendar();
 }}
 
-async function loadExpiries(){{
+async function loadOptionDates(){{
   var grid = document.getElementById('calGrid');
   if(grid) grid.innerHTML='<div style="grid-column:span 7;padding:12px;font-size:11px;color:#484f58;text-align:center">Loading…</div>';
   try{{
-    var r=await fetch(_root+'/api/option-expiries?underlying='+_curUl);
-    _expiryData=await r.json();
-    if(_expiryData.length && !_curExpiry){{
-      var firstExp = _expiryData[0].expiry;
-      _curExpiry = firstExp;
-      var dParts = firstExp.split("-");
-      _currentCalYear = parseInt(dParts[0]);
-      _currentCalMonth = parseInt(dParts[1]) - 1;
-      loadLadder(firstExp);
+    var r=await fetch(_root+'/api/option-dates?underlying='+_curUl);
+    var d=await r.json();
+    if(d.ok){{
+      _tradeDates=new Set(d.trade_dates);
+      _expiryDates=new Set(d.expiry_dates);
+      if(d.trade_dates.length && !_curTradeDate){{
+        _curTradeDate=d.trade_dates[d.trade_dates.length - 1];
+        var parts=_curTradeDate.split("-");
+        _currentCalYear=parseInt(parts[0]);
+        _currentCalMonth=parseInt(parts[1])-1;
+        var upcoming=d.expiry_dates.filter(function(e){{return e>=_curTradeDate;}}).sort();
+        _curExpiry=upcoming.length?upcoming[0]:(d.expiry_dates.length?d.expiry_dates[d.expiry_dates.length - 1]:'');
+        loadLadder(_curExpiry,_curTradeDate,_curTime);
+      }}
+      renderCalendar();
     }}
-    renderCalendar();
   }}catch(e){{
     if(grid) grid.innerHTML='<div style="grid-column:span 7;padding:12px;font-size:11px;color:#f85149;text-align:center">Error loading dates</div>';
   }}
 }}
 
-/* ── Strike ladder ── */
-var _spotClose=null,_curTicker=null,_curTickerLabel='';
+/* ── Time Dropdown population ── */
+function populateTimeDropdown(){{
+  var select=document.getElementById('timeIn');
+  if(!select)return;
+  select.innerHTML='';
+  var h=9,m=15;
+  while(true){{
+    var timeStr=String(h).padStart(2,'0')+":"+String(m).padStart(2,'0');
+    var opt=document.createElement('option');
+    opt.value=timeStr;
+    opt.textContent=timeStr;
+    if(timeStr==="15:30"){{
+      opt.selected=true;
+    }}
+    select.appendChild(opt);
+    if(h===15&&m===30)break;
+    m+=5;
+    if(m>=60){{m=0;h++;}}
+  }}
+}}
 
+function onTimeChanged(){{
+  var select=document.getElementById('timeIn');
+  if(!select)return;
+  _curTime=select.value;
+  loadLadder(_curExpiry,_curTradeDate,_curTime);
+}}
+
+/* ── Strike ladder ── */
 function selectStrikeByIndex(index, optionType) {{
   if (!_ladderData || index < 0 || index >= _ladderData.length) return;
   var row = _ladderData[index];
@@ -3013,11 +3072,20 @@ function navigateStrike(dir) {{
   }}
 }}
 
-async function loadLadder(expiry){{
+async function loadLadder(expiry, tradeDate, time){{
   var empty=document.getElementById('ladderEmpty');
   var table=document.getElementById('ladderTable');
   var body=document.getElementById('ladderBody');
   var spotEl=document.getElementById('ladderSpot');
+  
+  if(!expiry || !tradeDate){{
+    empty.style.display='block';
+    empty.textContent='Select an active date on the calendar';
+    table.style.display='none';
+    body.innerHTML='';
+    return;
+  }}
+  
   empty.style.display='block';empty.textContent='Loading…';
   table.style.display='none';
   body.innerHTML='';
@@ -3026,19 +3094,19 @@ async function loadLadder(expiry){{
   _curOptionType=null;
   document.getElementById('strikeNav').style.display='none';
   try{{
-    var r=await fetch(_root+'/api/option-strikes?underlying='+_curUl+'&expiry='+expiry);
+    var r=await fetch(_root+'/api/option-strikes?underlying='+_curUl+'&expiry='+expiry+'&trade_date='+tradeDate+'&time='+time);
     var d=await r.json();
     if(!d.ok||!d.ladder||!d.ladder.length){{
-      empty.textContent='No strikes found for this expiry';
+      empty.textContent='No strikes found for this date/time';
       return;
     }}
     _ladderData=d.ladder;
     _spotClose=d.spot_close;
-    if(_spotClose){{
-      spotEl.textContent='Spot ≈ '+_spotClose.toFixed(2);
-    }}else{{
-      spotEl.textContent='';
-    }}
+    
+    var spotText = _spotClose ? 'Spot ≈ ' + _spotClose.toFixed(2) : 'Spot: —';
+    var expiryText = 'Expiry: ' + expiry;
+    spotEl.innerHTML = '<span style="color:#8b949e;margin-right:8px;">' + expiryText + '</span> ' + spotText;
+    
     // Find ATM strike (closest to spot)
     var atmStrike=null;
     if(_spotClose){{
@@ -3049,7 +3117,7 @@ async function loadLadder(expiry){{
       }});
     }}
     
-    // Build rows programmatically (avoids single/double quote injection issues)
+    // Build rows programmatically
     _ladderData.forEach(function(row, index){{
       var tr=document.createElement('tr');
       tr.className='lrow'+(row.strike===atmStrike?' atm':'');
@@ -3192,7 +3260,7 @@ function pollJob(jobId,btn,statusEl,fill,text){{
           statusEl.textContent='';statusEl.style.color='';
         }},4000);
         loadStats();
-        loadExpiries();
+        loadOptionDates();
       }}else if(d.status==='error'){{
         clearInterval(_pollTimer);
         statusEl.textContent='Error: '+(d.message||'Unknown');
@@ -3213,7 +3281,7 @@ function fmtBytes(b){{
 
 /* ── Init ── */
 loadStats();
-loadExpiries();
+loadOptionDates();
 </script>
 </body>
 </html>"""
@@ -3712,15 +3780,46 @@ def api_option_expiries():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/option-dates")
+def api_option_dates():
+    """Return distinct trade dates and contract expiry dates for an underlying."""
+    underlying = (request.args.get("underlying") or "NIFTY").upper()
+    spot_ticker = underlying + "_SPOT"
+    db = get_db()
+    
+    rows_trade = db.execute(
+        "SELECT DISTINCT strftime('%Y-%m-%d', ts, 'unixepoch') AS trade_date"
+        " FROM option_ohlcv"
+        " WHERE ticker=?"
+        " ORDER BY trade_date",
+        (spot_ticker,),
+    ).fetchall()
+    trade_dates = [r["trade_date"] for r in rows_trade]
+    
+    rows_expiry = db.execute(
+        "SELECT DISTINCT expiry"
+        " FROM option_ohlcv_meta"
+        " WHERE underlying=? AND expiry != 'SPOT'"
+        " ORDER BY expiry",
+        (underlying,),
+    ).fetchall()
+    expiry_dates = [r["expiry"] for r in rows_expiry]
+    
+    return jsonify({
+        "ok": True,
+        "trade_dates": trade_dates,
+        "expiry_dates": expiry_dates,
+    })
+
+
 @app.route("/api/option-strikes")
 def api_option_strikes():
-    """Return the strike ladder for a given underlying+expiry.
-
-    Also returns the ATM spot close (from NIFTY_SPOT) for the expiry date
-    so the frontend can highlight the nearest ATM strike.
-    """
+    """Return the strike ladder for a given underlying+expiry at a specific trade_date and time."""
     underlying = (request.args.get("underlying") or "NIFTY").upper()
     expiry     = request.args.get("expiry") or ""
+    trade_date = request.args.get("trade_date") or expiry
+    time_str   = request.args.get("time") or "15:30"
+    
     if not expiry:
         return jsonify({"ok": False, "error": "expiry required"}), 400
 
@@ -3733,7 +3832,7 @@ def api_option_strikes():
         (underlying, expiry),
     ).fetchall()
 
-    # Build ladder: strike → {ce_ticker, pe_ticker, ce_last, pe_last}
+    # Build ladder template
     ladder: dict[float, dict] = {}
     for r in rows:
         s = r["strike"]
@@ -3745,34 +3844,45 @@ def api_option_strikes():
         else:
             ladder[s]["pe_ticker"] = r["ticker"]
 
-    # Fetch last-close for each ticker (for ladder preview column)
-    for s, entry in ladder.items():
-        for key, tkey in [("ce_last", "ce_ticker"), ("pe_last", "pe_ticker")]:
-            t = entry.get(tkey)
-            if t:
-                row = db.execute(
-                    "SELECT close FROM option_ohlcv WHERE ticker=? ORDER BY ts DESC LIMIT 1",
-                    (t,),
-                ).fetchone()
-                entry[key] = row["close"] if row else None
-
-    # ATM: use NIFTY_SPOT close on the expiry date at 15:29 (last traded minute)
-    spot_ticker = underlying + "_SPOT"
-    # Convert expiry date to epoch range for that day 09:15–15:30 IST
+    # Convert trade_date + time to epoch timestamps
+    import calendar as _cal
+    from datetime import datetime as _dt
     try:
-        import calendar as _cal
-        from datetime import datetime as _dt
-        exp_day = _dt.strptime(expiry, "%Y-%m-%d")
-        ts_open  = int(_cal.timegm(exp_day.replace(hour=9, minute=15).timetuple()))
-        ts_close = int(_cal.timegm(exp_day.replace(hour=15, minute=30).timetuple()))
+        dt_start = _dt.strptime(f"{trade_date} 09:15:00", "%Y-%m-%d %H:%M:%S")
+        ts_open = int(_cal.timegm(dt_start.timetuple()))
+        
+        dt_query = _dt.strptime(f"{trade_date} {time_str}:00", "%Y-%m-%d %H:%M:%S")
+        ts_query = int(_cal.timegm(dt_query.timetuple()))
+    except Exception:
+        ts_open = 0
+        ts_query = 0
+
+    spot_close = None
+    if ts_query > 0:
+        spot_ticker = underlying + "_SPOT"
         spot_row = db.execute(
             "SELECT close FROM option_ohlcv WHERE ticker=? AND ts BETWEEN ? AND ?"
             " ORDER BY ts DESC LIMIT 1",
-            (spot_ticker, ts_open, ts_close),
+            (spot_ticker, ts_open, ts_query),
         ).fetchone()
         spot_close = spot_row["close"] if spot_row else None
-    except Exception:
-        spot_close = None
+
+    # Fetch last-close for all option tickers on this trade_date up to ts_query in one single query!
+    if ts_query > 0 and ladder:
+        price_rows = db.execute(
+            "SELECT ticker, close FROM option_ohlcv"
+            " WHERE ticker IN (SELECT ticker FROM option_ohlcv_meta WHERE underlying=? AND expiry=?)"
+            "   AND ts BETWEEN ? AND ?"
+            " GROUP BY ticker",
+            (underlying, expiry, ts_open, ts_query)
+        ).fetchall()
+        
+        prices = {r["ticker"]: r["close"] for r in price_rows}
+        for s, entry in ladder.items():
+            if entry["ce_ticker"] in prices:
+                entry["ce_last"] = prices[entry["ce_ticker"]]
+            if entry["pe_ticker"] in prices:
+                entry["pe_last"] = prices[entry["pe_ticker"]]
 
     return jsonify({
         "ok":         True,
