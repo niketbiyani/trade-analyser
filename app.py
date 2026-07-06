@@ -2282,48 +2282,48 @@ var _tradeDates=[],TODAY=’{today}’;
 // ── Chart init ────────────────────────────────────────────────────────────────
 (function initChart(){{
   try{{
-    var el=document.getElementById(‘chartEl’);
+    var el=document.getElementById('chartEl');
     _chart=LightweightCharts.createChart(el,{{
-      layout:{{background:{{color:’#0d0d0d’}},textColor:’#aaa’}},
-      grid:{{vertLines:{{color:’#1a1a1a’}},horzLines:{{color:’#1a1a1a’}}}},
+      layout:{{background:{{color:'#131722'}},textColor:'#d1d4dc'}},
+      grid:{{vertLines:{{color:'#242835'}},horzLines:{{color:'#242835'}}}},
       crosshair:{{mode:0}},
-      rightPriceScale:{{borderColor:’#2a2a2a’}},
-      timeScale:{{borderColor:’#2a2a2a’,timeVisible:true,secondsVisible:true}},
+      rightPriceScale:{{borderColor:'#2a2e39'}},
+      timeScale:{{borderColor:'#2a2e39',timeVisible:true,secondsVisible:true}},
     }});
     _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
-      upColor:’#3fb950’,downColor:’#f85149’,
-      borderUpColor:’#3fb950’,borderDownColor:’#f85149’,
-      wickUpColor:’#3fb950’,wickDownColor:’#f85149’,
+      upColor:'#26a69a',downColor:'#ef5350',
+      borderUpColor:'#26a69a',borderDownColor:'#ef5350',
+      wickUpColor:'#26a69a',wickDownColor:'#ef5350',
     }});
     _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
     _ema20s=_chart.addSeries(LightweightCharts.LineSeries,{{
-      color:’#2196F3’,lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+      color:'#2962ff',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
     }});
     _ema50s=_chart.addSeries(LightweightCharts.LineSeries,{{
-      color:’#FF9800’,lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+      color:'#ff6d00',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
     }});
     _rsiSeries=_chart.addSeries(LightweightCharts.LineSeries,{{
-      color:’#58a6ff’,lineWidth:1,lastValueVisible:true,priceLineVisible:false
+      color:'#7c4dff',lineWidth:1,lastValueVisible:true,priceLineVisible:false
     }},1);
-    _rsiSeries.createPriceLine({{price:70,color:’#2a2a2a’,lineWidth:1,lineStyle:1,axisLabelVisible:false}});
-    _rsiSeries.createPriceLine({{price:30,color:’#2a2a2a’,lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+    _rsiSeries.createPriceLine({{price:70,color:'#2a2e39',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+    _rsiSeries.createPriceLine({{price:30,color:'#2a2e39',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
     _macdHist=_chart.addSeries(LightweightCharts.HistogramSeries,{{
-      color:’#555’,lastValueVisible:false,priceLineVisible:false
+      color:'#ef5350',lastValueVisible:false,priceLineVisible:false
     }},2);
     _macdLine=_chart.addSeries(LightweightCharts.LineSeries,{{
-      color:’#2196F3’,lineWidth:1,lastValueVisible:false,priceLineVisible:false
+      color:'#2962ff',lineWidth:1,lastValueVisible:false,priceLineVisible:false
     }},2);
     _macdSignal=_chart.addSeries(LightweightCharts.LineSeries,{{
-      color:’#FF5722’,lineWidth:1,lastValueVisible:false,priceLineVisible:false
+      color:'#ff6d00',lineWidth:1,lastValueVisible:false,priceLineVisible:false
     }},2);
     try{{
       var panes=_chart.panes();
       if(panes[0])panes[0].setStretchFactor(5);
       if(panes[1])panes[1].setStretchFactor(1.2);
       if(panes[2])panes[2].setStretchFactor(1.2);
-    }}catch(pe){{console.warn(‘Pane stretch failed:’,pe);}}
+    }}catch(pe){{console.warn('Pane stretch failed:',pe);}}
     new ResizeObserver(function(){{_chart.resize(el.offsetWidth,el.offsetHeight);}}).observe(el);
-  }}catch(e){{console.error(‘Chart init failed:’,e);}}
+  }}catch(e){{console.error('Chart init failed:',e);}}
 }})();
 
 // ── Indicator math ─────────────────────────────────────────────────────────────
@@ -2774,37 +2774,37 @@ var _curIvl=1,_curUl='NIFTY',_curExpiry='',_pollTimer=null;
 (function initChart(){{
   var el=document.getElementById('chartEl');
   _chart=LightweightCharts.createChart(el,{{
-    layout:{{background:{{color:'#0a0a0f'}},textColor:'#8b949e'}},
-    grid:{{vertLines:{{color:'#161b22'}},horzLines:{{color:'#161b22'}}}},
+    layout:{{background:{{color:'#131722'}},textColor:'#d1d4dc'}},
+    grid:{{vertLines:{{color:'#242835'}},horzLines:{{color:'#242835'}}}},
     crosshair:{{mode:0}},
-    rightPriceScale:{{borderColor:'#21262d'}},
-    timeScale:{{borderColor:'#21262d',timeVisible:true,secondsVisible:false}},
+    rightPriceScale:{{borderColor:'#2a2e39'}},
+    timeScale:{{borderColor:'#2a2e39',timeVisible:true,secondsVisible:true}},
   }});
   _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
-    upColor:'#238636',downColor:'#da3633',
-    borderUpColor:'#2ea043',borderDownColor:'#f85149',
-    wickUpColor:'#2ea043',wickDownColor:'#f85149',
+    upColor:'#26a69a',downColor:'#ef5350',
+    borderUpColor:'#26a69a',borderDownColor:'#ef5350',
+    wickUpColor:'#26a69a',wickDownColor:'#ef5350',
   }});
   _markersPlugin=LightweightCharts.createSeriesMarkers(_series,[]);
   _ema20s=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#388bfd',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    color:'#2962ff',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
   }});
   _ema50s=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#f0883e',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
+    color:'#ff6d00',lineWidth:1,lastValueVisible:false,priceLineVisible:false,crosshairMarkerVisible:false
   }});
   _rsiSeries=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#58a6ff',lineWidth:1,lastValueVisible:true,priceLineVisible:false
+    color:'#7c4dff',lineWidth:1,lastValueVisible:true,priceLineVisible:false
   }},1);
-  _rsiSeries.createPriceLine({{price:70,color:'#21262d',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
-  _rsiSeries.createPriceLine({{price:30,color:'#21262d',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+  _rsiSeries.createPriceLine({{price:70,color:'#2a2e39',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
+  _rsiSeries.createPriceLine({{price:30,color:'#2a2e39',lineWidth:1,lineStyle:1,axisLabelVisible:false}});
   _macdHist=_chart.addSeries(LightweightCharts.HistogramSeries,{{
-    color:'#484f58',lastValueVisible:false,priceLineVisible:false
+    color:'#ef5350',lastValueVisible:false,priceLineVisible:false
   }},2);
   _macdLine=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#388bfd',lineWidth:1,lastValueVisible:false,priceLineVisible:false
+    color:'#2962ff',lineWidth:1,lastValueVisible:false,priceLineVisible:false
   }},2);
   _macdSignal=_chart.addSeries(LightweightCharts.LineSeries,{{
-    color:'#f0883e',lineWidth:1,lastValueVisible:false,priceLineVisible:false
+    color:'#ff6d00',lineWidth:1,lastValueVisible:false,priceLineVisible:false
   }},2);
   try{{
     var panes=_chart.panes();
@@ -5221,11 +5221,11 @@ function _chartOpts(el, noTimeAxis) {{
   return {{
     width:  el.clientWidth  || 800,
     height: el.clientHeight || 400,
-    layout: {{ background: {{ color: '#0d1117' }}, textColor: '#8b949e' }},
-    grid:   {{ vertLines: {{ color: '#21262d' }}, horzLines: {{ color: '#21262d' }} }},
+    layout: {{ background: {{ color: '#131722' }}, textColor: '#d1d4dc' }},
+    grid:   {{ vertLines: {{ color: '#242835' }}, horzLines: {{ color: '#242835' }} }},
     crosshair: {{ mode: 0 }},
-    rightPriceScale: {{ borderColor: '#30363d' }},
-    timeScale: {{ borderColor: '#30363d', timeVisible: !noTimeAxis, secondsVisible: false, visible: !noTimeAxis }},
+    rightPriceScale: {{ borderColor: '#2a2e39' }},
+    timeScale: {{ borderColor: '#2a2e39', timeVisible: !noTimeAxis, secondsVisible: true, visible: !noTimeAxis }},
   }};
 }}
 function _watchResize(inst, el) {{
@@ -5241,16 +5241,16 @@ function initChart() {{
     var el = document.getElementById('chartEl');
     _chartInst = LightweightCharts.createChart(el, _chartOpts(el));
     series = _chartInst.addSeries(LightweightCharts.CandlestickSeries, {{
-      upColor:'#3fb950', downColor:'#f85149',
-      borderUpColor:'#3fb950', borderDownColor:'#f85149',
-      wickUpColor:'#3fb950', wickDownColor:'#f85149'
+      upColor:'#26a69a', downColor:'#ef5350',
+      borderUpColor:'#26a69a', borderDownColor:'#ef5350',
+      wickUpColor:'#26a69a', wickDownColor:'#ef5350'
     }});
     _markersPlugin = LightweightCharts.createSeriesMarkers(series, []);
     _ema20s = _chartInst.addSeries(LightweightCharts.LineSeries, {{
-      color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
+      color:'#2962ff', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
     }});
     _ema50s = _chartInst.addSeries(LightweightCharts.LineSeries, {{
-      color:'#FF9800', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
+      color:'#ff6d00', lineWidth:1, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false
     }});
     chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
@@ -5259,28 +5259,57 @@ function initChart() {{
     var rsiEl = document.getElementById('rsiEl');
     _rsiChart = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, true));
     _rsiSeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
-      color:'#58a6ff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
+      color:'#7c4dff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
     }});
-    _rsiSeries.createPriceLine({{ price:70, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
-    _rsiSeries.createPriceLine({{ price:30, color:'#30363d', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:70, color:'#2a2e39', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:30, color:'#2a2e39', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _watchResize(_rsiChart, rsiEl);
 
     // ── MACD chart ─────────────────────────────────────────────────────────
     var macdEl = document.getElementById('macdEl');
     _macdChart = LightweightCharts.createChart(macdEl, _chartOpts(macdEl, true));
     _macdHist   = _macdChart.addSeries(LightweightCharts.HistogramSeries, {{
-      color:'#555', lastValueVisible:false, priceLineVisible:false
+      color:'#ef5350', lastValueVisible:false, priceLineVisible:false
     }});
     _macdLine   = _macdChart.addSeries(LightweightCharts.LineSeries, {{
-      color:'#2196F3', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+      color:'#2962ff', lineWidth:1, lastValueVisible:false, priceLineVisible:false
     }});
     _macdSignal = _macdChart.addSeries(LightweightCharts.LineSeries, {{
-      color:'#FF5722', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+      color:'#ff6d00', lineWidth:1, lastValueVisible:false, priceLineVisible:false
     }});
     _watchResize(_macdChart, macdEl);
 
     // ── Sync time scales across all three charts ────────────────────────────
     _syncTimeScales();
+
+    // ── Sync crosshairs across all three charts ──────────────────────────────
+    _chartInst.subscribeCrosshairMove(function(param) {{
+      if (param.time) {{
+        _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
+        _macdChart.setCrosshairPosition(0, param.time, _macdLine);
+      }} else {{
+        _rsiChart.clearCrosshairPosition();
+        _macdChart.clearCrosshairPosition();
+      }}
+    }});
+    _rsiChart.subscribeCrosshairMove(function(param) {{
+      if (param.time) {{
+        _chartInst.setCrosshairPosition(0, param.time, series);
+        _macdChart.setCrosshairPosition(0, param.time, _macdLine);
+      }} else {{
+        _chartInst.clearCrosshairPosition();
+        _macdChart.clearCrosshairPosition();
+      }}
+    }});
+    _macdChart.subscribeCrosshairMove(function(param) {{
+      if (param.time) {{
+        _chartInst.setCrosshairPosition(0, param.time, series);
+        _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
+      }} else {{
+        _chartInst.clearCrosshairPosition();
+        _rsiChart.clearCrosshairPosition();
+      }}
+    }});
 
     // ── OHLC legend ────────────────────────────────────────────────────────
     var _leg = document.getElementById('chartLegend');
@@ -5289,12 +5318,12 @@ function initChart() {{
         _leg.innerHTML = ''; return;
       }}
       var b = param.seriesData.get(series);
-      var hh = new Date(param.time * 1000).toISOString().slice(11, 16);
-      var _clr = b.close >= b.open ? '#3fb950' : '#f85149';
-      _leg.innerHTML = '<span style="color:#8b949e">' + hh + '</span>'
-        + '&ensp;O<span style="color:#adbac7">' + b.open.toFixed(0) + '</span>'
-        + '&thinsp;H<span style="color:#3fb950">' + b.high.toFixed(0) + '</span>'
-        + '&thinsp;L<span style="color:#f85149">' + b.low.toFixed(0) + '</span>'
+      var hh = new Date(param.time * 1000).toISOString().slice(11, 19);
+      var _clr = b.close >= b.open ? '#26a69a' : '#ef5350';
+      _leg.innerHTML = '<span style="color:#d1d4dc">' + hh + '</span>'
+        + '&ensp;O<span style="color:#d1d4dc">' + b.open.toFixed(0) + '</span>'
+        + '&thinsp;H<span style="color:#26a69a">' + b.high.toFixed(0) + '</span>'
+        + '&thinsp;L<span style="color:#ef5350">' + b.low.toFixed(0) + '</span>'
         + '&thinsp;C<span style="color:' + _clr + '">' + b.close.toFixed(0) + '</span>';
     }});
 
