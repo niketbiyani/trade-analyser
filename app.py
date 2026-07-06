@@ -1067,6 +1067,7 @@ def _process_option_zip_bg(job_id: str, zip_path: str) -> None:
                                     meta_ticker = raw_ticker.strip().upper().replace(" ", "")
                                     meta        = parsed
                                 else:
+                                    errors.append(f"{csv_name}: Unrecognised ticker '{raw_ticker}' / file '{fname}'")
                                     break  # unrecognised — skip whole file
 
                         if meta_ticker is None:
@@ -1085,6 +1086,10 @@ def _process_option_zip_bg(job_id: str, zip_path: str) -> None:
                         rows_buf.append((meta_ticker, ts, o, h, l, c, v, oi))
 
                     if not rows_buf or meta_ticker is None or meta is None:
+                        if meta_ticker is None or meta is None:
+                            errors.append(f"{csv_name}: Meta ticker or parser returned None (parsed: {meta_ticker is not None})")
+                        elif not rows_buf:
+                            errors.append(f"{csv_name}: No valid rows processed (first row: ts={ts_str if 'ts_str' in locals() else 'None'})")
                         files_done += 1
                         continue
 
