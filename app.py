@@ -3881,6 +3881,31 @@ def report_page():
         opt_col = "#4fc3f7" if opt == "CE" else "#ffb74d"
         direction = r.get("direction","SHORT")
         dir_col = "#ef9a9a" if direction=="SHORT" else "#81c784"
+        # Render inline badges for trade tags
+        badges = []
+        tt = r.get("trade_type", "")
+        if tt:
+            bg = "#e8f5e9" if tt == "hedge" else "#e1f5fe" if tt == "scalp" else "#ffebee"
+            fg = "#2e7d32" if tt == "hedge" else "#0277bd" if tt == "scalp" else "#c62828"
+            badges.append(f'<span style="background:{bg};color:{fg};padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;margin-right:4px;border:1px solid {fg}40;text-transform:uppercase">{tt}</span>')
+        
+        tf = r.get("timeframe", "")
+        if tf:
+            bg = "#fff3e0" if tf in ("5s", "15s") else "#f3e5f5"
+            fg = "#ef6c00" if tf in ("5s", "15s") else "#6a1b9a"
+            badges.append(f'<span style="background:{bg};color:{fg};padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;margin-right:4px;border:1px solid {fg}40">{tf}</span>')
+            
+        rf = r.get("rules_followed")
+        if rf is not None:
+            bg = "#e8f5e9" if rf == 1 else "#ffebee"
+            fg = "#2e7d32" if rf == 1 else "#c62828"
+            lbl = "✓ Rules" if rf == 1 else "✗ Rules"
+            badges.append(f'<span style="background:{bg};color:{fg};padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;margin-right:4px;border:1px solid {fg}40">{lbl}</span>')
+            
+        strat = r.get("strategy", "")
+        strat_html = f'<div style="font-size:10px;color:#555;font-weight:500;margin-top:4px;font-style:italic">Strat: {strat}</div>' if strat else ''
+        badges_html = " ".join(badges)
+
         rows_html += f"""<tr>
           <td>{r.get('entry_time','')}</td>
           <td><span style="color:{dir_col}">{direction}</span></td>
@@ -3891,6 +3916,10 @@ def report_page():
           <td>{r.get('exit_time','') or '—'}</td>
           <td>{r.get('lots','')}</td>
           <td style="color:{p_col};font-weight:600">{p_str}</td>
+          <td>
+            <div style="display:flex;flex-wrap:wrap;gap:2px;">{badges_html}</div>
+            {strat_html}
+          </td>
           <td style="white-space:pre-wrap;word-break:break-word">{r.get('notes','') or ''}</td>
         </tr>"""
 
@@ -3943,7 +3972,7 @@ def report_page():
   <thead><tr>
     <th>Entry</th><th>Dir</th><th>Type</th><th>Strike</th>
     <th>Entry &#8377;</th><th>Exit &#8377;</th><th>Exit Time</th>
-    <th>Lots</th><th>P&amp;L</th><th>Notes</th>
+    <th>Lots</th><th>P&amp;L</th><th>Analysis / tags</th><th>Notes</th>
   </tr></thead>
   <tbody>{rows_html}</tbody>
 </table>
