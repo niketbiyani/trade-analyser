@@ -2798,6 +2798,7 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
       <div class="ul-title">Data Upload</div>
       <div class="ul-row" style="flex-wrap:wrap;gap:8px;">
         <button id="uploadBtn" onclick="triggerUpload()" style="flex:1;">&#8593; Upload ZIP(s)</button>
+        <button id="clearBtn" onclick="clearAllOptionData()" style="background:linear-gradient(135deg,#6e1f1f,#3d0f0f);border:none;color:#f85149;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600;transition:opacity .15s;white-space:nowrap;" title="Delete all uploaded option data from the database">&#128465; Clear All</button>
         <input type="file" id="fileInput" accept=".zip" multiple onchange="onFileSelected(this)" style="display:none;">
         <span id="uploadStatus" style="font-size:11px;color:#484f58;width:100%;"></span>
       </div>
@@ -2980,6 +2981,25 @@ function setUl(ul,el){{
 }}
 
 /* ── DB stats ── */
+async function clearAllOptionData(){{
+  if(!confirm("This will DELETE ALL uploaded option OHLCV data from the database.\n"+"Spot data will also be cleared.\n\nAre you sure?"))return;
+  var btn=document.getElementById("clearBtn");
+  btn.disabled=true; btn.textContent="Clearing…";
+  try{{
+    var r=await fetch(_root+"/api/clear-option-data",{{method:"DELETE"}});
+    var d=await r.json();
+    if(d.ok){{
+      document.getElementById("uploadStatus").textContent="✓ All option data cleared. You can now re-upload.";
+      document.getElementById("uploadStatus").style.color="#3fb950";
+      loadStats();
+      loadOptionDates();
+    }}else{{
+      alert("Clear failed: "+(d.error||"Unknown"));
+    }}
+  }}catch(e){{alert("Error: "+e.message);}}
+  finally{{btn.disabled=false;btn.textContent="🗑 Clear All";}}
+}}
+
 async function loadStats(){{
   try{{
     var r=await fetch(_root+'/api/option-upload-stats');
@@ -4010,6 +4030,20 @@ def api_upload_status(job_id: str):
     if job is None:
         return jsonify({"ok": False, "error": "Unknown job ID"}), 404
     return jsonify({"ok": True, **job})
+
+
+@app.route("/api/clear-option-data", methods=["DELETE"])
+def api_clear_option_data():
+    """Delete all uploaded option OHLCV data and metadata. Spot data cleared too.
+    Safe: trade_notes, trades, tick_data and other tables are untouched.
+    """
+    with _db_lock:
+        db = get_db()
+        db.execute("DELETE FROM option_ohlcv")
+        db.execute("DELETE FROM option_ohlcv_meta")
+        db.commit()
+    logger.info("All option OHLCV data cleared by user request")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/option-debug")
