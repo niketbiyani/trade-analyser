@@ -2287,7 +2287,7 @@ var _tradeDates=[],TODAY=’{today}’;
       layout:{{background:{{color:'#131722'}},textColor:'#d1d4dc'}},
       grid:{{vertLines:{{color:'#242835'}},horzLines:{{color:'#242835'}}}},
       crosshair:{{mode:0}},
-      rightPriceScale:{{borderColor:'#2a2e39'}},
+      rightPriceScale:{{borderColor:'#2a2e39',minimumWidth:80}},
       timeScale:{{borderColor:'#2a2e39',timeVisible:true,secondsVisible:true}},
     }});
     _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
@@ -2777,7 +2777,7 @@ var _curIvl=1,_curUl='NIFTY',_curExpiry='',_pollTimer=null;
     layout:{{background:{{color:'#131722'}},textColor:'#d1d4dc'}},
     grid:{{vertLines:{{color:'#242835'}},horzLines:{{color:'#242835'}}}},
     crosshair:{{mode:0}},
-    rightPriceScale:{{borderColor:'#2a2e39'}},
+    rightPriceScale:{{borderColor:'#2a2e39',minimumWidth:80}},
     timeScale:{{borderColor:'#2a2e39',timeVisible:true,secondsVisible:true}},
   }});
   _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
@@ -4659,7 +4659,7 @@ var TODAY='{today}';
       layout:{{background:{{color:'#0d0d0d'}},textColor:'#aaa'}},
       grid:{{vertLines:{{color:'#1a1a1a'}},horzLines:{{color:'#1a1a1a'}}}},
       crosshair:{{mode:0}},
-      rightPriceScale:{{borderColor:'#2a2a2a'}},
+      rightPriceScale:{{borderColor:'#2a2a2a',minimumWidth:80}},
       timeScale:{{borderColor:'#2a2a2a',timeVisible:true,secondsVisible:false}},
     }});
     _series=_chart.addSeries(LightweightCharts.CandlestickSeries,{{
@@ -5198,7 +5198,7 @@ var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
-var _syncingRange=false, _syncingCrosshair=false;
+var _syncingRange=false;
 var _rsiVisible=true, _macdVisible=true;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
@@ -5217,14 +5217,14 @@ function setChartMsg(main,sub) {{
 }}
 function hideChartMsg() {{ document.getElementById('chartMsg').classList.add('hide'); }}
 
-function _chartOpts(el, noTimeAxis) {{
+function _chartOpts(el, noTimeAxis, customHeight) {{
   return {{
     width:  el.clientWidth  || 800,
-    height: el.clientHeight || 400,
+    height: customHeight || el.clientHeight || 400,
     layout: {{ background: {{ color: '#131722' }}, textColor: '#d1d4dc' }},
     grid:   {{ vertLines: {{ color: '#242835' }}, horzLines: {{ color: '#242835' }} }},
     crosshair: {{ mode: 0 }},
-    rightPriceScale: {{ borderColor: '#2a2e39' }},
+    rightPriceScale: {{ borderColor: '#2a2e39', minimumWidth: 80 }},
     timeScale: {{ borderColor: '#2a2e39', timeVisible: !noTimeAxis, secondsVisible: true, visible: !noTimeAxis }},
   }};
 }}
@@ -5282,10 +5282,34 @@ function initChart() {{
     // ── Sync time scales across all three charts ────────────────────────────
     _syncTimeScales();
 
+    // ── Active Chart Hover Tracking ──────────────────────────────────────────
+    var activeChart = null;
+    var cBox=document.getElementById('chartBox'), rBox=document.getElementById('rsiBox'), mBox=document.getElementById('macdBox');
+    if(cBox){{
+      cBox.addEventListener('mouseenter', function() {{ activeChart = 'main'; }});
+      cBox.addEventListener('touchstart', function() {{ activeChart = 'main'; }}, {{passive:true}});
+    }}
+    if(rBox){{
+      rBox.addEventListener('mouseenter', function() {{ activeChart = 'rsi'; }});
+      rBox.addEventListener('touchstart', function() {{ activeChart = 'rsi'; }}, {{passive:true}});
+    }}
+    if(mBox){{
+      mBox.addEventListener('mouseenter', function() {{ activeChart = 'macd'; }});
+      mBox.addEventListener('touchstart', function() {{ activeChart = 'macd'; }}, {{passive:true}});
+    }}
+    var cArea=document.getElementById('chartsArea');
+    if(cArea){{
+      cArea.addEventListener('mouseleave', function() {{
+        activeChart = null;
+        if(_chartInst) _chartInst.clearCrosshairPosition();
+        if(_rsiChart) _rsiChart.clearCrosshairPosition();
+        if(_macdChart) _macdChart.clearCrosshairPosition();
+      }});
+    }}
+
     // ── Sync crosshairs across all three charts ──────────────────────────────
     _chartInst.subscribeCrosshairMove(function(param) {{
-      if (_syncingCrosshair) return;
-      _syncingCrosshair = true;
+      if (activeChart !== 'main') return;
       try {{
         if (param.time) {{
           _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
@@ -5295,11 +5319,9 @@ function initChart() {{
           _macdChart.clearCrosshairPosition();
         }}
       }} catch(e) {{}}
-      _syncingCrosshair = false;
     }});
     _rsiChart.subscribeCrosshairMove(function(param) {{
-      if (_syncingCrosshair) return;
-      _syncingCrosshair = true;
+      if (activeChart !== 'rsi') return;
       try {{
         if (param.time) {{
           _chartInst.setCrosshairPosition(0, param.time, series);
@@ -5309,11 +5331,9 @@ function initChart() {{
           _macdChart.clearCrosshairPosition();
         }}
       }} catch(e) {{}}
-      _syncingCrosshair = false;
     }});
     _macdChart.subscribeCrosshairMove(function(param) {{
-      if (_syncingCrosshair) return;
-      _syncingCrosshair = true;
+      if (activeChart !== 'macd') return;
       try {{
         if (param.time) {{
           _chartInst.setCrosshairPosition(0, param.time, series);
@@ -5323,7 +5343,6 @@ function initChart() {{
           _rsiChart.clearCrosshairPosition();
         }}
       }} catch(e) {{}}
-      _syncingCrosshair = false;
     }});
 
     // ── OHLC legend ────────────────────────────────────────────────────────
