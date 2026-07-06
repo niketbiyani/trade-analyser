@@ -5600,6 +5600,8 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
 .tpill.active {{ opacity:1; }}
 .tpill.tp-hedge   {{ background:rgba(129,199,132,.15); color:#81c784; border-color:#81c784; }}
 .tpill.tp-long    {{ background:rgba(79,195,247,.15);  color:#4fc3f7; border-color:#4fc3f7; }}
+.tpill.tp-scalp   {{ background:rgba(79,195,247,.15);  color:#4fc3f7; border-color:#4fc3f7; }}
+.tpill.tp-short   {{ background:rgba(239,83,80,.15);   color:#ef5350; border-color:#ef5350; }}
 .tpill.tp-5s      {{ background:rgba(255,183,77,.15);  color:#ffb74d; border-color:#ffb74d; }}
 .tpill.tp-15s     {{ background:rgba(255,183,77,.15);  color:#ffb74d; border-color:#ffb74d; }}
 .tpill.tp-1m      {{ background:rgba(206,147,216,.15); color:#ce93d8; border-color:#ce93d8; }}
@@ -6286,7 +6288,7 @@ function renderTrades(trades) {{
       '<td>'+lts+'</td><td>'+pl+'</td>' +
       '<td class="ntd">' +
         '<div class="tpills">' +
-          '<span class="'+typeCls+'" data-tid="'+t.id+'" data-field="trade_type" data-opts="hedge,long" title="Toggle: Hedge / Long" onclick="cycleTagEl(this,event)">'+typeLabel+'</span>' +
+          '<span class="'+typeCls+'" data-tid="'+t.id+'" data-field="trade_type" data-opts="hedge,scalp,short" title="Toggle: Type (Hedge / Scalp / Short)" onclick="cycleTagEl(this,event)">'+typeLabel+'</span>' +
           '<span class="'+tfCls+'"  data-tid="'+t.id+'" data-field="timeframe"   data-opts="5s,15s,1m"  title="Toggle timeframe"       onclick="cycleTagEl(this,event)">'+tfLabel+'</span>' +
           '<span class="'+rfCls+'"  data-tid="'+t.id+'"                                                  title="Rules followed?"        onclick="cycleRulesEl(this,event)">'+rfLabel+'</span>' +
           '<input class="strat-ni" value="'+strat+'" placeholder="strategy…" data-tid="'+t.id+'" data-field="strategy" onclick="event.stopPropagation()" onblur="saveTagEl(this)">' +
