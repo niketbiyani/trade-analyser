@@ -18,9 +18,12 @@ from flask import Flask, jsonify, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 import tempfile
 
-_prj_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
-os.makedirs(_prj_temp, exist_ok=True)
-tempfile.tempdir = _prj_temp
+try:
+    _prj_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+    os.makedirs(_prj_temp, exist_ok=True)
+    tempfile.tempdir = _prj_temp
+except Exception as e:
+    pass
 
 load_dotenv()
 
@@ -2181,7 +2184,7 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:
 .ivl-btn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
 .ivl-btn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
 #chartArea{{flex:1;min-height:0;position:relative;border-bottom:1px solid #1e1e1e;}}
-#chartEl{{position:absolute;top:0;bottom:0;left:0;right:12px;}}
+#chartEl{{position:absolute;top:0;bottom:0;left:0;right:30px;}}
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
 #errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
@@ -2687,14 +2690,13 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
 /* ── Right panel — chart ── */
 #right{{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;}}
 #chartTitle{{padding:7px 14px;font-size:12px;font-weight:500;color:#8b949e;flex-shrink:0;border-bottom:1px solid #161b22;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
-#chartEl{{flex:1;min-height:0;margin-right:12px;}}
+#chartEl{{flex:1;min-height:0;margin-right:30px;}}
 #chartMsg{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#484f58;font-size:13px;text-align:center;pointer-events:none;z-index:3;line-height:1.8;}}
 </style>
 </head>
 <body>
 <div id="hdr">
   <a href="{root}/">&#8592; Main</a>
-  <a href="{root}/option-chart">Option Chart</a>
   <span class="htitle">Historical Options</span>
   <span class="badge">{ver}</span>
   <div class="ivl-group">
@@ -2803,7 +2805,7 @@ var _curIvl=1,_curUl='NIFTY',_curExpiry='',_curTradeDate='',_curTime='15:30',_po
 var _ladderData=[],_curStrikeIndex=null,_curOptionType=null;
 var _tradeDates=new Set(),_expiryDates=new Set();
 var _expiryData=[],_currentCalMonth=new Date().getMonth(),_currentCalYear=new Date().getFullYear();
-var _curTicker=null,_curTickerLabel='';
+var _curTicker=null,_curTickerLabel='',_curCandles=[];
 
 /* ── Chart init ── */
 (function initChart(){{
@@ -3187,6 +3189,7 @@ async function loadLadder(expiry, tradeDate, time){{
         atmRow.scrollIntoView({{block:'center',behavior:'smooth'}});
       }},50);
     }}
+    scrollChartToActiveTime();
   }}catch(e){{
     empty.textContent='Error loading strikes';
   }}
@@ -3207,19 +3210,57 @@ async function loadChart(ticker,label){{
     var c=d.candles||[];
     if(!c.length){{
       msgEl.innerHTML='<div style="font-size:22px;margin-bottom:8px;opacity:.4">&#128683;</div>No data for '+label;
+      _curCandles=[];
       return;
     }}
+    _curCandles=c;
     _series.setData(c);
     var ind=calcIndicators(c);
     _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
     if(_rsiSeries)_rsiSeries.setData(ind.rsi);
     if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
     _markersPlugin.setMarkers([]);
-    _chart.timeScale().fitContent();
+    
+    // Zoom and center around selected trade date & time (displaying ~300 candles)
+    scrollChartToActiveTime();
+    
     msgEl.style.display='none';
     titleEl.textContent=_curUl+' · '+label+' · exp:'+_curExpiry+' · '+_curIvl+'m · '+c.length+' bars';
   }}catch(e){{
     msgEl.innerHTML='<div style="font-size:22px;margin-bottom:8px;opacity:.4">&#9888;</div>Error: '+e.message;
+  }}
+}}
+
+function scrollChartToActiveTime(){{
+  if(!_series || !_curCandles || !_curCandles.length)return;
+  var targetTs = tsFor(_curTradeDate, _curTime);
+  var targetIndex = -1;
+  if (targetTs) {{
+    var minDiff = Infinity;
+    for (var i = 0; i < _curCandles.length; i++) {{
+      var diff = Math.abs(_curCandles[i].time - targetTs);
+      if (diff < minDiff) {{
+        minDiff = diff;
+        targetIndex = i;
+      }}
+    }}
+  }}
+  if (targetIndex !== -1) {{
+    var fromIndex = Math.max(0, targetIndex - 150);
+    var toIndex = Math.min(_curCandles.length - 1, targetIndex + 150);
+    if (toIndex - fromIndex < 300) {{
+      if (fromIndex === 0) {{
+        toIndex = Math.min(_curCandles.length - 1, 300);
+      }} else if (toIndex === _curCandles.length - 1) {{
+        fromIndex = Math.max(0, _curCandles.length - 1 - 300);
+      }}
+    }}
+    _chart.timeScale().setVisibleRange({{
+      from: _curCandles[fromIndex].time,
+      to: _curCandles[toIndex].time
+    }});
+  }} else {{
+    _chart.timeScale().fitContent();
   }}
 }}
 
@@ -3242,10 +3283,10 @@ function onFileSelected(input){{
 function onFolderSelected(input){{
   var files=Array.from(input.files).filter(function(f){{
     var name = f.name.toLowerCase();
-    return name.endsWith('.csv') && !name.startsWith('._');
+    return (name.endsWith('.csv') || name.endsWith('.zip')) && !name.startsWith('._');
   }});
   if(!files.length){{
-    document.getElementById('uploadStatus').textContent='No CSV files found in selected folder.';
+    document.getElementById('uploadStatus').textContent='No CSV or ZIP files found in selected folder.';
     return;
   }}
   doUpload(files);
@@ -3790,8 +3831,6 @@ def api_upload_option_csv():
     if not files or len(files) == 0:
         return jsonify({"ok": False, "error": "No files uploaded"}), 400
 
-    is_zip = len(files) == 1 and files[0].filename.lower().endswith(".zip")
-
     tmp_fd, tmp_path = _tmp.mkstemp(
         suffix=".zip",
         dir=_os.path.dirname(DB_PATH),
@@ -3800,22 +3839,28 @@ def api_upload_option_csv():
     _os.close(tmp_fd)
 
     try:
-        if is_zip:
-            # Single ZIP file: save directly
-            files[0].save(tmp_path)
-        else:
-            # Multiple CSV files (folder upload): zip them on the fly
-            with _zip.ZipFile(tmp_path, "w", _zip.ZIP_DEFLATED) as zf:
-                for f in files:
-                    filename_lower = f.filename.lower()
-                    if filename_lower.endswith(".csv") and not "macosx" in filename_lower:
-                        name = _os.path.basename(f.filename)
-                        zf.writestr(name, f.read())
+        import io
+        with _zip.ZipFile(tmp_path, "w", _zip.ZIP_DEFLATED) as dest_zf:
+            for f in files:
+                filename_lower = f.filename.lower()
+                if "macosx" in filename_lower or _os.path.basename(f.filename).startswith("._"):
+                    continue
+                
+                if filename_lower.endswith(".zip"):
+                    zip_data = io.BytesIO(f.read())
+                    with _zip.ZipFile(zip_data, "r") as src_zf:
+                        for name in src_zf.namelist():
+                            name_lower = name.lower()
+                            if name_lower.endswith(".csv") and not "macosx" in name_lower and not _os.path.basename(name).startswith("._"):
+                                dest_zf.writestr(_os.path.basename(name), src_zf.read(name))
+                elif filename_lower.endswith(".csv"):
+                    dest_zf.writestr(_os.path.basename(f.filename), f.read())
     except Exception as e:
         if _os.path.exists(tmp_path):
             try: _os.remove(tmp_path)
             except Exception: pass
-        return jsonify({"ok": False, "error": f"Could not save upload: {e}"}), 500
+        logger.error("Could not save upload files: %s", e)
+        return jsonify({"ok": False, "error": f"Could not process uploads: {e}"}), 500
 
     job_id = _uuid.uuid4().hex
     with _upload_jobs_lock:
@@ -4713,7 +4758,7 @@ def api_tick_candles():
         lookback_start = day_start - 7 * 86400
     except Exception:
         return jsonify({"candles": [], "error": "Invalid date"}), 400
-    sym_map = {"13": "NIFTY", "51": "SENSEX"}
+    sym_map = {"13": "NIFTY", "25": "BANKNIFTY", "27": "FINNIFTY", "442": "MIDCPNIFTY", "51": "SENSEX"}
     symbol = sym_map.get(security_id)
     if symbol:
         rows = get_db().execute(
@@ -4925,7 +4970,7 @@ thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;pa
 .sk-col{{font-weight:600;color:#999;}}
 .atm-row .sk-col{{color:#ddd;}}
 #rightPanel{{flex:1;position:relative;overflow:hidden;}}
-#chartEl{{position:absolute;top:0;bottom:0;left:0;right:12px;}}
+#chartEl{{position:absolute;top:0;bottom:0;left:0;right:30px;}}
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
 #errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
@@ -4937,7 +4982,6 @@ thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;pa
 <div id="leftPanel">
   <div id="lp-nav">
     <a href="{root}/">&#8592; Main</a>
-    <a href="{root}/option-chart">Option Chart</a>
     <span class="htitle">ATM Ladder</span>
     <span class="badge">{ver}</span>
   </div>
@@ -5323,10 +5367,10 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #main {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
 #chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
 #chartBox {{ flex: 1; min-height: 220px; position: relative; overflow: hidden }}
-#chartEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 12px }}
+#chartEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 30px }}
 #rsiBox  {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
 #macdBox {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
-#rsiEl, #macdEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 12px }}
+#rsiEl, #macdEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 30px }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
             background: var(--bg); pointer-events: none; flex-direction: column; gap: 8px }}
@@ -5425,7 +5469,6 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <span id="autoImpStatus"></span>
   <a href="{root}/upload-seconds" class="hbtn" style="text-decoration:none">&#128229; TV Upload</a>
-  <a href="{root}/option-chart" class="hbtn" style="text-decoration:none">&#128202; Option Chart</a>
   <a href="{root}/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
   <a href="{root}/option-ladder" class="hbtn" style="text-decoration:none">&#128693; ATM Ladder</a>
 </div>
