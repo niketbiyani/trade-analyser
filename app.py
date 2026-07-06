@@ -6169,14 +6169,12 @@ function renderTrades(trades) {{
       '<td>'+lts+'</td><td>'+pl+'</td>' +
       '<td class="ntd">' +
         '<div class="tpills">' +
-          '<span class="'+typeCls+'" title="Toggle: Hedge / Long" onclick="cycleTag('+t.id+",'trade_type',['','hedge','long'],event)"+'>'+typeLabel+'</span>' +
-          '<span class="'+tfCls+'" title="Toggle timeframe" onclick="cycleTag('+t.id+",'timeframe',['','5s','15s','1m'],event)"+'>'+tfLabel+'</span>' +
-          '<span class="'+rfCls+'" title="Rules followed?" onclick="cycleRules('+t.id+',event)">'+rfLabel+'</span>' +
-          '<input class="strat-ni" value="'+strat+'" placeholder="strategy\u2026" ' +
-            'onclick="event.stopPropagation()" onblur="saveTag('+t.id+",'strategy',this.value)"+'">' +
+          '<span class="'+typeCls+'" data-tid="'+t.id+'" data-field="trade_type" data-opts="hedge,long" title="Toggle: Hedge / Long" onclick="cycleTagEl(this,event)">'+typeLabel+'</span>' +
+          '<span class="'+tfCls+'"  data-tid="'+t.id+'" data-field="timeframe"   data-opts="5s,15s,1m"  title="Toggle timeframe"       onclick="cycleTagEl(this,event)">'+tfLabel+'</span>' +
+          '<span class="'+rfCls+'"  data-tid="'+t.id+'"                                                  title="Rules followed?"        onclick="cycleRulesEl(this,event)">'+rfLabel+'</span>' +
+          '<input class="strat-ni" value="'+strat+'" placeholder="strategy…" data-tid="'+t.id+'" data-field="strategy" onclick="event.stopPropagation()" onblur="saveTagEl(this)">' +
         '</div>' +
-        '<input class="ni" value="'+nt+'" placeholder="note..." ' +
-          'onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)">' +
+        '<input class="ni" value="'+nt+'" placeholder="note..." onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)">' +
       '</td>' +
       (t.status==='OPEN'?'<td><button class="delbtn" style="color:#ffb74d;font-size:10px;white-space:nowrap" onclick="closeTrade('+t.id+',event)" title="Mark closed">&#10003; Close</button> <button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>':'<td><button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>') +
       '</tr>';
@@ -6296,24 +6294,27 @@ async function saveTag(id,field,value){{
     if(t)t[field]=value;
   }}catch(e){{console.error(e);}}
 }}
-function cycleTag(id,field,opts,ev){{
+function saveTagEl(el){{saveTag(+el.dataset.tid,el.dataset.field,el.value);}}
+function cycleTagEl(el,ev){{
   ev.stopPropagation();
+  var id=+el.dataset.tid, field=el.dataset.field;
+  var opts=[''].concat((el.dataset.opts||'').split(','));
   var t=allTrades.find(function(x){{return x.id===id;}});
   if(!t)return;
   var cur=t[field]||'';
   var idx=opts.indexOf(cur);
-  var next=opts[(idx+1)%opts.length];
-  saveTag(id,field,next);
-  // Re-render the trades table so pills update immediately
+  t[field]=opts[(idx+1)%opts.length];
+  saveTag(id,field,t[field]);
   var f=_filtered();renderTrades(f);putMarkers(f);
 }}
-function cycleRules(id,ev){{
+function cycleRulesEl(el,ev){{
   ev.stopPropagation();
+  var id=+el.dataset.tid;
   var t=allTrades.find(function(x){{return x.id===id;}});
   if(!t)return;
   var cur=t.rules_followed;
-  var next=cur===null||cur===undefined?1:cur===1?0:null;
-  saveTag(id,'rules_followed',next);
+  t.rules_followed=cur===null||cur===undefined?1:cur===1?0:null;
+  saveTag(id,'rules_followed',t.rules_followed);
   var f=_filtered();renderTrades(f);putMarkers(f);
 }}
 function switchTab(t){{
