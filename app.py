@@ -16,6 +16,11 @@ from datetime import date, datetime, timedelta, timezone
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from werkzeug.middleware.proxy_fix import ProxyFix
+import tempfile
+
+_prj_temp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+os.makedirs(_prj_temp, exist_ok=True)
+tempfile.tempdir = _prj_temp
 
 load_dotenv()
 
@@ -2167,7 +2172,7 @@ def _option_chart_page() -> str:
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
-body{{background:#0d0d0d;color:#ccc;font:13px/1.4 ‘Segoe UI’,sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
+body{{background:#0d0d0d;color:#ccc;font:13px/1.4 'Segoe UI',sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden;}}
 #hdr{{display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;}}
 #hdr a{{color:#555;text-decoration:none;font-size:11px;}}
 #hdr a:hover{{color:#aaa;}}
@@ -2176,7 +2181,7 @@ body{{background:#0d0d0d;color:#ccc;font:13px/1.4 ‘Segoe UI’,sans-serif;disp
 .ivl-btn{{background:#111;border:1px solid #2a2a2a;color:#888;padding:3px 9px;border-radius:3px;cursor:pointer;font-size:11px;}}
 .ivl-btn.on{{background:#1a2a1a;border-color:#3a6a3a;color:#4fc3f7;}}
 #chartArea{{flex:1;min-height:0;position:relative;border-bottom:1px solid #1e1e1e;}}
-#chartEl{{width:100%;height:100%;}}
+#chartEl{{position:absolute;top:0;bottom:0;left:0;right:12px;}}
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
 #errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
@@ -2277,7 +2282,7 @@ var _root='{root}';
 var _chart=null,_series=null,_markersPlugin=null,_curIvl=1,_curTick=0,_selRow=null;
 var _ema20s=null,_ema50s=null,_rsiSeries=null;
 var _macdHist=null,_macdLine=null,_macdSignal=null;
-var _tradeDates=[],TODAY=’{today}’;
+var _tradeDates=[],TODAY='{today}';
 
 // ── Chart init ────────────────────────────────────────────────────────────────
 (function initChart(){{
@@ -2348,7 +2353,7 @@ function calcIndicators(data){{
   var rsiArr=new Array(n).fill(null);
   if(n>14){{var g=0,l=0;for(var i=1;i<=14;i++){{var d=closes[i]-closes[i-1];if(d>0)g+=d;else l-=d;}}var ag=g/14,al=l/14;rsiArr[14]=al===0?100:100-(100/(1+ag/al));for(var i=15;i<n;i++){{var d=closes[i]-closes[i-1],gv=d>0?d:0,lv=d<0?-d:0;ag=(ag*13+gv)/14;al=(al*13+lv)/14;rsiArr[i]=al===0?100:100-(100/(1+ag/al));}}}}
   var hist=[];
-  for(var i=0;i<n;i++){{if(macdArr[i]!==null&&sigArr[i]!==null){{var v=macdArr[i]-sigArr[i];hist.push({{time:times[i],value:parseFloat(v.toFixed(4)),color:v>=0?’rgba(38,166,154,0.7)’:’rgba(239,83,80,0.7)’}});}}}}
+  for(var i=0;i<n;i++){{if(macdArr[i]!==null&&sigArr[i]!==null){{var v=macdArr[i]-sigArr[i];hist.push({{time:times[i],value:parseFloat(v.toFixed(4)),color:v>=0?'rgba(38,166,154,0.7)':'rgba(239,83,80,0.7)'}});}}}}
   return{{ema20:toS(e20),ema50:toS(e50),rsi:toS(rsiArr),macdLine:toS(macdArr),sigLine:toS(sigArr),histogram:hist}};
 }}
 function updateIndicators(data){{
@@ -2363,31 +2368,31 @@ function updateIndicators(data){{
 function setIvl(n){{
   _curIvl=n; _curTick=0;
   [1,3,5,15].forEach(function(v){{
-    var b=document.getElementById(‘ivl’+v);
-    if(b) b.className=’ivl-btn’+(v===n?’ on’:’’);
+    var b=document.getElementById('ivl'+v);
+    if(b) b.className='ivl-btn'+(v===n?' on':'');
   }});
-  document.getElementById(‘tick15s’).className=’ivl-btn’;
-  document.getElementById(‘tick30s’).className=’ivl-btn’;
+  document.getElementById('tick15s').className='ivl-btn';
+  document.getElementById('tick30s').className='ivl-btn';
   if(_selRow) _selRow._load();
 }}
 function setTick(s){{
   _curTick=s;
-  document.getElementById(‘tick15s’).className=’ivl-btn’+(s===15?’ on’:’’);
-  document.getElementById(‘tick30s’).className=’ivl-btn’+(s===30?’ on’:’’);
+  document.getElementById('tick15s').className='ivl-btn'+(s===15?' on':'');
+  document.getElementById('tick30s').className='ivl-btn'+(s===30?' on':'');
   [1,3,5,15].forEach(function(v){{
-    var b=document.getElementById(‘ivl’+v);
-    if(b) b.className=’ivl-btn’;
+    var b=document.getElementById('ivl'+v);
+    if(b) b.className='ivl-btn';
   }});
   if(_selRow) _selRow._load();
 }}
 
-function showMsg(m){{var e=document.getElementById(‘msgEl’);e.style.display=’’;e.textContent=m;}}
-function hideMsg(){{document.getElementById(‘msgEl’).style.display=’none’;}}
-function showErr(m){{var e=document.getElementById(‘errBanner’);e.style.display=m?’’:’none’;e.textContent=m||’’;}}
-function fp(v){{return v!=null?v.toFixed(1):’—‘;}}
+function showMsg(m){{var e=document.getElementById('msgEl');e.style.display='';e.textContent=m;}}
+function hideMsg(){{document.getElementById('msgEl').style.display='none';}}
+function showErr(m){{var e=document.getElementById('errBanner');e.style.display=m?'':'none';e.textContent=m||'';}}
+function fp(v){{return v!=null?v.toFixed(1):'—';}}
 
 function fromDateFor(expDate){{
-  var p=(expDate||TODAY).split(‘-’);
+  var p=(expDate||TODAY).split('-');
   var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
   dt.setUTCDate(dt.getUTCDate()-30);
   return dt.toISOString().slice(0,10);
@@ -2395,10 +2400,10 @@ function fromDateFor(expDate){{
 
 // ── Date nav ──────────────────────────────────────────────────────────────────
 async function loadDates(){{
-  try{{var r=await fetch(‘/api/dates’);_tradeDates=await r.json();}}catch(e){{}}
+  try{{var r=await fetch('/api/dates');_tradeDates=await r.json();}}catch(e){{}}
 }}
 function shiftDay(dir){{
-  var cur=document.getElementById(‘dateIn’).value;
+  var cur=document.getElementById('dateIn').value;
   if(_tradeDates.length){{
     var idx=_tradeDates.indexOf(cur),next;
     if(dir<0){{next=idx<0?_tradeDates[0]:_tradeDates[Math.min(idx+1,_tradeDates.length-1)];}}
@@ -2406,7 +2411,7 @@ function shiftDay(dir){{
     if(next){{loadDate(next);return;}}
   }}
   if(!cur) return;
-  var p=cur.split(‘-’);
+  var p=cur.split('-');
   var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
   dt.setUTCDate(dt.getUTCDate()+dir);
   loadDate(dt.toISOString().slice(0,10));
@@ -2414,49 +2419,49 @@ function shiftDay(dir){{
 
 // ── By Date: load trades table ────────────────────────────────────────────────
 async function loadDate(d){{
-  document.getElementById(‘dateIn’).value=d;
-  if(_selRow){{_selRow.classList.remove(‘sel’);_selRow=null;}}
-  var no=document.getElementById(‘noTrades’);
-  no.textContent=’Loading…’;no.style.display=’’;
-  document.getElementById(‘tbl’).style.display=’none’;
+  document.getElementById('dateIn').value=d;
+  if(_selRow){{_selRow.classList.remove('sel');_selRow=null;}}
+  var no=document.getElementById('noTrades');
+  no.textContent='Loading…';no.style.display='';
+  document.getElementById('tbl').style.display='none';
   try{{
-    var resp=await fetch(‘/api/trades?date=’+d);
+    var resp=await fetch('/api/trades?date='+d);
     var trades=await resp.json();
-    document.getElementById(‘tcount’).textContent=
-      trades.length?trades.length+’ trade’+(trades.length>1?’s’:’’):’’;
-    if(!trades.length){{no.textContent=’No trades on this date’;return;}}
-    var tbody=document.getElementById(‘tbody’);
-    tbody.innerHTML=’’;
+    document.getElementById('tcount').textContent=
+      trades.length?trades.length+' trade'+(trades.length>1?'s':''):'';
+    if(!trades.length){{no.textContent='No trades on this date';return;}}
+    var tbody=document.getElementById('tbody');
+    tbody.innerHTML='';
     trades.forEach(function(t){{
-      var tr=document.createElement(‘tr’);
-      var oc=t.option_type===’CE’?’ce’:’pe’;
-      var pc=t.pnl>0?’g’:t.pnl<0?’r’:’’;
-      var pstr=t.pnl!=null?’₹’+(t.pnl>=0?’+’:’’)+Math.round(t.pnl):’—‘;
-      var exp=(t.expiry||’’).slice(0,10);
+      var tr=document.createElement('tr');
+      var oc=t.option_type==='CE'?'ce':'pe';
+      var pc=t.pnl>0?'g':t.pnl<0?'r':'';
+      var pstr=t.pnl!=null?'₹'+(t.pnl>=0?'+':'')+Math.round(t.pnl):'—';
+      var exp=(t.expiry||'').slice(0,10);
       tr.innerHTML=
-        ‘<td>’+(t.entry_time||’’).slice(0,8)+’</td>’+
-        ‘<td class="’+oc+’">’+t.option_type+’</td>’+
-        ‘<td>’+t.strike+’</td>’+
-        ‘<td style="color:#555">’+exp+’</td>’+
-        ‘<td>’+fp(t.entry_price)+’</td>’+
-        ‘<td>’+fp(t.exit_price)+’</td>’+
-        ‘<td class="’+pc+’">’+pstr+’</td>’+
-        ‘<td><span class="dtag">’+(t.direction||’SHORT’).charAt(0)+’</span></td>’;
+        '<td>'+(t.entry_time||'').slice(0,8)+'</td>'+
+        '<td class="'+oc+'">'+t.option_type+'</td>'+
+        '<td>'+t.strike+'</td>'+
+        '<td style="color:#555">'+exp+'</td>'+
+        '<td>'+fp(t.entry_price)+'</td>'+
+        '<td>'+fp(t.exit_price)+'</td>'+
+        '<td class="'+pc+'">'+pstr+'</td>'+
+        '<td><span class="dtag">'+(t.direction||'SHORT').charAt(0)+'</span></td>';
       tr._load=function(){{loadTradeChart(t,tr);}};
       tr.onclick=function(){{
-        if(_selRow)_selRow.classList.remove(‘sel’);
-        _selRow=tr;tr.classList.add(‘sel’);
+        if(_selRow)_selRow.classList.remove('sel');
+        _selRow=tr;tr.classList.add('sel');
         tr._load();
       }};
       tbody.appendChild(tr);
     }});
-    no.style.display=’none’;document.getElementById(‘tbl’).style.display=’’;
-  }}catch(e){{no.textContent=’Error loading trades’;}}
+    no.style.display='none';document.getElementById('tbl').style.display='';
+  }}catch(e){{no.textContent='Error loading trades';}}
 }}
 
 // ── Timestamp helpers ─────────────────────────────────────────────────────────
 function tradeTs(dateStr,timeStr){{
-  var d=dateStr.split(‘-’),t=(timeStr||’00:00:00’).split(‘:’);
+  var d=dateStr.split('-'),t=(timeStr||'00:00:00').split(':');
   return Date.UTC(+d[0],+d[1]-1,+d[2],+t[0]||0,+t[1]||0,+t[2]||0)/1000;
 }}
 function snapTs(ts,candles){{
@@ -2473,58 +2478,58 @@ function snapTs(ts,candles){{
 // ── Entry/exit markers ────────────────────────────────────────────────────────
 function putMarkers(t,candles){{
   if(!_markersPlugin||!candles.length) return;
-  var markers=[],optColor=t.option_type===’CE’?’#4fc3f7’:’#ffb74d’;
+  var markers=[],optColor=t.option_type==='CE'?'#4fc3f7':'#ffb74d';
   if(t.entry_time)
     markers.push({{time:snapTs(tradeTs(t.date,t.entry_time),candles),
-      position:’aboveBar’,shape:’arrowDown’,color:optColor,text:’E ‘+fp(t.entry_price)}});
+      position:'aboveBar',shape:'arrowDown',color:optColor,text:'E '+fp(t.entry_price)}});
   if(t.exit_time&&t.exit_price!=null)
     markers.push({{time:snapTs(tradeTs(t.date,t.exit_time),candles),
-      position:’belowBar’,shape:’arrowUp’,color:t.pnl>0?’#3fb950’:’#f85149’,
-      text:’X ‘+fp(t.exit_price)}});
+      position:'belowBar',shape:'arrowUp',color:t.pnl>0?'#3fb950':'#f85149',
+      text:'X '+fp(t.exit_price)}});
   markers.sort(function(a,b){{return a.time-b.time;}});
   _markersPlugin.setMarkers(markers);
 }}
 
 // ── Tick chart fetcher ────────────────────────────────────────────────────────
 async function fetchTickAndDraw(t,label){{
-  if(!t||!t.security_id){{showErr(‘Select a trade row to use tick charts’);return;}}
-  if(t.date!==TODAY){{showErr(‘Tick charts only capture live intraday data — not available for historical dates’);return;}}
-  showMsg(‘Loading…’);showErr(‘’);
+  if(!t||!t.security_id){{showErr('Select a trade row to use tick charts');return;}}
+  if(t.date!==TODAY){{showErr('Tick charts only capture live intraday data — not available for historical dates');return;}}
+  showMsg('Loading…');showErr('');
   try{{
-    var r=await fetch(‘/api/tick-candles?security_id=’+encodeURIComponent(t.security_id)
-      +’&seconds=’+_curTick+’&date=’+t.date);
+    var r=await fetch('/api/tick-candles?security_id='+encodeURIComponent(t.security_id)
+      +'&seconds='+_curTick+'&date='+t.date);
     var d=await r.json();
-    if(d.error){{showMsg(‘’);showErr(d.error);return;}}
+    if(d.error){{showMsg('');showErr(d.error);return;}}
     var c=d.candles||[];
-    if(!c.length){{showMsg(‘No tick data yet — ticks start accumulating when the market feed connects after import’);return;}}
+    if(!c.length){{showMsg('No tick data yet — ticks start accumulating when the market feed connects after import');return;}}
     _series.setData(c);
     updateIndicators(c);
     putMarkers(t,c);
-    var dp=t.date.split(‘-’);
+    var dp=t.date.split('-');
     var dayStart=Date.UTC(+dp[0],+dp[1]-1,+dp[2],9,15,0)/1000;
     var dayEnd=Date.UTC(+dp[0],+dp[1]-1,+dp[2],15,30,0)/1000;
     _chart.timeScale().setVisibleRange({{from:dayStart,to:dayEnd}});
     hideMsg();
-    document.getElementById(‘chartTitle’).textContent=
-      (label||’’)+’ \xb7 ‘+_curTick+’s \xb7 ‘+c.length+’ bars’;
-  }}catch(e){{showMsg(‘’);showErr(‘Error: ‘+e.message);}}
+    document.getElementById('chartTitle').textContent=
+      (label||'')+' \xb7 '+_curTick+'s \xb7 '+c.length+' bars';
+  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
 }}
 
 // ── Core chart fetcher ────────────────────────────────────────────────────────
 async function fetchAndDraw(qs,markerTrade,label){{
   if(_curTick>0){{fetchTickAndDraw(markerTrade,label);return;}}
-  showMsg(‘Loading…’);showErr(‘’);
+  showMsg('Loading…');showErr('');
   try{{
-    var r=await fetch(‘/api/option-candles?’+qs+’&interval=’+_curIvl);
+    var r=await fetch('/api/option-candles?'+qs+'&interval='+_curIvl);
     var d=await r.json();
-    if(d.error){{showMsg(‘’);showErr(d.error);return;}}
+    if(d.error){{showMsg('');showErr(d.error);return;}}
     var c=d.candles||[];
-    if(!c.length){{showMsg(‘No data — option may be outside Dhan rolling window’);return;}}
+    if(!c.length){{showMsg('No data — option may be outside Dhan rolling window');return;}}
     _series.setData(c);
     updateIndicators(c);
     if(markerTrade){{
       putMarkers(markerTrade,c);
-      var dp=markerTrade.date.split(‘-’);
+      var dp=markerTrade.date.split('-');
       var dayStart=Date.UTC(+dp[0],+dp[1]-1,+dp[2],9,15,0)/1000;
       var dayEnd=Date.UTC(+dp[0],+dp[1]-1,+dp[2],15,30,0)/1000;
       _chart.timeScale().setVisibleRange({{from:dayStart,to:dayEnd}});
@@ -2533,43 +2538,43 @@ async function fetchAndDraw(qs,markerTrade,label){{
       _chart.timeScale().fitContent();
     }}
     hideMsg();
-    document.getElementById(‘chartTitle’).textContent=
-      (label||’’)+’ \xb7 ‘+_curIvl+’m \xb7 ‘+c.length+’ bars’;
-  }}catch(e){{showMsg(‘’);showErr(‘Error: ‘+e.message);}}
+    document.getElementById('chartTitle').textContent=
+      (label||'')+' \xb7 '+_curIvl+'m \xb7 '+c.length+' bars';
+  }}catch(e){{showMsg('');showErr('Error: '+e.message);}}
 }}
 
 // ── By Date: click a trade row ────────────────────────────────────────────────
 function loadTradeChart(t){{
-  var expDate=(t.expiry||’’).slice(0,10),toDate=expDate||TODAY;
-  var qs=’security_id=’+encodeURIComponent(t.security_id||’’)
-    +’&exchange_segment=’+encodeURIComponent(t.exchange_segment||’’)
-    +’&underlying=’+encodeURIComponent(t.underlying||’’)
-    +’&option_type=’+encodeURIComponent(t.option_type||’’)
-    +’&strike=’+encodeURIComponent(t.strike||’’)
-    +’&expiry=’+encodeURIComponent(expDate)
-    +’&from_date=’+encodeURIComponent(fromDateFor(expDate))
-    +’&to_date=’+encodeURIComponent(toDate);
-  fetchAndDraw(qs,t,t.underlying+’ ‘+t.strike+’ ‘+t.option_type+(expDate?’ exp:’+expDate:’’));
+  var expDate=(t.expiry||'').slice(0,10),toDate=expDate||TODAY;
+  var qs='security_id='+encodeURIComponent(t.security_id||'')
+    +'&exchange_segment='+encodeURIComponent(t.exchange_segment||'')
+    +'&underlying='+encodeURIComponent(t.underlying||'')
+    +'&option_type='+encodeURIComponent(t.option_type||'')
+    +'&strike='+encodeURIComponent(t.strike||'')
+    +'&expiry='+encodeURIComponent(expDate)
+    +'&from_date='+encodeURIComponent(fromDateFor(expDate))
+    +'&to_date='+encodeURIComponent(toDate);
+  fetchAndDraw(qs,t,t.underlying+' '+t.strike+' '+t.option_type+(expDate?' exp:'+expDate:''));
 }}
 
 // ── By Date: manual lookup ────────────────────────────────────────────────────
 function toggleManual(){{
-  var f=document.getElementById(‘manualForm’);
-  var open=f.style.display===’block’;
-  f.style.display=open?’none’:’block’;
-  document.getElementById(‘mtoggle’).textContent=open?’+ Manual’:’✕ Manual’;
+  var f=document.getElementById('manualForm');
+  var open=f.style.display==='block';
+  f.style.display=open?'none':'block';
+  document.getElementById('mtoggle').textContent=open?'+ Manual':'✕ Manual';
 }}
 function loadManualChart(){{
-  var ul=document.getElementById(‘mf-ul’).value;
-  var ot=document.getElementById(‘mf-ot’).value;
-  var strike=document.getElementById(‘mf-strike’).value;
-  var expiry=document.getElementById(‘mf-expiry’).value;
-  if(!strike){{showErr(‘Enter a strike price’);return;}}
-  if(!expiry){{showErr(‘Enter expiry date’);return;}}
-  if(_selRow){{_selRow.classList.remove(‘sel’);_selRow=null;}}
-  var qs=’underlying=’+ul+’&option_type=’+ot+’&strike=’+strike
-    +’&expiry=’+expiry+’&from_date=’+fromDateFor(expiry)+’&to_date=’+expiry;
-  fetchAndDraw(qs,null,ul+’ ‘+strike+’ ‘+ot+’ exp:’+expiry);
+  var ul=document.getElementById('mf-ul').value;
+  var ot=document.getElementById('mf-ot').value;
+  var strike=document.getElementById('mf-strike').value;
+  var expiry=document.getElementById('mf-expiry').value;
+  if(!strike){{showErr('Enter a strike price');return;}}
+  if(!expiry){{showErr('Enter expiry date');return;}}
+  if(_selRow){{_selRow.classList.remove('sel');_selRow=null;}}
+  var qs='underlying='+ul+'&option_type='+ot+'&strike='+strike
+    +'&expiry='+expiry+'&from_date='+fromDateFor(expiry)+'&to_date='+expiry;
+  fetchAndDraw(qs,null,ul+' '+strike+' '+ot+' exp:'+expiry);
 }}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -2682,7 +2687,7 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
 /* ── Right panel — chart ── */
 #right{{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;}}
 #chartTitle{{padding:7px 14px;font-size:12px;font-weight:500;color:#8b949e;flex-shrink:0;border-bottom:1px solid #161b22;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
-#chartEl{{flex:1;min-height:0;}}
+#chartEl{{flex:1;min-height:0;margin-right:12px;}}
 #chartMsg{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#484f58;font-size:13px;text-align:center;pointer-events:none;z-index:3;line-height:1.8;}}
 </style>
 </head>
@@ -2707,10 +2712,12 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
     <!-- Upload zone -->
     <div id="uploadZone">
       <div class="ul-title">Data Upload</div>
-      <div class="ul-row">
-        <button id="uploadBtn" onclick="triggerUpload()">&#8593; Upload ZIP</button>
-        <input type="file" id="fileInput" accept=".zip" onchange="onFileSelected(this)">
-        <span id="uploadStatus" style="font-size:11px;color:#484f58;"></span>
+      <div class="ul-row" style="flex-wrap:wrap;gap:8px;">
+        <button id="uploadBtn" onclick="triggerUpload(false)" style="flex:1;">&#8593; Upload ZIP</button>
+        <button id="uploadFolderBtn" onclick="triggerUpload(true)" style="flex:1;background:linear-gradient(135deg,#0052cc,#003d99);border:none;color:#fff;padding:5px 10px;border-radius:5px;cursor:pointer;font-size:11px;font-weight:600;transition:opacity .15s;white-space:nowrap;">&#128193; Upload Folder</button>
+        <input type="file" id="fileInput" accept=".zip" onchange="onFileSelected(this)" style="display:none;">
+        <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none;" onchange="onFolderSelected(this)">
+        <span id="uploadStatus" style="font-size:11px;color:#484f58;width:100%;"></span>
       </div>
       <div id="progressWrap">
         <div id="progressBar"><div id="progressFill"></div></div>
@@ -2743,9 +2750,10 @@ body{{background:#0a0a0f;color:#c9d1d9;font-family:'Inter',sans-serif;font-size:
 
     <!-- Time Selection -->
     <div id="timeSection" style="padding:6px 12px 8px;border-bottom:1px solid #161b22;flex-shrink:0;display:flex;align-items:center;gap:6px;">
-      <span style="font-size:10px;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.3px;">Time @ IST</span>
-      <select id="timeIn" onchange="onTimeChanged()" style="flex:1;background:#161b22;border:1px solid #21262d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-family:'Inter',sans-serif;font-size:12px;outline:none;">
+      <button class="cal-btn" onclick="stepTime(-1)" title="Previous 15 mins">◀</button>
+      <select id="timeIn" onchange="onTimeChanged()" style="flex:1;background:#161b22;border:1px solid #21262d;color:#c9d1d9;padding:3px 6px;border-radius:4px;font-family:'Inter',sans-serif;font-size:12px;outline:none;text-align:center;">
       </select>
+      <button class="cal-btn" onclick="stepTime(1)" title="Next 15 mins">▶</button>
     </div>
 
     <!-- Strike ladder -->
@@ -3020,8 +3028,22 @@ function populateTimeDropdown(){{
     }}
     select.appendChild(opt);
     if(h===15&&m===30)break;
-    m+=5;
+    m+=15;
     if(m>=60){{m=0;h++;}}
+    if(h===15&&m>30){{
+      h=15; m=30;
+    }}
+  }}
+}}
+
+function stepTime(dir){{
+  var select=document.getElementById('timeIn');
+  if(!select)return;
+  var newIndex=select.selectedIndex+dir;
+  if(newIndex>=0&&newIndex<select.options.length){{
+    select.selectedIndex=newIndex;
+    _curTime=select.value;
+    loadLadder(_curExpiry,_curTradeDate,_curTime);
   }}
 }}
 
@@ -3160,7 +3182,11 @@ async function loadLadder(expiry, tradeDate, time){{
     empty.style.display='none';
     table.style.display='table';
     var atmRow=body.querySelector('.atm');
-    if(atmRow)atmRow.scrollIntoView({{block:'center',behavior:'smooth'}});
+    if(atmRow){{
+      setTimeout(function(){{
+        atmRow.scrollIntoView({{block:'center',behavior:'smooth'}});
+      }},50);
+    }}
   }}catch(e){{
     empty.textContent='Error loading strikes';
   }}
@@ -3198,31 +3224,57 @@ async function loadChart(ticker,label){{
 }}
 
 /* ── Upload ── */
-function triggerUpload(){{document.getElementById('fileInput').click();}}
+function triggerUpload(isFolder){{
+  if(isFolder){{
+    document.getElementById('folderInput').click();
+  }}else{{
+    document.getElementById('fileInput').click();
+  }}
+}}
 
 function onFileSelected(input){{
   var file=input.files[0];
   if(!file)return;
-  doUpload(file);
+  doUpload([file]);
   input.value='';
 }}
 
-async function doUpload(file){{
+function onFolderSelected(input){{
+  var files=Array.from(input.files).filter(function(f){{
+    var name = f.name.toLowerCase();
+    return name.endsWith('.csv') && !name.startsWith('._');
+  }});
+  if(!files.length){{
+    document.getElementById('uploadStatus').textContent='No CSV files found in selected folder.';
+    return;
+  }}
+  doUpload(files);
+  input.value='';
+}}
+
+async function doUpload(files){{
   var btn=document.getElementById('uploadBtn');
+  var folderBtn=document.getElementById('uploadFolderBtn');
   var statusEl=document.getElementById('uploadStatus');
   var progressWrap=document.getElementById('progressWrap');
   var progressFill=document.getElementById('progressFill');
   var progressText=document.getElementById('progressText');
 
+  var totalSize = 0;
+  for(var i=0; i<files.length; i++) totalSize += files[i].size;
+
   btn.disabled=true;
-  statusEl.textContent='Uploading '+fmtBytes(file.size)+'…';
+  if(folderBtn) folderBtn.disabled=true;
+  statusEl.textContent='Uploading '+fmtBytes(totalSize)+'…';
   progressWrap.style.display='block';
   progressFill.style.width='2%';
   progressText.textContent='Sending to server…';
 
   try{{
     var fd=new FormData();
-    fd.append('file',file);
+    for(var i=0; i<files.length; i++){{
+      fd.append('file', files[i]);
+    }}
     var r=await fetch(_root+'/api/upload-option-csv',{{method:'POST',body:fd}});
     if (!r.ok) {{
       var text = await r.text();
@@ -3232,21 +3284,30 @@ async function doUpload(file){{
         statusEl.textContent = 'Upload failed (' + r.status + '): ' + text.slice(0, 100);
       }}
       btn.disabled=false;
+      if(folderBtn) folderBtn.disabled=false;
       progressWrap.style.display='none';
       return;
     }}
     var d=await r.json();
-    if(!d.ok){{statusEl.textContent='Error: '+(d.error||'Unknown');btn.disabled=false;progressWrap.style.display='none';return;}}
+    if(!d.ok){{
+      statusEl.textContent='Error: '+(d.error||'Unknown');
+      btn.disabled=false;
+      if(folderBtn) folderBtn.disabled=false;
+      progressWrap.style.display='none';
+      return;
+    }}
     statusEl.textContent='Processing…';
     progressFill.style.width='5%';
-    pollJob(d.job_id,btn,statusEl,progressFill,progressText);
+    pollJob(d.job_id,btn,statusEl,progressFill,progressText,folderBtn);
   }}catch(e){{
     statusEl.textContent='Upload failed: '+e.message;
-    btn.disabled=false;progressWrap.style.display='none';
+    btn.disabled=false;
+    if(folderBtn) folderBtn.disabled=false;
+    progressWrap.style.display='none';
   }}
 }}
 
-function pollJob(jobId,btn,statusEl,fill,text){{
+function pollJob(jobId,btn,statusEl,fill,text,folderBtn){{
   if(_pollTimer)clearInterval(_pollTimer);
   _pollTimer=setInterval(async function(){{
     try{{
@@ -3266,6 +3327,7 @@ function pollJob(jobId,btn,statusEl,fill,text){{
         statusEl.textContent='✓ Complete';
         statusEl.style.color='#3fb950';
         btn.disabled=false;
+        if(folderBtn) folderBtn.disabled=false;
         setTimeout(function(){{
           document.getElementById('progressWrap').style.display='none';
           statusEl.textContent='';statusEl.style.color='';
@@ -3277,6 +3339,7 @@ function pollJob(jobId,btn,statusEl,fill,text){{
         statusEl.textContent='Error: '+(d.message||'Unknown');
         statusEl.style.color='#f85149';
         btn.disabled=false;
+        if(folderBtn) folderBtn.disabled=false;
       }}
     }}catch(e){{/* network blip — keep polling */}}
   }},2000);
@@ -3720,27 +3783,38 @@ def option_expiry():
 
 @app.route("/api/upload-option-csv", methods=["POST"])
 def api_upload_option_csv():
-    """Accept a ZIP of option CSV files, save to disk, start background processing.
-    Returns {ok, job_id} immediately; poll /api/upload-status/<job_id> for progress.
-    """
-    import os as _os, tempfile as _tmp, uuid as _uuid
+    """Accept a ZIP or multiple CSV files (folder upload), save/zip to disk, and start background processing."""
+    import os as _os, tempfile as _tmp, uuid as _uuid, zipfile as _zip
 
-    f = request.files.get("file")
-    if not f:
-        return jsonify({"ok": False, "error": "No file uploaded"}), 400
-    if not f.filename.lower().endswith(".zip"):
-        return jsonify({"ok": False, "error": "Please upload a .zip file"}), 400
+    files = request.files.getlist("file")
+    if not files or len(files) == 0:
+        return jsonify({"ok": False, "error": "No files uploaded"}), 400
 
-    # Save to a temp file alongside the DB (same filesystem for fast rename)
+    is_zip = len(files) == 1 and files[0].filename.lower().endswith(".zip")
+
     tmp_fd, tmp_path = _tmp.mkstemp(
         suffix=".zip",
         dir=_os.path.dirname(DB_PATH),
         prefix="opt_upload_",
     )
+    _os.close(tmp_fd)
+
     try:
-        _os.close(tmp_fd)
-        f.save(tmp_path)
+        if is_zip:
+            # Single ZIP file: save directly
+            files[0].save(tmp_path)
+        else:
+            # Multiple CSV files (folder upload): zip them on the fly
+            with _zip.ZipFile(tmp_path, "w", _zip.ZIP_DEFLATED) as zf:
+                for f in files:
+                    filename_lower = f.filename.lower()
+                    if filename_lower.endswith(".csv") and not "macosx" in filename_lower:
+                        name = _os.path.basename(f.filename)
+                        zf.writestr(name, f.read())
     except Exception as e:
+        if _os.path.exists(tmp_path):
+            try: _os.remove(tmp_path)
+            except Exception: pass
         return jsonify({"ok": False, "error": f"Could not save upload: {e}"}), 500
 
     job_id = _uuid.uuid4().hex
@@ -4851,7 +4925,7 @@ thead th{{position:sticky;top:0;background:#080808;color:#444;font-weight:500;pa
 .sk-col{{font-weight:600;color:#999;}}
 .atm-row .sk-col{{color:#ddd;}}
 #rightPanel{{flex:1;position:relative;overflow:hidden;}}
-#chartEl{{position:absolute;inset:0;width:100%;height:100%;}}
+#chartEl{{position:absolute;top:0;bottom:0;left:0;right:12px;}}
 #chartTitle{{position:absolute;top:8px;left:10px;font-size:12px;font-weight:500;color:#C3BCDB;pointer-events:none;z-index:2;white-space:nowrap;}}
 #msgEl{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#555;font-size:13px;text-align:center;pointer-events:none;z-index:3;}}
 #errBanner{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#2a1010;border:1px solid #4a2020;color:#f85149;font-size:12px;padding:6px 14px;border-radius:4px;z-index:5;display:none;max-width:80%;text-align:center;}}
@@ -5161,7 +5235,7 @@ async function loadChart(offset,optType,strike){{
     }}
 
     hideMsg();
-    showErr('No chart data for '+offset+' '+optType+' on '+date+' — date may be outside Dhan\'s ~30 day window');
+    showErr(\"No chart data for \"+offset+\" \"+optType+\" on \"+date+\" — date may be outside Dhan's ~30 day window\");
   }}catch(e){{hideMsg();showErr('Error: '+e.message);}}
 }}
 
@@ -5249,10 +5323,10 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #main {{ flex: 1; display: flex; flex-direction: column; min-height: 0 }}
 #chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
 #chartBox {{ flex: 1; min-height: 220px; position: relative; overflow: hidden }}
-#chartEl {{ position: absolute; inset: 0 }}
+#chartEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 12px }}
 #rsiBox  {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
 #macdBox {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
-#rsiEl, #macdEl {{ position: absolute; inset: 0 }}
+#rsiEl, #macdEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 12px }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
             background: var(--bg); pointer-events: none; flex-direction: column; gap: 8px }}
