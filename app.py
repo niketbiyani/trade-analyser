@@ -89,7 +89,11 @@ def _rebuild_cache(conn: sqlite3.Connection | None = None) -> None:
     global _trades_cache, _dates_cache
     db   = conn or get_db()
     rows = db.execute(
-        "SELECT t.*, COALESCE(n.notes, t.notes, '') AS notes"
+        "SELECT t.*, COALESCE(n.notes, t.notes, '') AS notes,"
+        " COALESCE(n.trade_type,'') AS trade_type,"
+        " COALESCE(n.timeframe,'') AS timeframe,"
+        " n.rules_followed AS rules_followed,"
+        " COALESCE(n.strategy,'') AS strategy"
         " FROM trades t"
         " LEFT JOIN trade_notes n"
         "   ON n.date=t.date AND n.underlying=t.underlying"
@@ -169,8 +173,15 @@ def _init_db(conn: sqlite3.Connection) -> None:
                 entry_time   TEXT NOT NULL,
                 notes        TEXT DEFAULT '',
                 updated_at   REAL DEFAULT 0,
+                trade_type   TEXT DEFAULT '',
+                timeframe    TEXT DEFAULT '',
+                rules_followed INTEGER DEFAULT NULL,
+                strategy     TEXT DEFAULT '',
                 PRIMARY KEY (date, underlying, option_type, strike, entry_time)
             );
+            -- Safe migrations: add columns to existing DBs
+            CREATE TABLE IF NOT EXISTS _dummy_migration_trade_notes_tags (x);
+
             CREATE TABLE IF NOT EXISTS candle_1m (
                 security_id  TEXT    NOT NULL,
                 ts           INTEGER NOT NULL,
@@ -221,6 +232,18 @@ def _init_db(conn: sqlite3.Connection) -> None:
         conn.commit()
     except Exception:
         pass  # column already exists
+    # migrate trade_notes — add tag columns (safe: silently ignored if already present)
+    for _col, _defn in [
+        ("trade_type",     "TEXT DEFAULT ''"),
+        ("timeframe",      "TEXT DEFAULT ''"),
+        ("rules_followed", "INTEGER DEFAULT NULL"),
+        ("strategy",       "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE trade_notes ADD COLUMN {_col} {_defn}")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
     # fix LONG trades stored with swapped entry/exit times from older pairing logic
     try:
         rows = conn.execute(
@@ -3624,10 +3647,18 @@ def api_delete_date(trade_date: str):
         db.execute(
             """
             INSERT OR REPLACE INTO trade_notes
-                (date, underlying, option_type, strike, entry_time, notes, updated_at)
-            SELECT date, underlying, option_type, strike, entry_time, notes, ?
-            FROM trades
-            WHERE date=? AND entry_time != '' AND notes != '' AND notes IS NOT NULL
+                (date, underlying, option_type, strike, entry_time, notes, updated_at,
+                 trade_type, timeframe, rules_followed, strategy)
+            SELECT t.date, t.underlying, t.option_type, t.strike, t.entry_time,
+                   COALESCE(n.notes, t.notes, ''), ?,
+                   COALESCE(n.trade_type,''), COALESCE(n.timeframe,''),
+                   n.rules_followed, COALESCE(n.strategy,'')
+            FROM trades t
+            LEFT JOIN trade_notes n
+                ON n.date=t.date AND n.underlying=t.underlying
+                AND n.option_type=t.option_type AND n.strike=t.strike
+                AND n.entry_time=t.entry_time
+            WHERE t.date=? AND t.entry_time != ''
             """,
             (datetime.now().timestamp(), trade_date),
         )
@@ -3674,6 +3705,44 @@ def api_notes(tid: int):
                 " DO UPDATE SET notes=excluded.notes, updated_at=excluded.updated_at",
                 (row["date"], row["underlying"], row["option_type"],
                  row["strike"], row["entry_time"], notes, datetime.now().timestamp()),
+            )
+        db.commit()
+    _rebuild_cache()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/trade/<int:tid>/tags", methods=["PUT"])
+def api_tags(tid: int):
+    """Save trade quality tags — stored in trade_notes so they survive wipe+reimport."""
+    data = request.json or {}
+    with _db_lock:
+        db = get_db()
+        row = db.execute(
+            "SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?",
+            (tid,)
+        ).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "Trade not found"}), 404
+        # Ensure a trade_notes row exists
+        db.execute(
+            "INSERT OR IGNORE INTO trade_notes"
+            " (date, underlying, option_type, strike, entry_time, notes, updated_at)"
+            " VALUES (?,?,?,?,?,'',?)",
+            (row["date"], row["underlying"], row["option_type"],
+             row["strike"], row["entry_time"], datetime.now().timestamp())
+        )
+        allowed = {"trade_type", "timeframe", "rules_followed", "strategy"}
+        updates = {k: v for k, v in data.items() if k in allowed}
+        if updates:
+            set_clause = ", ".join(f"{k}=?" for k in updates)
+            vals = list(updates.values()) + [datetime.now().timestamp(),
+                                              row["date"], row["underlying"],
+                                              row["option_type"], row["strike"],
+                                              row["entry_time"]]
+            db.execute(
+                f"UPDATE trade_notes SET {set_clause}, updated_at=?"
+                " WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                vals
             )
         db.commit()
     _rebuild_cache()
@@ -5403,6 +5472,29 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
 .ni::placeholder {{ color: #333 }}
 .delbtn {{ background: none; border: none; color: #333; cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1 }}
 .delbtn:hover {{ color: var(--red) }}
+/* Trade quality tag pills */
+.tpills {{ display:flex; gap:3px; align-items:center; flex-wrap:nowrap; margin-bottom:3px; }}
+.tpill {{
+  display:inline-block; font-size:9px; font-weight:700; letter-spacing:.4px;
+  padding:1px 5px; border-radius:10px; cursor:pointer; user-select:none;
+  border:1px solid transparent; white-space:nowrap; transition:all .15s;
+  opacity:.35;
+}}
+.tpill.active {{ opacity:1; }}
+.tpill.tp-hedge   {{ background:rgba(129,199,132,.15); color:#81c784; border-color:#81c784; }}
+.tpill.tp-long    {{ background:rgba(79,195,247,.15);  color:#4fc3f7; border-color:#4fc3f7; }}
+.tpill.tp-5s      {{ background:rgba(255,183,77,.15);  color:#ffb74d; border-color:#ffb74d; }}
+.tpill.tp-15s     {{ background:rgba(255,183,77,.15);  color:#ffb74d; border-color:#ffb74d; }}
+.tpill.tp-1m      {{ background:rgba(206,147,216,.15); color:#ce93d8; border-color:#ce93d8; }}
+.tpill.tp-yes     {{ background:rgba(56,142,60,.2);    color:#66bb6a; border-color:#66bb6a; }}
+.tpill.tp-no      {{ background:rgba(211,47,47,.2);    color:#ef5350; border-color:#ef5350; }}
+.tpill.tp-unset   {{ background:rgba(100,100,100,.1);  color:#666;    border-color:#444; }}
+.strat-ni {{ background:none; border:none; border-bottom:1px solid #222; color:var(--text);
+             font:inherit; font-size:10px; width:90px; outline:none; padding:0 2px;
+             color:#8b949e; }}
+.strat-ni:focus {{ border-bottom-color:var(--acc); color:var(--text); }}
+.strat-ni::placeholder {{ color:#333; font-style:italic; }}
+.ntd {{ min-width:160px; }}
 #empty {{ text-align: center; color: var(--dim); padding: 36px; font-size: 12px }}
 #ov {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
       z-index: 99; align-items: center; justify-content: center }}
@@ -6060,14 +6152,32 @@ function renderTrades(trades) {{
     var lts=t.lots?t.lots+'L':t.quantity;
     var sel=selId===t.id?' sel':'';
     var nt=(t.notes||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+    var strat=(t.strategy||'').replace(/"/g,'&quot;');
+    var _tt=t.trade_type||''; var _tf=t.timeframe||''; var _rf=t.rules_followed;
+    var typeLabel=_tt?_tt.toUpperCase():'TYPE';
+    var typeCls='tpill tp-'+(_tt||'unset')+(_tt?' active':'');
+    var tfLabel=_tf||'TF';
+    var tfCls='tpill tp-'+(_tf||'unset')+(_tf?' active':'');
+    var rfLabel=_rf===1?'\u2713 YES':_rf===0?'\u2717 NO':'RULES';
+    var rfCls='tpill tp-'+(_rf===1?'yes':_rf===0?'no':'unset')+(_rf!==null&&_rf!==undefined?' active':'');
     return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
-      '<td>'+(t.entry_time?t.entry_time.slice(0,8):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,8):'')+'</td>' +
+      '<td>'+(t.entry_time?t.entry_time.slice(0,8):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,8):'')+
+      '</td>' +
       '<td><span class="tag '+dc+'">'+dir+'</span></td>' +
       '<td><span class="tag '+tc+'">'+t.option_type+'</span></td>' +
       '<td>'+sk+'</td><td>'+t.entry_price.toFixed(2)+'</td><td>'+ep+'</td>' +
       '<td>'+lts+'</td><td>'+pl+'</td>' +
-      '<td><input class="ni" value="'+nt+'" placeholder="note..." ' +
-        'onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)"></td>' +
+      '<td class="ntd">' +
+        '<div class="tpills">' +
+          '<span class="'+typeCls+'" title="Toggle: Hedge / Long" onclick="cycleTag('+t.id+",'trade_type',['','hedge','long'],event)"+'>'+typeLabel+'</span>' +
+          '<span class="'+tfCls+'" title="Toggle timeframe" onclick="cycleTag('+t.id+",'timeframe',['','5s','15s','1m'],event)"+'>'+tfLabel+'</span>' +
+          '<span class="'+rfCls+'" title="Rules followed?" onclick="cycleRules('+t.id+',event)">'+rfLabel+'</span>' +
+          '<input class="strat-ni" value="'+strat+'" placeholder="strategy\u2026" ' +
+            'onclick="event.stopPropagation()" onblur="saveTag('+t.id+",'strategy',this.value)"+'">' +
+        '</div>' +
+        '<input class="ni" value="'+nt+'" placeholder="note..." ' +
+          'onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)">' +
+      '</td>' +
       (t.status==='OPEN'?'<td><button class="delbtn" style="color:#ffb74d;font-size:10px;white-space:nowrap" onclick="closeTrade('+t.id+',event)" title="Mark closed">&#10003; Close</button> <button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>':'<td><button class="delbtn" onclick="delTrade('+t.id+',event)" title="Delete">&#215;</button></td>') +
       '</tr>';
   }});
@@ -6177,6 +6287,34 @@ async function saveNote(id,notes){{
     var t=allTrades.find(function(x){{return x.id===id;}});
     if(t)t.notes=notes;
   }}catch(e){{console.error(e);}}
+}}
+async function saveTag(id,field,value){{
+  try{{
+    var body={{}};body[field]=value;
+    await fetch(_root+'/api/trade/'+id+'/tags',{{method:'PUT',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+    var t=allTrades.find(function(x){{return x.id===id;}});
+    if(t)t[field]=value;
+  }}catch(e){{console.error(e);}}
+}}
+function cycleTag(id,field,opts,ev){{
+  ev.stopPropagation();
+  var t=allTrades.find(function(x){{return x.id===id;}});
+  if(!t)return;
+  var cur=t[field]||'';
+  var idx=opts.indexOf(cur);
+  var next=opts[(idx+1)%opts.length];
+  saveTag(id,field,next);
+  // Re-render the trades table so pills update immediately
+  var f=_filtered();renderTrades(f);putMarkers(f);
+}}
+function cycleRules(id,ev){{
+  ev.stopPropagation();
+  var t=allTrades.find(function(x){{return x.id===id;}});
+  if(!t)return;
+  var cur=t.rules_followed;
+  var next=cur===null||cur===undefined?1:cur===1?0:null;
+  saveTag(id,'rules_followed',next);
+  var f=_filtered();renderTrades(f);putMarkers(f);
 }}
 function switchTab(t){{
   document.getElementById('mpanel-api').style.display=t==='api'?'':'none';
