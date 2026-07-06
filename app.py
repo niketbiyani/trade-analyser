@@ -5198,7 +5198,7 @@ var chart=null, series=null;
 var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
-var _syncingRange=false;
+var _syncingRange=false, _syncingCrosshair=false;
 var _rsiVisible=true, _macdVisible=true;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
@@ -5284,31 +5284,46 @@ function initChart() {{
 
     // ── Sync crosshairs across all three charts ──────────────────────────────
     _chartInst.subscribeCrosshairMove(function(param) {{
-      if (param.time) {{
-        _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
-        _macdChart.setCrosshairPosition(0, param.time, _macdLine);
-      }} else {{
-        _rsiChart.clearCrosshairPosition();
-        _macdChart.clearCrosshairPosition();
-      }}
+      if (_syncingCrosshair) return;
+      _syncingCrosshair = true;
+      try {{
+        if (param.time) {{
+          _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
+          _macdChart.setCrosshairPosition(0, param.time, _macdLine);
+        }} else {{
+          _rsiChart.clearCrosshairPosition();
+          _macdChart.clearCrosshairPosition();
+        }}
+      }} catch(e) {{}}
+      _syncingCrosshair = false;
     }});
     _rsiChart.subscribeCrosshairMove(function(param) {{
-      if (param.time) {{
-        _chartInst.setCrosshairPosition(0, param.time, series);
-        _macdChart.setCrosshairPosition(0, param.time, _macdLine);
-      }} else {{
-        _chartInst.clearCrosshairPosition();
-        _macdChart.clearCrosshairPosition();
-      }}
+      if (_syncingCrosshair) return;
+      _syncingCrosshair = true;
+      try {{
+        if (param.time) {{
+          _chartInst.setCrosshairPosition(0, param.time, series);
+          _macdChart.setCrosshairPosition(0, param.time, _macdLine);
+        }} else {{
+          _chartInst.clearCrosshairPosition();
+          _macdChart.clearCrosshairPosition();
+        }}
+      }} catch(e) {{}}
+      _syncingCrosshair = false;
     }});
     _macdChart.subscribeCrosshairMove(function(param) {{
-      if (param.time) {{
-        _chartInst.setCrosshairPosition(0, param.time, series);
-        _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
-      }} else {{
-        _chartInst.clearCrosshairPosition();
-        _rsiChart.clearCrosshairPosition();
-      }}
+      if (_syncingCrosshair) return;
+      _syncingCrosshair = true;
+      try {{
+        if (param.time) {{
+          _chartInst.setCrosshairPosition(0, param.time, series);
+          _rsiChart.setCrosshairPosition(0, param.time, _rsiSeries);
+        }} else {{
+          _chartInst.clearCrosshairPosition();
+          _rsiChart.clearCrosshairPosition();
+        }}
+      }} catch(e) {{}}
+      _syncingCrosshair = false;
     }});
 
     // ── OHLC legend ────────────────────────────────────────────────────────
