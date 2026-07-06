@@ -5944,7 +5944,8 @@ function renderTrades(trades) {{
 function tsFor(ds,ts){{
   if(!ts)return null;
   var p=ds.split('-'),q=ts.split(':');
-  return Date.UTC(+p[0],+p[1]-1,+p[2],+q[0],+q[1],0)/1000;
+  var sec=q[2]?+q[2]:0;
+  return Date.UTC(+p[0],+p[1]-1,+p[2],+q[0],+q[1],sec)/1000;
 }}
 function snapTs(ts){{
   if(!ts||!candles.length)return ts;
