@@ -5101,16 +5101,16 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
         <span id="chartMsgMain">Initialising chart&#8230;</span>
         <span id="chartMsgSub"></span>
       </div>
-      <div class="ind-label">EMA&thinsp;<span style="color:#2196F3">20</span>&ensp;<span style="color:#FF9800">50</span></div>
+      <div class="ind-label">EMA&thinsp;<span style="color:#2962ff">20</span>&ensp;<span style="color:#ff6d00">50</span></div>
     </div>
     <div id="rsiBox">
       <div id="rsiEl"></div>
-      <div class="ind-label">RSI&thinsp;<span style="color:#58a6ff">14</span></div>
+      <div class="ind-label">RSI&thinsp;<span style="color:#7c4dff">14</span></div>
       <div class="pane-btn" style="top:4px" onclick="toggleIndicator('rsi')" title="Hide RSI">&#x25B2;</div>
     </div>
     <div id="macdBox">
       <div id="macdEl"></div>
-      <div class="ind-label">MACD&thinsp;<span style="color:#2196F3">12</span>,<span style="color:#FF5722">26</span>,9</div>
+      <div class="ind-label">MACD&thinsp;<span style="color:#2962ff">12</span>,<span style="color:#ff6d00">26</span>,9</div>
       <div class="pane-btn" style="top:4px" onclick="toggleIndicator('macd')" title="Hide MACD">&#x25B2;</div>
     </div>
   </div>
@@ -5257,7 +5257,7 @@ function initChart() {{
 
     // ── RSI chart ──────────────────────────────────────────────────────────
     var rsiEl = document.getElementById('rsiEl');
-    _rsiChart = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, true));
+    _rsiChart = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, true, 90));
     _rsiSeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
       color:'#7c4dff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
     }});
@@ -5267,7 +5267,7 @@ function initChart() {{
 
     // ── MACD chart ─────────────────────────────────────────────────────────
     var macdEl = document.getElementById('macdEl');
-    _macdChart = LightweightCharts.createChart(macdEl, _chartOpts(macdEl, true));
+    _macdChart = LightweightCharts.createChart(macdEl, _chartOpts(macdEl, true, 90));
     _macdHist   = _macdChart.addSeries(LightweightCharts.HistogramSeries, {{
       color:'#ef5350', lastValueVisible:false, priceLineVisible:false
     }});
