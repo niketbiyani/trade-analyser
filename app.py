@@ -4306,7 +4306,9 @@ def api_clear_option_data():
         db.execute("DELETE FROM option_ohlcv")
         db.execute("DELETE FROM option_ohlcv_meta")
         db.commit()
-    logger.info("All option OHLCV data cleared by user request")
+        # Vacuum the database to reclaim disk space
+        db.execute("VACUUM")
+    logger.info("All option OHLCV data cleared by user request and VACUUM completed")
     return jsonify({"ok": True})
 
 
