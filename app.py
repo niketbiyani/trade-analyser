@@ -6105,7 +6105,7 @@ var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
 var _syncingRange=false, _activeChart=null;
-var _rsiVisible=false, _macdVisible=false;
+var _rsiVisible=false, _macdVisible=false, _lastHoveredMarkerId=null;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -6161,10 +6161,15 @@ function initChart() {{
     chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
 
+    // Crosshair move tracker to capture marker hovers (compatibility layer for older lightweight-charts)
+    _chartInst.subscribeCrosshairMove(function(param) {{
+      _lastHoveredMarkerId = (param && param.hoveredMarkerId) ? param.hoveredMarkerId : null;
+    }});
+
     // Chart Click Handler for Markers
     _chartInst.subscribeClick(function(param) {{
-      if (!param || !param.hoveredMarkerId) return;
-      var markerId = param.hoveredMarkerId;
+      var markerId = (param && param.hoveredMarkerId) ? param.hoveredMarkerId : _lastHoveredMarkerId;
+      if (!markerId) return;
       var parts = markerId.split('_');
       if (parts.length < 2) return;
       var type = parts[0];
