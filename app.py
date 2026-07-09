@@ -6654,24 +6654,102 @@ function fp(v){{return v!=null?v.toFixed(1):'—';}}
 function putMarkers(trades){{
   if(!series)return;
   var list=isolateId!==null?trades.filter(function(t){{return t.id===isolateId;}}):trades;
-  var markers=[];
+  
+  var groups={{}};
+  
   for(var i=0;i<list.length;i++){{
     var t=list[i];
-    var col=t.option_type==='CE'?'#4fc3f7':'#ffb74d';
     var ets=tsFor(curDate,t.entry_time);
-    var lbl=t.option_type+' '+(t.strike?t.strike.toLocaleString('en-IN'):'');
-    if(ets)markers.push({{time:snapTs(ets),position:'aboveBar',color:col,shape:'arrowDown',text:'E '+lbl,id:'e'+t.id}});
+    if(ets){{
+      var tTime=snapTs(ets);
+      var key=tTime+'_aboveBar';
+      if(!groups[key])groups[key]={{time:tTime,position:'aboveBar',entries:[],exits:[]}};
+      groups[key].entries.push(t);
+    }}
     if(t.exit_time&&t.exit_price!=null){{
       var xts=tsFor(curDate,t.exit_time);
-      if(xts)markers.push({{
-        time:snapTs(xts),position:'belowBar',
-        color:(t.pnl!=null&&t.pnl>=0)?'#4caf50':'#ef5350',
-        shape:'arrowUp',
-        text:'X '+(t.pnl!=null?(t.pnl>=0?'+':'')+Math.round(t.pnl):t.exit_price.toFixed(0)),
-        id:'x'+t.id
-      }});
+      if(xts){{
+        var tTime=snapTs(xts);
+        var key=tTime+'_belowBar';
+        if(!groups[key])groups[key]={{time:tTime,position:'belowBar',entries:[],exits:[]}};
+        groups[key].exits.push(t);
+      }}
     }}
   }}
+  
+  var markers=[];
+  
+  Object.values(groups).forEach(function(g){{
+    if(g.position==='aboveBar'&&g.entries.length>0){{
+      var col=g.entries[0].option_type==='CE'?'#4fc3f7':'#ffb74d';
+      var text='';
+      if(g.entries.length===1){{
+        var t=g.entries[0];
+        var strikeStr=t.strike?(t.strike>=1000?(t.strike/1000).toFixed(1)+'K':t.strike):'';
+        text='E '+t.option_type+' '+strikeStr;
+      }}else{{
+        var parts=[];
+        g.entries.forEach(function(t){{
+          var strikeStr=t.strike?(t.strike>=1000?(t.strike/1000).toFixed(1)+'K':t.strike):'';
+          parts.push(t.option_type+' '+strikeStr);
+        }});
+        text='E '+parts.join(' | ');
+        var hasCe=g.entries.some(function(e){{return e.option_type==='CE';}});
+        var hasPe=g.entries.some(function(e){{return e.option_type==='PE';}});
+        if(hasCe&&hasPe) col='#ce93d8';
+      }}
+      markers.push({{
+        time:g.time,
+        position:'aboveBar',
+        color:col,
+        shape:'arrowDown',
+        text:text,
+        id:'e_'+g.time
+      }});
+    }}
+    
+    if(g.position==='belowBar'&&g.exits.length>0){{
+      var text='';
+      var totalPnl=0;
+      var hasPnl=false;
+      g.exits.forEach(function(t){{
+        if(t.pnl!=null){{
+          totalPnl+=t.pnl;
+          hasPnl=true;
+        }}
+      }});
+      
+      var col='#ef5350';
+      if(hasPnl){{
+        col=totalPnl>=0?'#4caf50':'#ef5350';
+        var parts=[];
+        g.exits.forEach(function(t){{
+          if(t.pnl!=null){{
+            parts.push((t.pnl>=0?'+':'')+Math.round(t.pnl));
+          }}else{{
+            parts.push(t.exit_price.toFixed(0));
+          }}
+        }});
+        text='X '+parts.join(' | ');
+      }}else{{
+        var parts=[];
+        g.exits.forEach(function(t){{
+          parts.push(t.exit_price.toFixed(0));
+        }});
+        text='X '+parts.join(' | ');
+      }}
+      
+      markers.push({{
+        time:g.time,
+        position:'belowBar',
+        color:col,
+        shape:'arrowUp',
+        text:text,
+        id:'x_'+g.time
+      }});
+    }}
+  }});
+  
   markers.sort(function(a,b){{return a.time-b.time;}});
   if(_markersPlugin)_markersPlugin.setMarkers(markers);
 }}
