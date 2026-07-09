@@ -6684,11 +6684,14 @@ function putMarkers(trades){{
       var col=g.entries[0].option_type==='CE'?'#4fc3f7':'#ffb74d';
       var text='';
       if(g.entries.length===1){{
-        text=g.entries[0].option_type;
+        var t=g.entries[0];
+        var shStr=t.strike ? (t.strike/100).toString() : '';
+        text=t.option_type + shStr;
       }}else{{
         var parts=[];
         g.entries.forEach(function(t){{
-          parts.push(t.option_type);
+          var shStr=t.strike ? (t.strike/100).toString() : '';
+          parts.push(t.option_type + shStr);
         }});
         text=parts.join('|');
         var hasCe=g.entries.some(function(e){{return e.option_type==='CE';}});
