@@ -6057,7 +6057,21 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   </div>
 </div>
 
-<input type="file" id="rowFileInput" accept="image/*" style="display:none;">
+<div id="uploadModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:9999; align-items:center; justify-content:center; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:20px; width:340px; box-shadow:0 8px 30px rgba(0,0,0,.5);">
+    <h2 style="font-size:14px; margin-bottom:12px; color:var(--text); font-weight:600;">Upload Trade Screenshot</h2>
+    <div style="margin-bottom:12px;">
+      <input type="file" id="modalFileInput" accept="image/*" onchange="previewSelectedImage(this)" style="font-size:11px; width:100%; color:var(--dim); background:var(--s2); border:1px solid var(--border); padding:6px; border-radius:4px; cursor:pointer;">
+    </div>
+    <div id="uploadPreviewContainer" style="display:none; text-align:center; margin-bottom:12px; border:1px solid var(--border); padding:6px; border-radius:4px; background:var(--s2);">
+      <img id="uploadPreviewImg" src="" style="max-width:100%; max-height:120px; border-radius:3px; border:1px solid var(--border);">
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button class="btn btns" onclick="closeUploadModal()">Cancel</button>
+      <button class="btn btnp" id="submitUploadBtn" onclick="submitModalUpload()" disabled>Submit</button>
+    </div>
+  </div>
+</div>
 
 <div id="imgModal" onclick="this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.95); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out;">
   <img id="imgModalSrc" src="" style="max-width:92%; max-height:92%; border-radius:4px; border:2px solid #333; cursor:default;" onclick="event.stopPropagation()">
@@ -6846,69 +6860,96 @@ async function doRefreshToken(){{
   }}catch(e){{if(btn){{btn.textContent='Refresh Token';btn.disabled=false;}}}}
 }}
 
-var _activeUploadTradeId = null;
+var _uploadTradeId = null;
+var _selectedUploadFile = null;
+
 function triggerImageUpload(tid, ev) {{
   ev.stopPropagation();
-  _activeUploadTradeId = tid;
-  document.getElementById('rowFileInput').click();
+  _uploadTradeId = tid;
+  _selectedUploadFile = null;
+  document.getElementById('modalFileInput').value = '';
+  document.getElementById('uploadPreviewContainer').style.display = 'none';
+  document.getElementById('uploadPreviewImg').src = '';
+  const btn = document.getElementById('submitUploadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Submit';
+  document.getElementById('uploadModal').style.display = 'flex';
 }}
 
-document.getElementById('rowFileInput').onchange = function() {{
-  if (this.files && this.files[0]) {{
-    compressAndUpload(this.files[0], _activeUploadTradeId);
-    this.value = '';
-  }}
-}};
+function closeUploadModal() {{
+  document.getElementById('uploadModal').style.display = 'none';
+}}
 
-function compressAndUpload(file, tradeId) {{
-  const reader = new FileReader();
-  reader.onload = function(e) {{
-    const img = new Image();
-    img.onload = function() {{
-      const canvas = document.createElement('canvas');
-      let width = img.width;
-      let height = img.height;
-      const MAX_WIDTH = 1200;
-      const MAX_HEIGHT = 900;
-      
-      if (width > height) {{
-        if (width > MAX_WIDTH) {{
-          height *= MAX_WIDTH / width;
-          width = MAX_WIDTH;
-        }}
-      }} else {{
-        if (height > MAX_HEIGHT) {{
-          width *= MAX_HEIGHT / height;
-          height = MAX_HEIGHT;
-        }}
-      }}
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, width, height);
-      
-      canvas.toBlob(function(blob) {{
-        const formData = new FormData();
-        formData.append('image', blob, 'trade.jpg');
-        
-        fetch(_root + '/api/trade/' + tradeId + '/image', {{
-          method: 'POST',
-          body: formData
-        }})
-        .then(r => r.json())
-        .then(d => {{
-          if (d.ok) {{
-            loadTrades();
-          }} else {{
-            alert('Upload failed: ' + d.error);
-          }}
-        }})
-        .catch(err => alert('Upload error: ' + err.message));
-      }}, 'image/jpeg', 0.7);
+function previewSelectedImage(input) {{
+  if (input.files && input.files[0]) {{
+    _selectedUploadFile = input.files[0];
+    const reader = new FileReader();
+    reader.onload = function(e) {{
+      document.getElementById('uploadPreviewImg').src = e.target.result;
+      document.getElementById('uploadPreviewContainer').style.display = 'block';
+      document.getElementById('submitUploadBtn').disabled = false;
     }};
-    img.src = e.target.result;
+    reader.readAsDataURL(input.files[0]);
+  }}
+}}
+
+function submitModalUpload() {{
+  if (!_selectedUploadFile || !_uploadTradeId) return;
+  const btn = document.getElementById('submitUploadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+  
+  const img = new Image();
+  img.onload = function() {{
+    const canvas = document.createElement('canvas');
+    let width = img.width;
+    let height = img.height;
+    const MAX_WIDTH = 1200;
+    const MAX_HEIGHT = 900;
+    
+    if (width > height) {{
+      if (width > MAX_WIDTH) {{
+        height *= MAX_WIDTH / width;
+        width = MAX_WIDTH;
+      }}
+    }} else {{
+      if (height > MAX_HEIGHT) {{
+        width *= MAX_HEIGHT / height;
+        height = MAX_HEIGHT;
+      }}
+    }}
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, width, height);
+    
+    canvas.toBlob(function(blob) {{
+      const formData = new FormData();
+      formData.append('image', blob, 'trade.jpg');
+      
+      fetch(_root + '/api/trade/' + _uploadTradeId + '/image', {{
+        method: 'POST',
+        body: formData
+      }})
+      .then(r => r.json())
+      .then(d => {{
+        if (d.ok) {{
+          closeUploadModal();
+          loadTrades();
+        }} else {{
+          alert('Upload failed: ' + d.error);
+          btn.disabled = false;
+          btn.textContent = 'Submit';
+        }}
+      }})
+      .catch(err => {{
+        alert('Upload error: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Submit';
+      }});
+    }}, 'image/jpeg', 0.7);
   }};
-  reader.readAsDataURL(file);
+  img.src = document.getElementById('uploadPreviewImg').src;
 }}
 
 function viewTradeImage(path, ev) {{
