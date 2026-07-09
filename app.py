@@ -6199,6 +6199,11 @@ function initChart() {{
           document.querySelectorAll('#tbody tr').forEach(function(r) {{ r.classList.remove('sel'); }});
           putMarkers(_filtered());
         }}
+      }} else {{
+        // Clicked on empty space: clear isolation and show everything!
+        selId = null; isolateId = null;
+        document.querySelectorAll('#tbody tr').forEach(function(r) {{ r.classList.remove('sel'); }});
+        putMarkers(_filtered());
       }}
     }});
 
@@ -6803,13 +6808,6 @@ function selTrade(id,entryTime){{
   selId=id; isolateId=id;
   document.querySelectorAll('#tbody tr').forEach(function(r){{r.classList.toggle('sel',+r.dataset.id===id);}});
   putMarkers(_filtered());
-  if(entryTime&&candles.length){{
-    var ts=tsFor(curDate,entryTime);
-    // Compute visible window based on current interval
-    var _ivlSec = curInterval==='5s'?5:curInterval==='15s'?15:curInterval==='30s'?30:curInterval==='5m'?300:60;
-    // Show ~25 candles before entry and ~90 after so the trade is well-contextualised
-    if(ts)chart.timeScale().setVisibleRange({{from:ts-_ivlSec*25,to:ts+_ivlSec*90}});
-  }}
 }}
 async function closeTrade(id,e){{
   e.stopPropagation();
