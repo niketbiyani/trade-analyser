@@ -93,7 +93,8 @@ def _rebuild_cache(conn: sqlite3.Connection | None = None) -> None:
         " COALESCE(n.trade_type,'') AS trade_type,"
         " COALESCE(n.timeframe,'') AS timeframe,"
         " n.rules_followed AS rules_followed,"
-        " COALESCE(n.strategy,'') AS strategy"
+        " COALESCE(n.strategy,'') AS strategy,"
+        " COALESCE(n.image_path,'') AS image_path"
         " FROM trades t"
         " LEFT JOIN trade_notes n"
         "   ON n.date=t.date AND n.underlying=t.underlying"
@@ -238,6 +239,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         ("timeframe",      "TEXT DEFAULT ''"),
         ("rules_followed", "INTEGER DEFAULT NULL"),
         ("strategy",       "TEXT DEFAULT ''"),
+        ("image_path",     "TEXT DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE trade_notes ADD COLUMN {_col} {_defn}")
@@ -3500,6 +3502,8 @@ loadOptionDates();
 
 
 app = Flask(__name__)
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['APPLICATION_ROOT']   = APP_ROOT
 app.config['MAX_CONTENT_LENGTH'] = 1_500 * 1024 * 1024  # 1.5 GB — allows 700 MB ZIP uploads
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -4294,6 +4298,41 @@ def api_upload_status(job_id: str):
     if job is None:
         return jsonify({"ok": False, "error": "Unknown job ID"}), 404
     return jsonify({"ok": True, **job})
+
+
+@app.route("/api/trade/<int:tid>/image", methods=["POST"])
+def api_upload_trade_image(tid):
+    if "image" not in request.files:
+        return jsonify({"ok": False, "error": "No image file provided"}), 400
+    file = request.files["image"]
+    if file.filename == "":
+        return jsonify({"ok": False, "error": "Empty filename"}), 400
+        
+    db = get_db()
+    t = db.execute(
+        "SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?", (tid,)
+    ).fetchone()
+    if not t:
+        return jsonify({"ok": False, "error": "Trade not found"}), 404
+        
+    import uuid
+    filename = f"trade_{t['date']}_{t['underlying']}_{t['option_type']}_{t['strike']}_{t['entry_time'].replace(':','-')}_{uuid.uuid4().hex[:6]}.jpg"
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    
+    file.save(filepath)
+    
+    with _db_lock:
+        db.execute(
+            "INSERT INTO trade_notes (date, underlying, option_type, strike, entry_time, image_path)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(date, underlying, option_type, strike, entry_time)"
+            " DO UPDATE SET image_path=excluded.image_path",
+            (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"], filename)
+        )
+        db.commit()
+        _rebuild_cache(db)
+        
+    return jsonify({"ok": True, "filename": filename})
 
 
 @app.route("/api/clear-option-data", methods=["DELETE"])
@@ -5874,6 +5913,8 @@ tr:not(.sel):hover td {{ background: rgba(255,255,255,.02) }}
              color:#8b949e; }}
 .strat-ni:focus {{ border-bottom-color:var(--acc); color:var(--text); }}
 .strat-ni::placeholder {{ color:#333; font-style:italic; }}
+.tpill.img-pill-btn {{ cursor: pointer; transition: opacity 0.15s; }}
+.tpill.img-pill-btn:hover {{ opacity: 0.8; }}
 .ntd {{ min-width:160px; }}
 #empty {{ text-align: center; color: var(--dim); padding: 36px; font-size: 12px }}
 #ov {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75);
@@ -6014,6 +6055,13 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       </div>
     </div>
   </div>
+</div>
+
+<input type="file" id="rowFileInput" accept="image/*" style="display:none;">
+
+<div id="imgModal" onclick="this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.95); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out;">
+  <img id="imgModalSrc" src="" style="max-width:92%; max-height:92%; border-radius:4px; border:2px solid #333; cursor:default;" onclick="event.stopPropagation()">
+  <span style="position:absolute; top:20px; right:25px; color:#fff; font-size:36px; font-weight:300; cursor:pointer;" onclick="document.getElementById('imgModal').style.display='none'">&times;</span>
 </div>
 
 <!-- Error catcher: must be a separate script block before the main one -->
@@ -6540,6 +6588,15 @@ function renderTrades(trades) {{
     var tfCls='tpill tp-'+(_tf||'unset')+(_tf?' active':'');
     var rfLabel=_rf===1?'\u2713 YES':_rf===0?'\u2717 NO':'RULES';
     var rfCls='tpill tp-'+(_rf===1?'yes':_rf===0?'no':'unset')+(_rf!==null&&_rf!==undefined?' active':'');
+
+    var imgPath=t.image_path||'';
+    var imgHtml='';
+    if(imgPath){{
+      imgHtml='<span class="tpill active img-pill-btn" onclick="viewTradeImage(\''+imgPath+'\',event)" title="View chart screenshot" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">&#128444; VIEW</span>';
+    }}else{{
+      imgHtml='<span class="tpill img-pill-btn" onclick="triggerImageUpload('+t.id+',event)" title="Upload screenshot" style="background:rgba(100,100,100,.1);color:#888;border-color:#444;">&#128247; UPLOAD</span>';
+    }}
+
     return '<tr class="'+sel+'" data-id="'+t.id+'" data-et="'+(t.entry_time||'')+'" onclick="selTrade(+this.dataset.id,this.dataset.et)">' +
       '<td>'+(t.entry_time?t.entry_time.slice(0,8):'--')+(t.exit_time?' <span style="color:#444">&#8594;</span> '+t.exit_time.slice(0,8):'')+
       '</td>' +
@@ -6553,6 +6610,7 @@ function renderTrades(trades) {{
           '<span class="'+tfCls+'"  data-tid="'+t.id+'" data-field="timeframe"   data-opts="5s,15s,1m"  title="Toggle timeframe"       onclick="cycleTagEl(this,event)">'+tfLabel+'</span>' +
           '<span class="'+rfCls+'"  data-tid="'+t.id+'"                                                  title="Rules followed?"        onclick="cycleRulesEl(this,event)">'+rfLabel+'</span>' +
           '<input class="strat-ni" value="'+strat+'" placeholder="strategy…" data-tid="'+t.id+'" data-field="strategy" onclick="event.stopPropagation()" onblur="saveTagEl(this)">' +
+          imgHtml +
         '</div>' +
         '<input class="ni" value="'+nt+'" placeholder="note..." onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)">' +
       '</td>' +
@@ -6786,6 +6844,79 @@ async function doRefreshToken(){{
       if(btn){{btn.textContent='Refresh Token';btn.style.color='';btn.disabled=false;}}
     }},3000);
   }}catch(e){{if(btn){{btn.textContent='Refresh Token';btn.disabled=false;}}}}
+}}
+
+var _activeUploadTradeId = null;
+function triggerImageUpload(tid, ev) {{
+  ev.stopPropagation();
+  _activeUploadTradeId = tid;
+  document.getElementById('rowFileInput').click();
+}}
+
+document.getElementById('rowFileInput').onchange = function() {{
+  if (this.files && this.files[0]) {{
+    compressAndUpload(this.files[0], _activeUploadTradeId);
+    this.value = '';
+  }}
+}};
+
+function compressAndUpload(file, tradeId) {{
+  const reader = new FileReader();
+  reader.onload = function(e) {{
+    const img = new Image();
+    img.onload = function() {{
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+      const MAX_WIDTH = 1200;
+      const MAX_HEIGHT = 900;
+      
+      if (width > height) {{
+        if (width > MAX_WIDTH) {{
+          height *= MAX_WIDTH / width;
+          width = MAX_WIDTH;
+        }}
+      }} else {{
+        if (height > MAX_HEIGHT) {{
+          width *= MAX_HEIGHT / height;
+          height = MAX_HEIGHT;
+        }}
+      }}
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      
+      canvas.toBlob(function(blob) {{
+        const formData = new FormData();
+        formData.append('image', blob, 'trade.jpg');
+        
+        fetch(_root + '/api/trade/' + tradeId + '/image', {{
+          method: 'POST',
+          body: formData
+        }})
+        .then(r => r.json())
+        .then(d => {{
+          if (d.ok) {{
+            loadTrades();
+          }} else {{
+            alert('Upload failed: ' + d.error);
+          }}
+        }})
+        .catch(err => alert('Upload error: ' + err.message));
+      }}, 'image/jpeg', 0.7);
+    }};
+    img.src = e.target.result;
+  }};
+  reader.readAsDataURL(file);
+}}
+
+function viewTradeImage(path, ev) {{
+  ev.stopPropagation();
+  const modal = document.getElementById('imgModal');
+  const img = document.getElementById('imgModalSrc');
+  img.src = _root + '/static/uploads/' + path;
+  modal.style.display = 'flex';
 }}
 </script>
 </body>
