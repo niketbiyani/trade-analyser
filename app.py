@@ -6161,47 +6161,43 @@ function initChart() {{
     chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
 
-    // Crosshair move tracker to capture marker hovers (compatibility layer for older lightweight-charts)
-    _chartInst.subscribeCrosshairMove(function(param) {{
-      _lastHoveredMarkerId = (param && param.hoveredMarkerId) ? param.hoveredMarkerId : null;
-    }});
-
-    // Chart Click Handler for Markers
+    // Chart Click Handler for Candles and Markers (high accuracy, works on text clicks too)
     _chartInst.subscribeClick(function(param) {{
-      var markerId = (param && param.hoveredMarkerId) ? param.hoveredMarkerId : _lastHoveredMarkerId;
-      if (!markerId) return;
-      var parts = markerId.split('_');
-      if (parts.length < 2) return;
-      var type = parts[0];
-      var time = parseInt(parts[1], 10);
+      if (!param || !param.time) return;
       
-      var match = null;
+      // Find all trades on this clicked candle column
+      var matches = [];
       for (var i = 0; i < allTrades.length; i++) {{
         var t = allTrades[i];
-        if (type === 'e') {{
-          var ets = tsFor(curDate, t.entry_time);
-          if (ets && snapTs(ets) === time) {{
-            match = t;
-            break;
-          }}
-        }} else if (type === 'x') {{
-          var xts = tsFor(curDate, t.exit_time);
-          if (xts && snapTs(xts) === time) {{
-            match = t;
-            break;
-          }}
+        var ets = tsFor(curDate, t.entry_time);
+        var xts = t.exit_time ? tsFor(curDate, t.exit_time) : null;
+        if ((ets && snapTs(ets) === param.time) || (xts && snapTs(xts) === param.time)) {{
+          matches.push(t);
         }}
       }}
       
-      if (match) {{
-        if (selId === match.id) {{
-          selTrade(match.id, match.entry_time);
+      if (matches.length > 0) {{
+        var currentIndex = matches.findIndex(function(t) {{ return t.id === selId; }});
+        var nextTrade = null;
+        
+        if (currentIndex === -1) {{
+          nextTrade = matches[0];
+        }} else if (currentIndex < matches.length - 1) {{
+          nextTrade = matches[currentIndex + 1];
         }} else {{
-          selTrade(match.id, match.entry_time);
-          var row = document.querySelector('#tbody tr[data-id="' + match.id + '"]');
+          nextTrade = null;
+        }}
+        
+        if (nextTrade) {{
+          selTrade(nextTrade.id, nextTrade.entry_time);
+          var row = document.querySelector('#tbody tr[data-id="' + nextTrade.id + '"]');
           if (row) {{
             row.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
           }}
+        }} else {{
+          selId = null; isolateId = null;
+          document.querySelectorAll('#tbody tr').forEach(function(r) {{ r.classList.remove('sel'); }});
+          putMarkers(_filtered());
         }}
       }}
     }});
