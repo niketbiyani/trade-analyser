@@ -5846,8 +5846,8 @@ body {{ display: flex; flex-direction: column; background: var(--bg); color: var
 #chartsArea {{ flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative }}
 #chartBox {{ flex: 1; min-height: 220px; position: relative; overflow: hidden }}
 #chartEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 30px }}
-#rsiBox  {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
-#macdBox {{ height: 90px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
+#rsiBox  {{ height: 22px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
+#macdBox {{ height: 22px; flex-shrink: 0; position: relative; overflow: hidden; border-top: 1px solid var(--border); transition: height 0.15s ease }}
 #rsiEl, #macdEl {{ position: absolute; top: 0; bottom: 0; left: 0; right: 30px }}
 #chartMsg {{ position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12px;
@@ -5989,14 +5989,14 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <div class="ind-label">EMA&thinsp;<span style="color:#2962ff">20</span>&ensp;<span style="color:#ff6d00">50</span></div>
     </div>
     <div id="rsiBox">
-      <div id="rsiEl"></div>
+      <div id="rsiEl" style="display:none"></div>
       <div class="ind-label">RSI&thinsp;<span style="color:#7c4dff">14</span></div>
-      <div class="pane-btn" style="top:4px" onclick="toggleIndicator('rsi')" title="Hide RSI">&#x25B2;</div>
+      <div class="pane-btn" style="top:4px" onclick="toggleIndicator('rsi')" title="Show RSI">&#x25BC;</div>
     </div>
     <div id="macdBox">
-      <div id="macdEl"></div>
+      <div id="macdEl" style="display:none"></div>
       <div class="ind-label">MACD&thinsp;<span style="color:#2962ff">12</span>,<span style="color:#ff6d00">26</span>,9</div>
-      <div class="pane-btn" style="top:4px" onclick="toggleIndicator('macd')" title="Hide MACD">&#x25B2;</div>
+      <div class="pane-btn" style="top:4px" onclick="toggleIndicator('macd')" title="Show MACD">&#x25BC;</div>
     </div>
   </div>
   <div id="resizeHandle" title="Drag to resize trades panel"></div>
@@ -6105,7 +6105,7 @@ var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
 var _syncingRange=false, _activeChart=null;
-var _rsiVisible=true, _macdVisible=true;
+var _rsiVisible=false, _macdVisible=false;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -6892,6 +6892,42 @@ function previewSelectedImage(input) {{
     reader.readAsDataURL(input.files[0]);
   }}
 }}
+
+// Clipboard Paste support (Ctrl+V / Cmd+V)
+document.addEventListener('paste', function(e) {{
+  const modal = document.getElementById('uploadModal');
+  if (modal && modal.style.display === 'flex') {{
+    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+    for (let i = 0; i < items.length; i++) {{
+      if (items[i].type.indexOf('image') !== -1) {{
+        const file = items[i].getAsFile();
+        previewSelectedImage({{ files: [file] }});
+        break;
+      }}
+    }}
+  }}
+}});
+
+// Drag & Drop support
+document.addEventListener('dragover', function(e) {{
+  const modal = document.getElementById('uploadModal');
+  if (modal && modal.style.display === 'flex') {{
+    e.preventDefault();
+  }}
+}});
+
+document.addEventListener('drop', function(e) {{
+  const modal = document.getElementById('uploadModal');
+  if (modal && modal.style.display === 'flex') {{
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {{
+      const file = e.dataTransfer.files[0];
+      if (file.type.indexOf('image') !== -1) {{
+        previewSelectedImage({{ files: [file] }});
+      }}
+    }}
+  }}
+}});
 
 function submitModalUpload() {{
   if (!_selectedUploadFile || !_uploadTradeId) return;
