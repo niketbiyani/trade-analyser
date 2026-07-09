@@ -6163,16 +6163,18 @@ function initChart() {{
 
     // Chart Click Handler for Candles and Markers (high accuracy, works on text clicks too)
     _chartInst.subscribeClick(function(param) {{
-      if (!param || !param.time) return;
+      var clickTime = param ? param.time : null;
       
       // Find all trades on this clicked candle column
       var matches = [];
-      for (var i = 0; i < allTrades.length; i++) {{
-        var t = allTrades[i];
-        var ets = tsFor(curDate, t.entry_time);
-        var xts = t.exit_time ? tsFor(curDate, t.exit_time) : null;
-        if ((ets && snapTs(ets) === param.time) || (xts && snapTs(xts) === param.time)) {{
-          matches.push(t);
+      if (clickTime) {{
+        for (var i = 0; i < allTrades.length; i++) {{
+          var t = allTrades[i];
+          var ets = tsFor(curDate, t.entry_time);
+          var xts = t.exit_time ? tsFor(curDate, t.exit_time) : null;
+          if ((ets && snapTs(ets) === clickTime) || (xts && snapTs(xts) === clickTime)) {{
+            matches.push(t);
+          }}
         }}
       }}
       
