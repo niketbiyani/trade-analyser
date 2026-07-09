@@ -6606,7 +6606,7 @@ function renderTrades(trades) {{
     var imgPath=t.image_path||'';
     var imgHtml='';
     if(imgPath){{
-      imgHtml='<span class="tpill active img-pill-btn" onclick="viewTradeImage(\''+imgPath+'\',event)" title="View chart screenshot" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">&#128444; VIEW</span>';
+      imgHtml='<span class="tpill active img-pill-btn" onclick="viewTradeImage(\\\''+imgPath+'\\\',event)" title="View chart screenshot" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">&#128444; VIEW</span>';
     }}else{{
       imgHtml='<span class="tpill img-pill-btn" onclick="triggerImageUpload('+t.id+',event)" title="Upload screenshot" style="background:rgba(100,100,100,.1);color:#888;border-color:#444;">&#128247; UPLOAD</span>';
     }}
