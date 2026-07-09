@@ -6161,6 +6161,46 @@ function initChart() {{
     chart = {{ timeScale: function() {{ return _chartInst.timeScale(); }} }};
     _watchResize(_chartInst, el);
 
+    // Chart Click Handler for Markers
+    _chartInst.subscribeClick(function(param) {{
+      if (!param || !param.hoveredMarkerId) return;
+      var markerId = param.hoveredMarkerId;
+      var parts = markerId.split('_');
+      if (parts.length < 2) return;
+      var type = parts[0];
+      var time = parseInt(parts[1], 10);
+      
+      var match = null;
+      for (var i = 0; i < allTrades.length; i++) {{
+        var t = allTrades[i];
+        if (type === 'e') {{
+          var ets = tsFor(curDate, t.entry_time);
+          if (ets && snapTs(ets) === time) {{
+            match = t;
+            break;
+          }}
+        }} else if (type === 'x') {{
+          var xts = tsFor(curDate, t.exit_time);
+          if (xts && snapTs(xts) === time) {{
+            match = t;
+            break;
+          }}
+        }}
+      }}
+      
+      if (match) {{
+        if (selId === match.id) {{
+          selTrade(match.id, match.entry_time);
+        }} else {{
+          selTrade(match.id, match.entry_time);
+          var row = document.querySelector('#tbody tr[data-id="' + match.id + '"]');
+          if (row) {{
+            row.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+          }}
+        }}
+      }}
+    }});
+
     // ── RSI chart ──────────────────────────────────────────────────────────
     var rsiEl = document.getElementById('rsiEl');
     _rsiChart = LightweightCharts.createChart(rsiEl, _chartOpts(rsiEl, true, 90));
