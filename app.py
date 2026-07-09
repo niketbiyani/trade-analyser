@@ -6684,16 +6684,13 @@ function putMarkers(trades){{
       var col=g.entries[0].option_type==='CE'?'#4fc3f7':'#ffb74d';
       var text='';
       if(g.entries.length===1){{
-        var t=g.entries[0];
-        var strikeStr=t.strike?(t.strike>=1000?(t.strike/1000).toFixed(1)+'K':t.strike):'';
-        text='E '+t.option_type+' '+strikeStr;
+        text=g.entries[0].option_type;
       }}else{{
         var parts=[];
         g.entries.forEach(function(t){{
-          var strikeStr=t.strike?(t.strike>=1000?(t.strike/1000).toFixed(1)+'K':t.strike):'';
-          parts.push(t.option_type+' '+strikeStr);
+          parts.push(t.option_type);
         }});
-        text='E '+parts.join(' | ');
+        text=parts.join('|');
         var hasCe=g.entries.some(function(e){{return e.option_type==='CE';}});
         var hasPe=g.entries.some(function(e){{return e.option_type==='PE';}});
         if(hasCe&&hasPe) col='#ce93d8';
@@ -6730,13 +6727,13 @@ function putMarkers(trades){{
             parts.push(t.exit_price.toFixed(0));
           }}
         }});
-        text='X '+parts.join(' | ');
+        text=parts.join('|');
       }}else{{
         var parts=[];
         g.exits.forEach(function(t){{
           parts.push(t.exit_price.toFixed(0));
         }});
-        text='X '+parts.join(' | ');
+        text=parts.join('|');
       }}
       
       markers.push({{
