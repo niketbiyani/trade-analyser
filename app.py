@@ -4335,6 +4335,39 @@ def api_upload_trade_image(tid):
     return jsonify({"ok": True, "filename": filename})
 
 
+@app.route("/api/trade/<int:tid>/image", methods=["DELETE"])
+def api_delete_trade_image(tid):
+    db = get_db()
+    t = db.execute(
+        "SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?", (tid,)
+    ).fetchone()
+    if not t:
+        return jsonify({"ok": False, "error": "Trade not found"}), 404
+        
+    note = db.execute(
+        "SELECT image_path FROM trade_notes WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+        (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+    ).fetchone()
+    
+    if note and note["image_path"]:
+        filepath = os.path.join(UPLOAD_FOLDER, note["image_path"])
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception as e:
+                logger.warning("Failed to delete physical file %s: %s", filepath, e)
+                
+        with _db_lock:
+            db.execute(
+                "UPDATE trade_notes SET image_path=NULL WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+            )
+            db.commit()
+            _rebuild_cache(db)
+            
+    return jsonify({"ok": True})
+
+
 @app.route("/api/clear-option-data", methods=["DELETE"])
 def api_clear_option_data():
     """Delete all uploaded option OHLCV data and metadata. Spot data cleared too.
@@ -6073,9 +6106,15 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   </div>
 </div>
 
-<div id="imgModal" onclick="this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.95); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out;">
-  <img id="imgModalSrc" src="" style="max-width:92%; max-height:92%; border-radius:4px; border:2px solid #333; cursor:default;" onclick="event.stopPropagation()">
-  <span style="position:absolute; top:20px; right:25px; color:#fff; font-size:36px; font-weight:300; cursor:pointer;" onclick="document.getElementById('imgModal').style.display='none'">&times;</span>
+<div id="imgModal" onclick="this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.95); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out; flex-direction:column;">
+  <div style="position:relative; max-width:92%; max-height:85%;">
+    <img id="imgModalSrc" src="" style="max-width:100%; max-height:100%; border-radius:4px; border:2px solid #333; cursor:default;" onclick="event.stopPropagation()">
+  </div>
+  <div class="img-modal-actions" style="margin-top:15px; display:flex; gap:12px; z-index:10000;" onclick="event.stopPropagation()">
+    <button class="btn btnp" onclick="modalReplaceImage()" style="background:#7c4dff; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">📷 Replace</button>
+    <button class="btn btns" onclick="modalDeleteImage()" style="background:#f85149; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">🗑️ Delete</button>
+    <button class="btn btns" onclick="document.getElementById('imgModal').style.display='none'" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">Close</button>
+  </div>
 </div>
 
 <!-- Error catcher: must be a separate script block before the main one -->
@@ -6654,7 +6693,7 @@ function renderTrades(trades) {{
     var imgPath=t.image_path||'';
     var imgHtml='';
     if(imgPath){{
-      imgHtml='<span class="tpill active img-pill-btn" onclick="viewTradeImage(\\\''+imgPath+'\\\',event)" title="View chart screenshot" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">&#128444; VIEW</span>';
+      imgHtml='<span class="tpill active img-pill-btn" onclick="viewTradeImage('+t.id+',\\\''+imgPath+'\\\',event)" title="View chart screenshot" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">&#128444; VIEW</span>';
     }}else{{
       imgHtml='<span class="tpill img-pill-btn" onclick="triggerImageUpload('+t.id+',event)" title="Upload screenshot" style="background:rgba(100,100,100,.1);color:#888;border-color:#444;">&#128247; UPLOAD</span>';
     }}
@@ -7107,12 +7146,36 @@ function submitModalUpload() {{
   img.src = document.getElementById('uploadPreviewImg').src;
 }}
 
-function viewTradeImage(path, ev) {{
-  ev.stopPropagation();
+var _viewingTradeId = null;
+function viewTradeImage(tid, path, ev) {{
+  if(ev) ev.stopPropagation();
+  _viewingTradeId = tid;
   const modal = document.getElementById('imgModal');
   const img = document.getElementById('imgModalSrc');
   img.src = _root + '/static/uploads/' + path;
   modal.style.display = 'flex';
+}}
+
+function modalReplaceImage() {{
+  document.getElementById('imgModal').style.display = 'none';
+  triggerImageUpload(_viewingTradeId);
+}}
+
+async function modalDeleteImage() {{
+  if (!confirm('Are you sure you want to delete this screenshot?')) return;
+  try {{
+    var r = await fetch(_root + '/api/trade/' + _viewingTradeId + '/image', {{ method: 'DELETE' }});
+    var d = await r.json();
+    if (d.ok) {{
+      document.getElementById('imgModal').style.display = 'none';
+      refreshTradesTable();
+    }} else {{
+      alert('Failed to delete image: ' + d.error);
+    }}
+  }} catch(err) {{
+    console.error(err);
+    alert('Error: ' + err.message);
+  }}
 }}
 </script>
 </body>
