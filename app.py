@@ -6023,11 +6023,13 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div id="rsiBox">
       <div id="rsiEl" style="display:none"></div>
       <div class="ind-label">RSI&thinsp;<span style="color:#7c4dff">14</span></div>
+      <div class="pane-btn" style="top:4px; right:104px;" onclick="openSettingsModal()" title="Indicator Settings">&#x2699;</div>
       <div class="pane-btn" style="top:4px" onclick="toggleIndicator('rsi')" title="Show RSI">&#x25BC;</div>
     </div>
     <div id="macdBox">
       <div id="macdEl" style="display:none"></div>
       <div class="ind-label">MACD&thinsp;<span style="color:#2962ff">12</span>,<span style="color:#ff6d00">26</span>,9</div>
+      <div class="pane-btn" style="top:4px; right:104px;" onclick="openSettingsModal()" title="Indicator Settings">&#x2699;</div>
       <div class="pane-btn" style="top:4px" onclick="toggleIndicator('macd')" title="Show MACD">&#x25BC;</div>
     </div>
   </div>
@@ -6116,6 +6118,47 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   </div>
 </div>
 
+<div id="settingsModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:9999; align-items:center; justify-content:center; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:20px; width:280px; box-shadow:0 8px 30px rgba(0,0,0,.5);">
+    <h2 style="font-size:14px; margin-bottom:15px; color:var(--text); font-weight:600;">Indicator Settings</h2>
+    
+    <div style="margin-bottom:12px;">
+      <h3 style="font-size:11px; color:var(--acc); margin-bottom:6px; font-weight:600; text-transform:uppercase;">RSI</h3>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-size:11px; color:var(--dim);">RSI Length</span>
+        <input type="number" id="setRsiLen" style="width:60px; background:var(--s2); border:1px solid var(--border); color:var(--text); padding:3px; font-size:11px; border-radius:4px; text-align:center;">
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:11px; color:var(--dim);">RSI MA Length</span>
+        <input type="number" id="setRsiMaLen" style="width:60px; background:var(--s2); border:1px solid var(--border); color:var(--text); padding:3px; font-size:11px; border-radius:4px; text-align:center;">
+      </div>
+    </div>
+    
+    <hr style="border:none; border-top:1px solid var(--border); margin:12px 0;">
+    
+    <div style="margin-bottom:15px;">
+      <h3 style="font-size:11px; color:var(--acc); margin-bottom:6px; font-weight:600; text-transform:uppercase;">MACD</h3>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-size:11px; color:var(--dim);">Fast Length</span>
+        <input type="number" id="setMacdFast" style="width:60px; background:var(--s2); border:1px solid var(--border); color:var(--text); padding:3px; font-size:11px; border-radius:4px; text-align:center;">
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-size:11px; color:var(--dim);">Slow Length</span>
+        <input type="number" id="setMacdSlow" style="width:60px; background:var(--s2); border:1px solid var(--border); color:var(--text); padding:3px; font-size:11px; border-radius:4px; text-align:center;">
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:11px; color:var(--dim);">Signal Smoothing</span>
+        <input type="number" id="setMacdSig" style="width:60px; background:var(--s2); border:1px solid var(--border); color:var(--text); padding:3px; font-size:11px; border-radius:4px; text-align:center;">
+      </div>
+    </div>
+    
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button class="btn btns" onclick="closeSettingsModal()">Cancel</button>
+      <button class="btn btnp" onclick="saveIndSettings()" style="background:var(--acc); border:none; color:#fff; font-weight:500;">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Error catcher: must be a separate script block before the main one -->
 <script>
 window.onerror = function(msg, src, line, col, err) {{
@@ -6143,7 +6186,26 @@ var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
 var _syncingRange=false, _activeChart=null;
-var _rsiVisible=false, _macdVisible=false, _lastHoveredMarkerId=null, _markersVisible=true, _rsiDummySeries=null, _macdDummySeries=null;
+var _rsiVisible=false, _macdVisible=false, _lastHoveredMarkerId=null, _markersVisible=true, _rsiDummySeries=null, _macdDummySeries=null, _rsiMaSeries=null;
+var _indSettings = {{
+  rsiLen: 14,
+  rsiMaLen: 14,
+  macdFast: 12,
+  macdSlow: 26,
+  macdSig: 9
+}};
+function loadIndSettings() {{
+  try {{
+    var saved = localStorage.getItem('trade_ind_settings');
+    if (saved) {{
+      var parsed = JSON.parse(saved);
+      if (parsed) {{
+        _indSettings = Object.assign(_indSettings, parsed);
+      }}
+    }}
+  }} catch(e) {{ console.error(e); }}
+}}
+loadIndSettings();
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -6253,10 +6315,14 @@ function initChart() {{
     _rsiSeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
       color:'#7c4dff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
     }});
+    _rsiMaSeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
+      color:'#ffeb3b', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+    }});
     _rsiDummySeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
       color: 'rgba(0,0,0,0)', lineWidth: 0, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false
     }});
     _rsiSeries.createPriceLine({{ price:70, color:'#2a2e39', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
+    _rsiSeries.createPriceLine({{ price:50, color:'rgba(209, 212, 220, 0.15)', lineWidth:1, lineStyle:2, axisLabelVisible:false }});
     _rsiSeries.createPriceLine({{ price:30, color:'#2a2e39', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _watchResize(_rsiChart, rsiEl);
 
@@ -6279,6 +6345,16 @@ function initChart() {{
 
     // ── Sync time scales across all three charts ────────────────────────────
     _syncTimeScales();
+
+    // Set custom indicator length labels
+    const rsiLabel = document.querySelector('#rsiBox .ind-label');
+    if (rsiLabel) {{
+      rsiLabel.innerHTML = 'RSI&thinsp;<span style="color:#7c4dff">' + _indSettings.rsiLen + '</span>&thinsp;<span style="color:#ffeb3b">' + _indSettings.rsiMaLen + '</span>';
+    }}
+    const macdLabel = document.querySelector('#macdBox .ind-label');
+    if (macdLabel) {{
+      macdLabel.innerHTML = 'MACD&thinsp;<span style="color:#2962ff">' + _indSettings.macdFast + '</span>,<span style="color:#ff6d00">' + _indSettings.macdSlow + '</span>,' + _indSettings.macdSig;
+    }}
 
     // ── Active Chart Hover Tracking ──────────────────────────────────────────
     _activeChart = null;
@@ -6389,22 +6465,90 @@ function _emaArr(closes,p){{
   for(var i=p;i<closes.length;i++)out[i]=closes[i]*k+out[i-1]*(1-k);
   return out;
 }}
+function _smaArr(arr, p) {{
+  var out = new Array(arr.length).fill(null);
+  if (arr.length < p) return out;
+  var firstValIdx = arr.findIndex(function(v) {{ return v !== null; }});
+  if (firstValIdx === -1) return out;
+  var startIdx = firstValIdx + p - 1;
+  if (startIdx >= arr.length) return out;
+  var s = 0;
+  for (var j = firstValIdx; j <= startIdx; j++) {{
+    s += arr[j];
+  }}
+  out[startIdx] = s / p;
+  for (var i = startIdx + 1; i < arr.length; i++) {{
+    s += arr[i] - arr[i - p];
+    out[i] = s / p;
+  }}
+  return out;
+}}
 function calcIndicators(data){{
   var closes=data.map(function(c){{return c.close;}}),times=data.map(function(c){{return c.time;}}),n=data.length;
   function toS(arr){{var o=[];for(var i=0;i<arr.length;i++)if(arr[i]!==null)o.push({{time:times[i],value:parseFloat(arr[i].toFixed(4))}});return o;}}
+  
+  var rsiLen = _indSettings.rsiLen;
+  var rsiMaLen = _indSettings.rsiMaLen;
+  var fastLen = _indSettings.macdFast;
+  var slowLen = _indSettings.macdSlow;
+  var sigLen = _indSettings.macdSig;
+  
   var e20=_emaArr(closes,20),e50=_emaArr(closes,50);
-  var e12=_emaArr(closes,12),e26=_emaArr(closes,26);
+  var eFast=_emaArr(closes,fastLen),eSlow=_emaArr(closes,slowLen);
+  
   var macdArr=new Array(n).fill(null);
-  for(var i=0;i<n;i++)if(e12[i]!==null&&e26[i]!==null)macdArr[i]=e12[i]-e26[i];
+  for(var i=0;i<n;i++)if(eFast[i]!==null&&eSlow[i]!==null)macdArr[i]=eFast[i]-eSlow[i];
+  
   var fm=macdArr.findIndex(function(v){{return v!==null;}});
   var sigArr=new Array(n).fill(null);
-  if(fm>=0){{var ms=macdArr.slice(fm),es=_emaArr(ms,9);for(var i=0;i<ms.length;i++)sigArr[fm+i]=es[i];}}
-  // RSI Wilder smoothing
+  if(fm>=0){{var ms=macdArr.slice(fm),es=_emaArr(ms,sigLen);for(var i=0;i<ms.length;i++)sigArr[fm+i]=es[i];}}
+  
   var rsiArr=new Array(n).fill(null);
-  if(n>14){{var g=0,l=0;for(var i=1;i<=14;i++){{var d=closes[i]-closes[i-1];if(d>0)g+=d;else l-=d;}}var ag=g/14,al=l/14;rsiArr[14]=al===0?100:100-(100/(1+ag/al));for(var i=15;i<n;i++){{var d=closes[i]-closes[i-1],gv=d>0?d:0,lv=d<0?-d:0;ag=(ag*13+gv)/14;al=(al*13+lv)/14;rsiArr[i]=al===0?100:100-(100/(1+ag/al));}}}}
+  if(n>rsiLen){{
+    var g=0,l=0;
+    for(var i=1;i<=rsiLen;i++){{
+      var d=closes[i]-closes[i-1];
+      if(d>0)g+=d;else l-=d;
+    }}
+    var ag=g/rsiLen,al=l/rsiLen;
+    rsiArr[rsiLen]=al===0?100:100-(100/(1+ag/al));
+    for(var i=rsiLen+1;i<n;i++){{
+      var d=closes[i]-closes[i-1],gv=d>0?d:0,lv=d<0?-d:0;
+      ag=(ag*(rsiLen-1)+gv)/rsiLen;
+      al=(al*(rsiLen-1)+lv)/rsiLen;
+      rsiArr[i]=al===0?100:100-(100/(1+ag/al));
+    }}
+  }}
+  
+  var rsiMaArr = _smaArr(rsiArr, rsiMaLen);
+  
   var hist=[];
-  for(var i=0;i<n;i++){{if(macdArr[i]!==null&&sigArr[i]!==null){{var v=macdArr[i]-sigArr[i];hist.push({{time:times[i],value:parseFloat(v.toFixed(4)),color:v>=0?'rgba(38,166,154,0.7)':'rgba(239,83,80,0.7)'}});}}}}
-  return{{ema20:toS(e20),ema50:toS(e50),rsi:toS(rsiArr),macdLine:toS(macdArr),sigLine:toS(sigArr),histogram:hist}};
+  for(var i=0;i<n;i++){{
+    if(macdArr[i]!==null&&sigArr[i]!==null){{
+      var v=macdArr[i]-sigArr[i];
+      var prevV = 0;
+      if (i > 0 && macdArr[i-1] !== null && sigArr[i-1] !== null) {{
+        prevV = macdArr[i-1] - sigArr[i-1];
+      }}
+      var color = '';
+      if (v >= 0) {{
+        color = (v > prevV) ? '#26a69a' : '#b2dfdb';
+      }} else {{
+        color = (v < prevV) ? '#ef5350' : '#ffcdd2';
+      }}
+      hist.push({{time:times[i],value:parseFloat(v.toFixed(4)),color:color}});
+    }}
+  }}
+  
+  return{{
+    ema20:toS(e20),
+    ema50:toS(e50),
+    rsi:toS(rsiArr),
+    rsiMa:toS(rsiMaArr),
+    macdLine:toS(macdArr),
+    sigLine:toS(sigArr),
+    histogram:hist
+  }};
 }}
 function updateIndicators(){{
   if(!candles.length||!_ema20s)return;
@@ -6417,11 +6561,50 @@ function updateIndicators(){{
   if(_macdDummySeries) _macdDummySeries.setData(dummyData);
   _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
   if(_rsiSeries)_rsiSeries.setData(ind.rsi);
+  if(_rsiMaSeries)_rsiMaSeries.setData(ind.rsiMa);
   if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
   _candleMap={{}};candles.forEach(function(c){{_candleMap[c.time]=c.close;}});
   var _cut=Date.UTC(+curDate.slice(0,4),+curDate.slice(5,7)-1,+curDate.slice(8,10))/1000;
   _rsiMap={{}};ind.rsi.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_rsiMap[d.time]=d.value;}});
   _macdMap={{}};ind.sigLine.filter(function(d){{return d.time>=_cut;}}).forEach(function(d){{_macdMap[d.time]=d.value;}});
+}}
+
+function openSettingsModal() {{
+  document.getElementById('setRsiLen').value = _indSettings.rsiLen;
+  document.getElementById('setRsiMaLen').value = _indSettings.rsiMaLen;
+  document.getElementById('setMacdFast').value = _indSettings.macdFast;
+  document.getElementById('setMacdSlow').value = _indSettings.macdSlow;
+  document.getElementById('setMacdSig').value = _indSettings.macdSig;
+  document.getElementById('settingsModal').style.display = 'flex';
+}}
+
+function closeSettingsModal() {{
+  document.getElementById('settingsModal').style.display = 'none';
+}}
+
+function saveIndSettings() {{
+  _indSettings.rsiLen = parseInt(document.getElementById('setRsiLen').value, 10) || 14;
+  _indSettings.rsiMaLen = parseInt(document.getElementById('setRsiMaLen').value, 10) || 14;
+  _indSettings.macdFast = parseInt(document.getElementById('setMacdFast').value, 10) || 12;
+  _indSettings.macdSlow = parseInt(document.getElementById('setMacdSlow').value, 10) || 26;
+  _indSettings.macdSig = parseInt(document.getElementById('setMacdSig').value, 10) || 9;
+  
+  try {{
+    localStorage.setItem('trade_ind_settings', JSON.stringify(_indSettings));
+  }} catch(e) {{ console.error(e); }}
+  
+  closeSettingsModal();
+  
+  const rsiLabel = document.querySelector('#rsiBox .ind-label');
+  if (rsiLabel) {{
+    rsiLabel.innerHTML = 'RSI&thinsp;<span style="color:#7c4dff">' + _indSettings.rsiLen + '</span>&thinsp;<span style="color:#ffeb3b">' + _indSettings.rsiMaLen + '</span>';
+  }}
+  const macdLabel = document.querySelector('#macdBox .ind-label');
+  if (macdLabel) {{
+    macdLabel.innerHTML = 'MACD&thinsp;<span style="color:#2962ff">' + _indSettings.macdFast + '</span>,<span style="color:#ff6d00">' + _indSettings.macdSlow + '</span>,' + _indSettings.macdSig;
+  }}
+  
+  updateIndicators();
 }}
 // ── Indicator show / hide ─────────────────────────────────────────────────────
 function toggleIndicator(which){{
