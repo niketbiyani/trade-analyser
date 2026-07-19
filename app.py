@@ -6008,8 +6008,6 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <span id="autoImpStatus"></span>
   <a href="{root}/upload-seconds" class="hbtn" style="text-decoration:none">&#128229; TV Upload</a>
-  <a href="{root}/option-expiry" class="hbtn" style="text-decoration:none">&#128269; Historical</a>
-  <a href="{root}/option-ladder" class="hbtn" style="text-decoration:none">&#128693; ATM Ladder</a>
 </div>
 <div id="main">
   <div id="chartsArea">
