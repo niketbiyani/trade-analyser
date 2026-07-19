@@ -6366,13 +6366,10 @@ function initChart() {{
 }}
 function _syncTimeScales() {{
   var charts = [_chartInst, _rsiChart, _macdChart];
-  var roles = ['main', 'rsi', 'macd'];
   charts.forEach(function(src, si) {{
     if (!src) return;
     src.timeScale().subscribeVisibleLogicalRangeChange(function(range) {{
       if (_syncingRange || !range) return;
-      var isMaster = (_activeChart === roles[si]) || (si === 0 && _activeChart === null);
-      if (!isMaster) return;
       _syncingRange = true;
       charts.forEach(function(tgt, ti) {{
         if (!tgt || ti === si) return;
