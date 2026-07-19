@@ -6002,7 +6002,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button class="hbtn on" id="btn1m"  onclick="set1m()"  title="Switch to 1-minute chart">1m</button>
   <button class="hbtn"    id="btn15s" onclick="setTick(15)" title="Switch to 15-second chart">15s</button>
   <button class="hbtn"    id="btn5s"  onclick="setTick(5)" title="Switch to 5-second chart">5s</button>
-  <button class="hbtn"    id="btnToggleTrades" onclick="toggleTradesPanel()" title="Toggle showing the trades list panel">Hide Trades</button>
+  <button class="hbtn"    id="btnToggleMarkers" onclick="toggleChartMarkers()" title="Show or hide trade markers on the chart">Hide Markers</button>
   <span id="ivl" style="display:none">&#8212;</span>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -6143,7 +6143,7 @@ var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
 var _syncingRange=false, _activeChart=null;
-var _rsiVisible=false, _macdVisible=false, _lastHoveredMarkerId=null;
+var _rsiVisible=false, _macdVisible=false, _lastHoveredMarkerId=null, _markersVisible=true;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -6739,6 +6739,10 @@ function snapTs(ts){{
 function fp(v){{return v!=null?v.toFixed(1):'—';}}
 function putMarkers(trades){{
   if(!series)return;
+  if(!_markersVisible){{
+    if(_markersPlugin)_markersPlugin.setMarkers([]);
+    return;
+  }}
   var list=isolateId!==null?trades.filter(function(t){{return t.id===isolateId;}}):trades;
   
   var groups={{}};
@@ -7177,24 +7181,19 @@ async function modalDeleteImage() {{
   }}
 }}
 
-function toggleTradesPanel() {{
-  const panel = document.getElementById('panel');
-  const handle = document.getElementById('resizeHandle');
-  const btn = document.getElementById('btnToggleTrades');
-  if (panel && handle && btn) {{
-    const isHidden = (panel.style.display === 'none');
-    if (isHidden) {{
-      panel.style.display = 'flex';
-      handle.style.display = 'block';
-      btn.textContent = 'Hide Trades';
+function toggleChartMarkers() {{
+  _markersVisible = !_markersVisible;
+  const btn = document.getElementById('btnToggleMarkers');
+  if (btn) {{
+    if (_markersVisible) {{
+      btn.textContent = 'Hide Markers';
       btn.classList.remove('on');
     }} else {{
-      panel.style.display = 'none';
-      handle.style.display = 'none';
-      btn.textContent = 'Show Trades';
+      btn.textContent = 'Show Markers';
       btn.classList.add('on');
     }}
   }}
+  putMarkers(_filtered());
 }}
 </script>
 </body>
