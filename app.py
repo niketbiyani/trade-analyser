@@ -6143,7 +6143,7 @@ var _ema20s=null, _ema50s=null, _rsiSeries=null;
 var _macdHist=null, _macdLine=null, _macdSignal=null;
 var _markersPlugin=null;
 var _syncingRange=false, _activeChart=null;
-var _rsiVisible=false, _macdVisible=false, _lastHoveredMarkerId=null, _markersVisible=true;
+var _rsiVisible=false, _macdVisible=false, _lastHoveredMarkerId=null, _markersVisible=true, _rsiDummySeries=null, _macdDummySeries=null;
 var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
@@ -6253,6 +6253,9 @@ function initChart() {{
     _rsiSeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
       color:'#7c4dff', lineWidth:1, lastValueVisible:true, priceLineVisible:false
     }});
+    _rsiDummySeries = _rsiChart.addSeries(LightweightCharts.LineSeries, {{
+      color: 'rgba(0,0,0,0)', lineWidth: 0, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false
+    }});
     _rsiSeries.createPriceLine({{ price:70, color:'#2a2e39', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _rsiSeries.createPriceLine({{ price:30, color:'#2a2e39', lineWidth:1, lineStyle:1, axisLabelVisible:false }});
     _watchResize(_rsiChart, rsiEl);
@@ -6268,6 +6271,9 @@ function initChart() {{
     }});
     _macdSignal = _macdChart.addSeries(LightweightCharts.LineSeries, {{
       color:'#ff6d00', lineWidth:1, lastValueVisible:false, priceLineVisible:false
+    }});
+    _macdDummySeries = _macdChart.addSeries(LightweightCharts.LineSeries, {{
+      color: 'rgba(0,0,0,0)', lineWidth: 0, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false
     }});
     _watchResize(_macdChart, macdEl);
 
@@ -6363,14 +6369,14 @@ function _syncTimeScales() {{
   var roles = ['main', 'rsi', 'macd'];
   charts.forEach(function(src, si) {{
     if (!src) return;
-    src.timeScale().subscribeVisibleTimeRangeChange(function(range) {{
+    src.timeScale().subscribeVisibleLogicalRangeChange(function(range) {{
       if (_syncingRange || !range) return;
       var isMaster = (_activeChart === roles[si]) || (si === 0 && _activeChart === null);
       if (!isMaster) return;
       _syncingRange = true;
       charts.forEach(function(tgt, ti) {{
         if (!tgt || ti === si) return;
-        try {{ tgt.timeScale().setVisibleRange(range); }} catch(e) {{}}
+        try {{ tgt.timeScale().setVisibleLogicalRange(range); }} catch(e) {{}}
       }});
       _syncingRange = false;
     }});
@@ -6408,6 +6414,10 @@ function updateIndicators(){{
   // Compute all indicators over all loaded candles (warmup days + today).
   // Shows continuous EMA/RSI/MACD across all visible days.
   var ind=calcIndicators(candles);
+  var times = candles.map(function(c) {{ return c.time; }});
+  var dummyData = times.map(function(t) {{ return {{ time: t, value: 0 }}; }});
+  if(_rsiDummySeries) _rsiDummySeries.setData(dummyData);
+  if(_macdDummySeries) _macdDummySeries.setData(dummyData);
   _ema20s.setData(ind.ema20);_ema50s.setData(ind.ema50);
   if(_rsiSeries)_rsiSeries.setData(ind.rsi);
   if(_macdHist){{_macdHist.setData(ind.histogram);_macdLine.setData(ind.macdLine);_macdSignal.setData(ind.sigLine);}}
