@@ -6002,6 +6002,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button class="hbtn on" id="btn1m"  onclick="set1m()"  title="Switch to 1-minute chart">1m</button>
   <button class="hbtn"    id="btn15s" onclick="setTick(15)" title="Switch to 15-second chart">15s</button>
   <button class="hbtn"    id="btn5s"  onclick="setTick(5)" title="Switch to 5-second chart">5s</button>
+  <button class="hbtn"    id="btnToggleTrades" onclick="toggleTradesPanel()" title="Toggle showing the trades list panel">Hide Trades</button>
   <span id="ivl" style="display:none">&#8212;</span>
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
@@ -7175,6 +7176,26 @@ async function modalDeleteImage() {{
   }} catch(err) {{
     console.error(err);
     alert('Error: ' + err.message);
+  }}
+}}
+
+function toggleTradesPanel() {{
+  const panel = document.getElementById('panel');
+  const handle = document.getElementById('resizeHandle');
+  const btn = document.getElementById('btnToggleTrades');
+  if (panel && handle && btn) {{
+    const isHidden = (panel.style.display === 'none');
+    if (isHidden) {{
+      panel.style.display = 'flex';
+      handle.style.display = 'block';
+      btn.textContent = 'Hide Trades';
+      btn.classList.remove('on');
+    }} else {{
+      panel.style.display = 'none';
+      handle.style.display = 'none';
+      btn.textContent = 'Show Trades';
+      btn.classList.add('on');
+    }}
   }}
 }}
 </script>
