@@ -6137,16 +6137,18 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 </div>
 
 <div id="imgModal" onclick="this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.95); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out; flex-direction:column;">
-  <div style="position:relative; max-width:92%; max-height:80%; display:flex; align-items:center; justify-content:center;">
-    <button id="imgPrevBtn" onclick="navTradeImage(-1, event)" style="position:absolute; left:-45px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2); color:#fff; font-size:18px; width:36px; height:36px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:10001; transition:.15s;">&#9664;</button>
-    <img id="imgModalSrc" src="" style="max-width:100%; max-height:100%; border-radius:4px; border:2px solid #333; cursor:default;" onclick="event.stopPropagation()">
-    <button id="imgNextBtn" onclick="navTradeImage(1, event)" style="position:absolute; right:-45px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2); color:#fff; font-size:18px; width:36px; height:36px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:10001; transition:.15s;">&#9654;</button>
+  <div style="position:relative; max-width:90%; max-height:78%; display:flex; align-items:center; justify-content:center;">
+    <button id="imgPrevBtn" onclick="navTradeImage(-1, event)" style="position:absolute; left:15px; background:rgba(20,20,25,.85); border:1px solid rgba(255,255,255,.3); color:#fff; font-size:22px; width:44px; height:44px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:10001; box-shadow:0 4px 15px rgba(0,0,0,.6); transition:.15s;" title="Previous Image">&#9664;</button>
+    <img id="imgModalSrc" src="" style="max-width:100%; max-height:100%; border-radius:6px; border:2px solid #333; cursor:default; box-shadow:0 10px 40px rgba(0,0,0,.8);" onclick="event.stopPropagation()">
+    <button id="imgNextBtn" onclick="navTradeImage(1, event)" style="position:absolute; right:15px; background:rgba(20,20,25,.85); border:1px solid rgba(255,255,255,.3); color:#fff; font-size:22px; width:44px; height:44px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:10001; box-shadow:0 4px 15px rgba(0,0,0,.6); transition:.15s;" title="Next Image">&#9654;</button>
   </div>
-  <div id="imgCounter" style="margin-top:10px; font-size:11px; color:#aaa; letter-spacing:0.5px;"></div>
-  <div class="img-modal-actions" style="margin-top:10px; display:flex; gap:10px; z-index:10000;" onclick="event.stopPropagation()">
-    <button class="btn btnp" onclick="modalAddImage()" style="background:#7c4dff; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">&#128247; Add Screenshot</button>
-    <button class="btn btns" onclick="modalDeleteCurrentImage()" style="background:#f85149; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">&#128465; Delete This</button>
-    <button class="btn btns" onclick="document.getElementById('imgModal').style.display='none'" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">Close</button>
+  <div id="imgCounter" style="margin-top:12px; font-size:12px; color:#e0e0e0; background:rgba(30,30,35,.9); padding:4px 14px; border-radius:14px; border:1px solid rgba(255,255,255,.15); font-weight:500; letter-spacing:0.5px;"></div>
+  <div class="img-modal-actions" style="margin-top:12px; display:flex; gap:10px; z-index:10000; flex-wrap:wrap; justify-content:center;" onclick="event.stopPropagation()">
+    <button id="bottomPrevBtn" class="btn btns" onclick="navTradeImage(-1, event)" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">&#9664; Prev</button>
+    <button id="bottomNextBtn" class="btn btns" onclick="navTradeImage(1, event)" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">Next &#9654;</button>
+    <button class="btn btnp" onclick="modalAddImage()" style="background:#7c4dff; border:none; color:#fff; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">&#128247; Add Screenshot</button>
+    <button class="btn btns" onclick="modalDeleteCurrentImage()" style="background:#f85149; border:none; color:#fff; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">&#128465; Delete This</button>
+    <button class="btn btns" onclick="document.getElementById('imgModal').style.display='none'" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">Close</button>
   </div>
 </div>
 
@@ -7395,6 +7397,8 @@ function updateCarouselView() {{
   const img = document.getElementById('imgModalSrc');
   const prevBtn = document.getElementById('imgPrevBtn');
   const nextBtn = document.getElementById('imgNextBtn');
+  const bPrevBtn = document.getElementById('bottomPrevBtn');
+  const bNextBtn = document.getElementById('bottomNextBtn');
   const counter = document.getElementById('imgCounter');
   
   if (!_viewingImages.length) {{
@@ -7410,11 +7414,17 @@ function updateCarouselView() {{
   if (_viewingImages.length > 1) {{
     prevBtn.style.display = 'flex';
     nextBtn.style.display = 'flex';
+    if (bPrevBtn) bPrevBtn.style.display = 'inline-block';
+    if (bNextBtn) bNextBtn.style.display = 'inline-block';
+    counter.style.display = 'block';
     counter.textContent = 'Image ' + (_viewingIndex + 1) + ' of ' + _viewingImages.length;
   }} else {{
     prevBtn.style.display = 'none';
     nextBtn.style.display = 'none';
-    counter.textContent = '';
+    if (bPrevBtn) bPrevBtn.style.display = 'none';
+    if (bNextBtn) bNextBtn.style.display = 'none';
+    counter.style.display = 'block';
+    counter.textContent = '1 Image Attached';
   }}
 }}
 
