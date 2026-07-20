@@ -4322,21 +4322,34 @@ def api_upload_trade_image(tid):
     file.save(filepath)
     
     with _db_lock:
+        existing_note = db.execute(
+            "SELECT image_path FROM trade_notes WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+            (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+        ).fetchone()
+        
+        current_images = []
+        if existing_note and existing_note["image_path"]:
+            current_images = [img.strip() for img in existing_note["image_path"].split(",") if img.strip()]
+            
+        current_images.append(filename)
+        new_image_path = ",".join(current_images)
+        
         db.execute(
             "INSERT INTO trade_notes (date, underlying, option_type, strike, entry_time, image_path)"
             " VALUES (?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(date, underlying, option_type, strike, entry_time)"
             " DO UPDATE SET image_path=excluded.image_path",
-            (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"], filename)
+            (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"], new_image_path)
         )
         db.commit()
         _rebuild_cache(db)
         
-    return jsonify({"ok": True, "filename": filename})
+    return jsonify({"ok": True, "filename": filename, "images": current_images})
 
 
 @app.route("/api/trade/<int:tid>/image", methods=["DELETE"])
 def api_delete_trade_image(tid):
+    target_filename = request.args.get("filename") or ""
     db = get_db()
     t = db.execute(
         "SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?", (tid,)
@@ -4350,17 +4363,33 @@ def api_delete_trade_image(tid):
     ).fetchone()
     
     if note and note["image_path"]:
-        filepath = os.path.join(UPLOAD_FOLDER, note["image_path"])
-        if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-            except Exception as e:
-                logger.warning("Failed to delete physical file %s: %s", filepath, e)
-                
+        current_images = [img.strip() for img in note["image_path"].split(",") if img.strip()]
+        
+        if target_filename:
+            if target_filename in current_images:
+                current_images.remove(target_filename)
+                filepath = os.path.join(UPLOAD_FOLDER, target_filename)
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception as e:
+                        logger.warning("Failed to delete physical file %s: %s", filepath, e)
+        else:
+            for img_name in current_images:
+                filepath = os.path.join(UPLOAD_FOLDER, img_name)
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception as e:
+                        logger.warning("Failed to delete physical file %s: %s", filepath, e)
+            current_images = []
+            
+        new_image_path = ",".join(current_images) if current_images else None
+        
         with _db_lock:
             db.execute(
-                "UPDATE trade_notes SET image_path=NULL WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
-                (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+                "UPDATE trade_notes SET image_path=? WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                (new_image_path, t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
             )
             db.commit()
             _rebuild_cache(db)
@@ -6108,12 +6137,15 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
 </div>
 
 <div id="imgModal" onclick="this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.95); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out; flex-direction:column;">
-  <div style="position:relative; max-width:92%; max-height:85%;">
+  <div style="position:relative; max-width:92%; max-height:80%; display:flex; align-items:center; justify-content:center;">
+    <button id="imgPrevBtn" onclick="navTradeImage(-1, event)" style="position:absolute; left:-45px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2); color:#fff; font-size:18px; width:36px; height:36px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:10001; transition:.15s;">&#9664;</button>
     <img id="imgModalSrc" src="" style="max-width:100%; max-height:100%; border-radius:4px; border:2px solid #333; cursor:default;" onclick="event.stopPropagation()">
+    <button id="imgNextBtn" onclick="navTradeImage(1, event)" style="position:absolute; right:-45px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2); color:#fff; font-size:18px; width:36px; height:36px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:10001; transition:.15s;">&#9654;</button>
   </div>
-  <div class="img-modal-actions" style="margin-top:15px; display:flex; gap:12px; z-index:10000;" onclick="event.stopPropagation()">
-    <button class="btn btnp" onclick="modalReplaceImage()" style="background:#7c4dff; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">📷 Replace</button>
-    <button class="btn btns" onclick="modalDeleteImage()" style="background:#f85149; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">🗑️ Delete</button>
+  <div id="imgCounter" style="margin-top:10px; font-size:11px; color:#aaa; letter-spacing:0.5px;"></div>
+  <div class="img-modal-actions" style="margin-top:10px; display:flex; gap:10px; z-index:10000;" onclick="event.stopPropagation()">
+    <button class="btn btnp" onclick="modalAddImage()" style="background:#7c4dff; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">&#128247; Add Screenshot</button>
+    <button class="btn btns" onclick="modalDeleteCurrentImage()" style="background:#f85149; border:none; color:#fff; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">&#128465; Delete This</button>
     <button class="btn btns" onclick="document.getElementById('imgModal').style.display='none'" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:500;">Close</button>
   </div>
 </div>
@@ -6882,7 +6914,9 @@ function renderTrades(trades) {{
     var imgPath=t.image_path||'';
     var imgHtml='';
     if(imgPath){{
-      imgHtml='<span class="tpill active img-pill-btn" onclick="viewTradeImage('+t.id+',\\\''+imgPath+'\\\',event)" title="View chart screenshot" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">&#128444; VIEW</span>';
+      var imgList = imgPath.split(',').map(function(s){{return s.trim();}}).filter(Boolean);
+      var label = imgList.length > 1 ? '&#128444; VIEW (' + imgList.length + ')' : '&#128444; VIEW';
+      imgHtml='<span class="tpill active img-pill-btn" onclick="viewTradeImage('+t.id+',\\\''+imgPath+'\\\',event)" title="View chart screenshots" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">'+label+'</span>';
     }}else{{
       imgHtml='<span class="tpill img-pill-btn" onclick="triggerImageUpload('+t.id+',event)" title="Upload screenshot" style="background:rgba(100,100,100,.1);color:#888;border-color:#444;">&#128247; UPLOAD</span>';
     }}
@@ -7321,8 +7355,13 @@ function submitModalUpload() {{
       .then(r => r.json())
       .then(d => {{
         if (d.ok) {{
+          var tr = allTrades.find(function(t){{ return t.id === _uploadTradeId; }});
+          if (tr) {{
+            tr.image_path = d.images ? d.images.join(',') : d.filename;
+          }}
           closeUploadModal();
-          loadTrades();
+          var f = _filtered();
+          renderTrades(f);
         }} else {{
           alert('Upload failed: ' + d.error);
           btn.disabled = false;
@@ -7340,28 +7379,82 @@ function submitModalUpload() {{
 }}
 
 var _viewingTradeId = null;
+var _viewingImages = [];
+var _viewingIndex = 0;
+
 function viewTradeImage(tid, path, ev) {{
-  if(ev) ev.stopPropagation();
+  if (ev) ev.stopPropagation();
   _viewingTradeId = tid;
-  const modal = document.getElementById('imgModal');
-  const img = document.getElementById('imgModalSrc');
-  img.src = _root + '/static/uploads/' + path;
-  modal.style.display = 'flex';
+  _viewingImages = (path || '').split(',').map(function(s) {{ return s.trim(); }}).filter(Boolean);
+  _viewingIndex = 0;
+  updateCarouselView();
+  document.getElementById('imgModal').style.display = 'flex';
 }}
 
-function modalReplaceImage() {{
+function updateCarouselView() {{
+  const img = document.getElementById('imgModalSrc');
+  const prevBtn = document.getElementById('imgPrevBtn');
+  const nextBtn = document.getElementById('imgNextBtn');
+  const counter = document.getElementById('imgCounter');
+  
+  if (!_viewingImages.length) {{
+    document.getElementById('imgModal').style.display = 'none';
+    return;
+  }}
+  
+  if (_viewingIndex < 0) _viewingIndex = 0;
+  if (_viewingIndex >= _viewingImages.length) _viewingIndex = _viewingImages.length - 1;
+  
+  img.src = _root + '/static/uploads/' + _viewingImages[_viewingIndex];
+  
+  if (_viewingImages.length > 1) {{
+    prevBtn.style.display = 'flex';
+    nextBtn.style.display = 'flex';
+    counter.textContent = 'Image ' + (_viewingIndex + 1) + ' of ' + _viewingImages.length;
+  }} else {{
+    prevBtn.style.display = 'none';
+    nextBtn.style.display = 'none';
+    counter.textContent = '';
+  }}
+}}
+
+function navTradeImage(dir, ev) {{
+  if (ev) ev.stopPropagation();
+  _viewingIndex += dir;
+  if (_viewingIndex < 0) _viewingIndex = _viewingImages.length - 1;
+  if (_viewingIndex >= _viewingImages.length) _viewingIndex = 0;
+  updateCarouselView();
+}}
+
+function modalAddImage() {{
   document.getElementById('imgModal').style.display = 'none';
   triggerImageUpload(_viewingTradeId);
 }}
 
-async function modalDeleteImage() {{
+async function modalDeleteCurrentImage() {{
+  if (!_viewingImages.length) return;
+  const targetFile = _viewingImages[_viewingIndex];
   if (!confirm('Are you sure you want to delete this screenshot?')) return;
+  
   try {{
-    var r = await fetch(_root + '/api/trade/' + _viewingTradeId + '/image', {{ method: 'DELETE' }});
+    var r = await fetch(_root + '/api/trade/' + _viewingTradeId + '/image?filename=' + encodeURIComponent(targetFile), {{ method: 'DELETE' }});
     var d = await r.json();
     if (d.ok) {{
-      document.getElementById('imgModal').style.display = 'none';
-      refreshTradesTable();
+      _viewingImages.splice(_viewingIndex, 1);
+      if (_viewingIndex >= _viewingImages.length) _viewingIndex = Math.max(0, _viewingImages.length - 1);
+      
+      var newPathStr = _viewingImages.join(',');
+      var tr = allTrades.find(function(t) {{ return t.id === _viewingTradeId; }});
+      if (tr) tr.image_path = newPathStr;
+      
+      if (_viewingImages.length > 0) {{
+        updateCarouselView();
+      }} else {{
+        document.getElementById('imgModal').style.display = 'none';
+      }}
+      
+      var f = _filtered();
+      renderTrades(f);
     }} else {{
       alert('Failed to delete image: ' + d.error);
     }}
