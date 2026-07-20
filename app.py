@@ -7080,7 +7080,7 @@ function selTrade(id,entryTime){{
   putMarkers(_filtered());
 }}
 async function closeTrade(id,e){{
-  e.stopPropagation();
+  if(e&&e.stopPropagation)e.stopPropagation();
   var px=prompt('Exit price? Enter 0 if expired worthless.','0');
   if(px===null)return;
   var price=parseFloat(px);
@@ -7096,7 +7096,7 @@ async function closeTrade(id,e){{
   }}catch(err){{console.error(err);}}
 }}
 async function delTrade(id,e){{
-  e.stopPropagation();
+  if(e&&e.stopPropagation)e.stopPropagation();
   if(!confirm('Delete this trade?'))return;
   try{{
     await fetch(_root+'/api/trade/'+id,{{method:'DELETE'}});
@@ -7135,7 +7135,7 @@ async function saveTag(id,field,value){{
 }}
 function saveTagEl(el){{saveTag(+el.dataset.tid,el.dataset.field,el.value);}}
 function cycleTagEl(el,ev){{
-  ev.stopPropagation();
+  if(ev&&ev.stopPropagation)ev.stopPropagation();
   var id=+el.dataset.tid, field=el.dataset.field;
   var opts=[''].concat((el.dataset.opts||'').split(','));
   var t=allTrades.find(function(x){{return x.id===id;}});
@@ -7147,7 +7147,7 @@ function cycleTagEl(el,ev){{
   var f=_filtered();renderTrades(f);putMarkers(f);
 }}
 function cycleRulesEl(el,ev){{
-  ev.stopPropagation();
+  if(ev&&ev.stopPropagation)ev.stopPropagation();
   var id=+el.dataset.tid;
   var t=allTrades.find(function(x){{return x.id===id;}});
   if(!t)return;
@@ -7251,7 +7251,7 @@ var _uploadTradeId = null;
 var _selectedUploadFile = null;
 
 function triggerImageUpload(tid, ev) {{
-  ev.stopPropagation();
+  if (ev && ev.stopPropagation) ev.stopPropagation();
   _uploadTradeId = tid;
   _selectedUploadFile = null;
   document.getElementById('modalFileInput').value = '';
