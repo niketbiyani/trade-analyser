@@ -4924,11 +4924,13 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
 
   <div id="status"></div>
 
-  <div style="margin-top:20px; padding:14px; background:rgba(124,77,255,0.08); border:1px solid rgba(124,77,255,0.25); border-radius:6px;">
-    <div style="font-size:12px; font-weight:600; color:#a78bfa; margin-bottom:4px;">&#128295; Auto-Fix 5s/15s Data</div>
-    <div style="font-size:11px; color:#8b949e; margin-bottom:10px;">Uploaded 5s data as 15s by mistake? Click below to scan the database and automatically re-classify 5s candles.</div>
-    <button type="button" id="fixBtn" onclick="autoFixSecondsData()" style="background:#7c4dff; font-size:11px; padding:7px 12px; width:auto; margin-top:0;">Auto-Fix Misclassified 5s Data</button>
-  </div>
+  <details style="margin-top:20px; font-size:11px; color:#8b949e; cursor:pointer;">
+    <summary style="color:#7c4dff; font-weight:500; font-size:11px; outline:none; user-select:none;">&#128295; Advanced: Database Repair Utility</summary>
+    <div style="margin-top:10px; padding:12px; background:rgba(124,77,255,0.08); border:1px solid rgba(124,77,255,0.25); border-radius:6px; cursor:default;">
+      <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">If 5s candles were ever manually uploaded as 15s, click below to scan and re-classify them automatically.</div>
+      <button type="button" id="fixBtn" onclick="autoFixSecondsData()" style="background:#7c4dff; font-size:11px; padding:6px 12px; width:auto; margin-top:0;">Run Auto-Fix Tool</button>
+    </div>
+  </details>
 
   <div class="stats-box">
     <div class="stats-title">Uploaded Seconds Data Stats</div>
