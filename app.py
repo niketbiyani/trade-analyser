@@ -4770,28 +4770,28 @@ def api_upload_seconds_csv():
 
 @app.route("/api/fix-misclassified-seconds", methods=["POST"])
 def api_fix_misclassified_seconds():
-    """Database repair tool: Scan candles stored as 15s in ohlcv_seconds and reclassify
-    candles with 5s timestamp deltas to seconds = 5.
+    """Bidirectional Database Repair Tool:
+    1. Scan candles stored as 15s with 5s deltas -> re-classify to seconds = 5.
+    2. Scan candles stored as 5s with 15s deltas -> re-classify to seconds = 15.
     """
     db = get_db()
-    fixed_count = 0
+    fixed_to_5s = 0
+    fixed_to_15s = 0
     try:
-        rows = db.execute(
+        # Angle 1: Fix 5s candles erroneously stored under seconds = 15
+        rows_15 = db.execute(
             "SELECT symbol, ts FROM ohlcv_seconds WHERE seconds = 15 ORDER BY symbol, ts"
         ).fetchall()
         
-        if not rows:
-            return jsonify({"ok": True, "fixed": 0, "message": "No 15s data found to inspect."})
-            
-        symbol_rows = {}
-        for r in rows:
+        symbol_rows_15 = {}
+        for r in rows_15:
             sym = r["symbol"]
-            if sym not in symbol_rows:
-                symbol_rows[sym] = []
-            symbol_rows[sym].append(r["ts"])
+            if sym not in symbol_rows_15:
+                symbol_rows_15[sym] = []
+            symbol_rows_15[sym].append(r["ts"])
             
-        ts_to_fix = []
-        for sym, t_list in symbol_rows.items():
+        ts_to_5s = []
+        for sym, t_list in symbol_rows_15.items():
             if len(t_list) < 2:
                 continue
             for i in range(len(t_list)):
@@ -4800,23 +4800,60 @@ def api_fix_misclassified_seconds():
                     is_5s = True
                 if i < len(t_list) - 1 and (t_list[i+1] - t_list[i] == 5):
                     is_5s = True
-                    
                 if is_5s:
-                    ts_to_fix.append((sym, t_list[i]))
+                    ts_to_5s.append((sym, t_list[i]))
                     
-        if ts_to_fix:
+        if ts_to_5s:
             with _db_lock:
-                for sym, ts_val in ts_to_fix:
+                for sym, ts_val in ts_to_5s:
                     db.execute(
                         "UPDATE OR IGNORE ohlcv_seconds SET seconds = 5 WHERE symbol = ? AND seconds = 15 AND ts = ?",
                         (sym, ts_val)
                     )
                 db.execute("DELETE FROM ohlcv_seconds WHERE seconds = 15 AND (symbol, ts) IN (SELECT symbol, ts FROM ohlcv_seconds WHERE seconds = 5)")
                 db.commit()
-                fixed_count = len(ts_to_fix)
-                
-        logger.info("Auto-fixed %d misclassified 5s candles in ohlcv_seconds", fixed_count)
-        return jsonify({"ok": True, "fixed": fixed_count, "message": f"Successfully reclassified {fixed_count:,} candles from 15s to 5s!"})
+                fixed_to_5s = len(ts_to_5s)
+
+        # Angle 2: Fix 15s candles erroneously stored under seconds = 5
+        rows_5 = db.execute(
+            "SELECT symbol, ts FROM ohlcv_seconds WHERE seconds = 5 ORDER BY symbol, ts"
+        ).fetchall()
+        
+        symbol_rows_5 = {}
+        for r in rows_5:
+            sym = r["symbol"]
+            if sym not in symbol_rows_5:
+                symbol_rows_5[sym] = []
+            symbol_rows_5[sym].append(r["ts"])
+            
+        ts_to_15s = []
+        for sym, t_list in symbol_rows_5.items():
+            if len(t_list) < 2:
+                continue
+            for i in range(len(t_list)):
+                is_15s = False
+                if i > 0 and (t_list[i] - t_list[i-1] == 15):
+                    is_15s = True
+                if i < len(t_list) - 1 and (t_list[i+1] - t_list[i] == 15):
+                    is_15s = True
+                if is_15s:
+                    ts_to_15s.append((sym, t_list[i]))
+                    
+        if ts_to_15s:
+            with _db_lock:
+                for sym, ts_val in ts_to_15s:
+                    db.execute(
+                        "UPDATE OR IGNORE ohlcv_seconds SET seconds = 15 WHERE symbol = ? AND seconds = 5 AND ts = ?",
+                        (sym, ts_val)
+                    )
+                db.execute("DELETE FROM ohlcv_seconds WHERE seconds = 5 AND (symbol, ts) IN (SELECT symbol, ts FROM ohlcv_seconds WHERE seconds = 15)")
+                db.commit()
+                fixed_to_15s = len(ts_to_15s)
+
+        total_fixed = fixed_to_5s + fixed_to_15s
+        msg = f"Scan complete! Reclassified {fixed_to_5s:,} candles to 5s and {fixed_to_15s:,} candles to 15s."
+        logger.info("Auto-fix summary: %s", msg)
+        return jsonify({"ok": True, "fixed": total_fixed, "message": msg})
     except Exception as e:
         logger.error("fix-misclassified-seconds: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -4925,10 +4962,10 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
   <div id="status"></div>
 
   <details style="margin-top:20px; font-size:11px; color:#8b949e; cursor:pointer;">
-    <summary style="color:#7c4dff; font-weight:500; font-size:11px; outline:none; user-select:none;">&#128295; Advanced: Database Repair Utility</summary>
+    <summary style="color:#7c4dff; font-weight:500; font-size:11px; outline:none; user-select:none;">&#128295; Advanced: Bidirectional 5s &#8596; 15s Repair Utility</summary>
     <div style="margin-top:10px; padding:12px; background:rgba(124,77,255,0.08); border:1px solid rgba(124,77,255,0.25); border-radius:6px; cursor:default;">
-      <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">If 5s candles were ever manually uploaded as 15s, click below to scan and re-classify them automatically.</div>
-      <button type="button" id="fixBtn" onclick="autoFixSecondsData()" style="background:#7c4dff; font-size:11px; padding:6px 12px; width:auto; margin-top:0;">Run Auto-Fix Tool</button>
+      <div style="font-size:11px; color:#8b949e; margin-bottom:8px;">Scans the database in both directions (5s &#8594; 15s and 15s &#8594; 5s) to automatically re-classify any mislabeled candles based on timestamp spacing.</div>
+      <button type="button" id="fixBtn" onclick="autoFixSecondsData()" style="background:#7c4dff; font-size:11px; padding:6px 12px; width:auto; margin-top:0;">Run Bidirectional Repair Tool</button>
     </div>
   </details>
 
