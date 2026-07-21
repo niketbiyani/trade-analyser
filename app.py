@@ -4648,9 +4648,9 @@ def api_upload_seconds_csv():
     f = request.files.get("file")
     symbol = request.form.get("symbol", "NIFTY").upper()
     try:
-        seconds = int(request.form.get("seconds") or 15)
+        seconds = int(request.form.get("seconds") or 0)
     except ValueError:
-        seconds = 15
+        seconds = 0
 
     if not f:
         return jsonify({"ok": False, "error": "No file uploaded"}), 400
@@ -4671,7 +4671,7 @@ def api_upload_seconds_csv():
         if not all((time_col, open_col, high_col, low_col, close_col)):
             return jsonify({"ok": False, "error": f"Missing columns in CSV. Found headers: {fieldnames}"}), 400
 
-        rows_buf = []
+        parsed_rows = []
         for row in reader:
             ts_str = row[time_col]
             if not ts_str:
@@ -4682,12 +4682,33 @@ def api_upload_seconds_csv():
                 h  = float(row[high_col])
                 l  = float(row[low_col])
                 c  = float(row[close_col])
-                rows_buf.append((symbol, seconds, ts, o, h, l, c))
+                parsed_rows.append((ts, o, h, l, c))
             except Exception:
                 continue
 
-        if not rows_buf:
+        if not parsed_rows:
             return jsonify({"ok": False, "error": "No valid rows found in CSV. Make sure date and price values are correct."}), 400
+
+        parsed_rows.sort(key=lambda r: r[0])
+
+        # Auto-detect timeframe interval from candle deltas
+        detected_seconds = seconds if seconds > 0 else 15
+        if len(parsed_rows) >= 2:
+            deltas = []
+            for i in range(min(30, len(parsed_rows) - 1)):
+                d = parsed_rows[i+1][0] - parsed_rows[i][0]
+                if 0 < d <= 3600:
+                    deltas.append(d)
+            if deltas:
+                from collections import Counter
+                common_delta, _ = Counter(deltas).most_common(1)[0]
+                if common_delta in (5, 15, 30, 60):
+                    if seconds == 0 or (seconds != common_delta and common_delta in (5, 15)):
+                        logger.info("Auto-detected candle interval %ds from CSV (form specified %ds)", common_delta, seconds)
+                        detected_seconds = common_delta
+
+        seconds = detected_seconds
+        rows_buf = [(symbol, seconds, r[0], r[1], r[2], r[3], r[4]) for r in parsed_rows]
 
         # Bulk insert
         db = get_db()
@@ -4703,6 +4724,60 @@ def api_upload_seconds_csv():
         return jsonify({"ok": True, "count": len(rows_buf), "symbol": symbol, "seconds": seconds})
     except Exception as e:
         logger.error("upload-seconds-csv: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/fix-misclassified-seconds", methods=["POST"])
+def api_fix_misclassified_seconds():
+    """Database repair tool: Scan candles stored as 15s in ohlcv_seconds and reclassify
+    candles with 5s timestamp deltas to seconds = 5.
+    """
+    db = get_db()
+    fixed_count = 0
+    try:
+        rows = db.execute(
+            "SELECT symbol, ts FROM ohlcv_seconds WHERE seconds = 15 ORDER BY symbol, ts"
+        ).fetchall()
+        
+        if not rows:
+            return jsonify({"ok": True, "fixed": 0, "message": "No 15s data found to inspect."})
+            
+        symbol_rows = {}
+        for r in rows:
+            sym = r["symbol"]
+            if sym not in symbol_rows:
+                symbol_rows[sym] = []
+            symbol_rows[sym].append(r["ts"])
+            
+        ts_to_fix = []
+        for sym, t_list in symbol_rows.items():
+            if len(t_list) < 2:
+                continue
+            for i in range(len(t_list)):
+                is_5s = False
+                if i > 0 and (t_list[i] - t_list[i-1] == 5):
+                    is_5s = True
+                if i < len(t_list) - 1 and (t_list[i+1] - t_list[i] == 5):
+                    is_5s = True
+                    
+                if is_5s:
+                    ts_to_fix.append((sym, t_list[i]))
+                    
+        if ts_to_fix:
+            with _db_lock:
+                for sym, ts_val in ts_to_fix:
+                    db.execute(
+                        "UPDATE OR IGNORE ohlcv_seconds SET seconds = 5 WHERE symbol = ? AND seconds = 15 AND ts = ?",
+                        (sym, ts_val)
+                    )
+                db.execute("DELETE FROM ohlcv_seconds WHERE seconds = 15 AND (symbol, ts) IN (SELECT symbol, ts FROM ohlcv_seconds WHERE seconds = 5)")
+                db.commit()
+                fixed_count = len(ts_to_fix)
+                
+        logger.info("Auto-fixed %d misclassified 5s candles in ohlcv_seconds", fixed_count)
+        return jsonify({"ok": True, "fixed": fixed_count, "message": f"Successfully reclassified {fixed_count:,} candles from 15s to 5s!"})
+    except Exception as e:
+        logger.error("fix-misclassified-seconds: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
@@ -4790,8 +4865,9 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
     <div class="form-group">
       <label>Interval</label>
       <select id="seconds" name="seconds">
+        <option value="0" selected>Auto-Detect (Recommended)</option>
         <option value="5">5 Seconds</option>
-        <option value="15" selected>15 Seconds</option>
+        <option value="15">15 Seconds</option>
       </select>
     </div>
 
@@ -4805,6 +4881,12 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
 
   <div id="status"></div>
 
+  <div style="margin-top:20px; padding:14px; background:rgba(124,77,255,0.08); border:1px solid rgba(124,77,255,0.25); border-radius:6px;">
+    <div style="font-size:12px; font-weight:600; color:#a78bfa; margin-bottom:4px;">&#128295; Auto-Fix 5s/15s Data</div>
+    <div style="font-size:11px; color:#8b949e; margin-bottom:10px;">Uploaded 5s data as 15s by mistake? Click below to scan the database and automatically re-classify 5s candles.</div>
+    <button type="button" id="fixBtn" onclick="autoFixSecondsData()" style="background:#7c4dff; font-size:11px; padding:7px 12px; width:auto; margin-top:0;">Auto-Fix Misclassified 5s Data</button>
+  </div>
+
   <div class="stats-box">
     <div class="stats-title">Uploaded Seconds Data Stats</div>
     <div id="statsList">Loading stats…</div>
@@ -4813,6 +4895,34 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
 
 <script>
 var _root = '{root}';
+
+async function autoFixSecondsData() {{
+  var btn = document.getElementById('fixBtn');
+  var status = document.getElementById('status');
+  btn.disabled = true;
+  btn.textContent = 'Scanning & fixing…';
+  try {{
+    var r = await fetch(_root + '/api/fix-misclassified-seconds', {{ method: 'POST' }});
+    var d = await r.json();
+    if (d.ok) {{
+      status.className = 'success';
+      status.textContent = '✓ ' + d.message;
+      status.style.display = 'block';
+      loadStats();
+    }} else {{
+      status.className = 'error';
+      status.textContent = 'Repair failed: ' + d.error;
+      status.style.display = 'block';
+    }}
+  }} catch(e) {{
+    status.className = 'error';
+    status.textContent = 'Error: ' + e.message;
+    status.style.display = 'block';
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = 'Auto-Fix Misclassified 5s Data';
+  }}
+}}
 
 async function loadStats() {{
   var list = document.getElementById('statsList');
