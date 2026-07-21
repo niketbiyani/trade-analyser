@@ -4644,87 +4644,128 @@ def api_option_upload_stats():
 
 @app.route("/api/upload-seconds-csv", methods=["POST"])
 def api_upload_seconds_csv():
-    """Parse and load TradingView Premium 5s or 15s CSV candles for NIFTY/SENSEX."""
-    f = request.files.get("file")
-    symbol = request.form.get("symbol", "NIFTY").upper()
-    try:
-        seconds = int(request.form.get("seconds") or 0)
-    except ValueError:
-        seconds = 0
-
-    if not f:
+    """Parse and load TradingView Premium 5s or 15s CSV candles for NIFTY/SENSEX.
+    Supports single or multiple CSV file uploads and dual auto-detection.
+    """
+    files = request.files.getlist("file")
+    if not files or not files[0].filename:
         return jsonify({"ok": False, "error": "No file uploaded"}), 400
 
+    form_symbol = request.form.get("symbol", "AUTO").upper()
     try:
-        content = f.read().decode("utf-8-sig", errors="replace")
-        import csv as _csv, io as _io
-        reader = _csv.DictReader(_io.StringIO(content))
+        form_seconds = int(request.form.get("seconds") or 0)
+    except ValueError:
+        form_seconds = 0
 
-        # Detect columns case-insensitively
-        fieldnames = reader.fieldnames or []
-        time_col = next((c for c in fieldnames if c.lower() in ("time", "timestamp", "date")), None)
-        open_col = next((c for c in fieldnames if c.lower() == "open"), None)
-        high_col = next((c for c in fieldnames if c.lower() == "high"), None)
-        low_col  = next((c for c in fieldnames if c.lower() == "low"), None)
-        close_col = next((c for c in fieldnames if c.lower() == "close"), None)
+    total_bars_saved = 0
+    processed_files = 0
+    file_summaries = []
+    db = get_db()
 
-        if not all((time_col, open_col, high_col, low_col, close_col)):
-            return jsonify({"ok": False, "error": f"Missing columns in CSV. Found headers: {fieldnames}"}), 400
+    for f in files:
+        if not f or not f.filename:
+            continue
+            
+        filename = f.filename
+        try:
+            content = f.read().decode("utf-8-sig", errors="replace")
+            import csv as _csv, io as _io
+            reader = _csv.DictReader(_io.StringIO(content))
 
-        parsed_rows = []
-        for row in reader:
-            ts_str = row[time_col]
-            if not ts_str:
+            fieldnames = reader.fieldnames or []
+            time_col = next((c for c in fieldnames if c.lower() in ("time", "timestamp", "date")), None)
+            open_col = next((c for c in fieldnames if c.lower() == "open"), None)
+            high_col = next((c for c in fieldnames if c.lower() == "high"), None)
+            low_col  = next((c for c in fieldnames if c.lower() == "low"), None)
+            close_col = next((c for c in fieldnames if c.lower() == "close"), None)
+
+            if not all((time_col, open_col, high_col, low_col, close_col)):
+                file_summaries.append({"file": filename, "status": "skipped", "reason": "Missing required columns"})
                 continue
-            try:
-                ts = _parse_tv_timestamp(ts_str)
-                o  = float(row[open_col])
-                h  = float(row[high_col])
-                l  = float(row[low_col])
-                c  = float(row[close_col])
-                parsed_rows.append((ts, o, h, l, c))
-            except Exception:
+
+            parsed_rows = []
+            for row in reader:
+                ts_str = row[time_col]
+                if not ts_str:
+                    continue
+                try:
+                    ts = _parse_tv_timestamp(ts_str)
+                    o  = float(row[open_col])
+                    h  = float(row[high_col])
+                    l  = float(row[low_col])
+                    c  = float(row[close_col])
+                    parsed_rows.append((ts, o, h, l, c))
+                except Exception:
+                    continue
+
+            if not parsed_rows:
+                file_summaries.append({"file": filename, "status": "skipped", "reason": "No valid candle rows"})
                 continue
 
-        if not parsed_rows:
-            return jsonify({"ok": False, "error": "No valid rows found in CSV. Make sure date and price values are correct."}), 400
+            parsed_rows.sort(key=lambda r: r[0])
 
-        parsed_rows.sort(key=lambda r: r[0])
+            # 1. Dual Auto-Detect: SYMBOL (NIFTY vs SENSEX)
+            detected_symbol = form_symbol
+            fn_upper = filename.upper()
+            if form_symbol == "AUTO" or "NIFTY" in fn_upper or "SENSEX" in fn_upper or "BSESN" in fn_upper:
+                if "SENSEX" in fn_upper or "BSESN" in fn_upper:
+                    detected_symbol = "SENSEX"
+                elif "NIFTY" in fn_upper:
+                    detected_symbol = "NIFTY"
+                else:
+                    avg_close = sum(r[4] for r in parsed_rows) / len(parsed_rows)
+                    detected_symbol = "SENSEX" if avg_close > 50000 else "NIFTY"
+            if detected_symbol == "AUTO":
+                detected_symbol = "NIFTY"
 
-        # Auto-detect timeframe interval from candle deltas
-        detected_seconds = seconds if seconds > 0 else 15
-        if len(parsed_rows) >= 2:
-            deltas = []
-            for i in range(min(30, len(parsed_rows) - 1)):
-                d = parsed_rows[i+1][0] - parsed_rows[i][0]
-                if 0 < d <= 3600:
-                    deltas.append(d)
-            if deltas:
-                from collections import Counter
-                common_delta, _ = Counter(deltas).most_common(1)[0]
-                if common_delta in (5, 15, 30, 60):
-                    if seconds == 0 or (seconds != common_delta and common_delta in (5, 15)):
-                        logger.info("Auto-detected candle interval %ds from CSV (form specified %ds)", common_delta, seconds)
-                        detected_seconds = common_delta
+            # 2. Dual Auto-Detect: TIMEFRAME (5s vs 15s)
+            detected_seconds = form_seconds if form_seconds > 0 else 15
+            if len(parsed_rows) >= 2:
+                deltas = []
+                for i in range(min(30, len(parsed_rows) - 1)):
+                    d = parsed_rows[i+1][0] - parsed_rows[i][0]
+                    if 0 < d <= 3600:
+                        deltas.append(d)
+                if deltas:
+                    from collections import Counter
+                    common_delta, _ = Counter(deltas).most_common(1)[0]
+                    if common_delta in (5, 15, 30, 60):
+                        if form_seconds == 0 or (form_seconds != common_delta and common_delta in (5, 15)):
+                            detected_seconds = common_delta
 
-        seconds = detected_seconds
-        rows_buf = [(symbol, seconds, r[0], r[1], r[2], r[3], r[4]) for r in parsed_rows]
+            rows_buf = [(detected_symbol, detected_seconds, r[0], r[1], r[2], r[3], r[4]) for r in parsed_rows]
 
-        # Bulk insert
-        db = get_db()
-        with _db_lock:
-            db.executemany(
-                "INSERT OR IGNORE INTO ohlcv_seconds (symbol, seconds, ts, open, high, low, close)"
-                " VALUES (?,?,?,?,?,?,?)",
-                rows_buf
-            )
-            db.commit()
+            with _db_lock:
+                db.executemany(
+                    "INSERT OR IGNORE INTO ohlcv_seconds (symbol, seconds, ts, open, high, low, close)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    rows_buf
+                )
+                db.commit()
 
-        logger.info("Uploaded %d TV %ds candles for %s", len(rows_buf), seconds, symbol)
-        return jsonify({"ok": True, "count": len(rows_buf), "symbol": symbol, "seconds": seconds})
-    except Exception as e:
-        logger.error("upload-seconds-csv: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+            processed_files += 1
+            total_bars_saved += len(rows_buf)
+            file_summaries.append({
+                "file": filename,
+                "status": "ok",
+                "symbol": detected_symbol,
+                "seconds": detected_seconds,
+                "bars": len(rows_buf)
+            })
+            logger.info("Uploaded %d TV %ds candles for %s from %s", len(rows_buf), detected_seconds, detected_symbol, filename)
+        except Exception as file_err:
+            logger.error("Error processing CSV %s: %s", filename, file_err)
+            file_summaries.append({"file": filename, "status": "error", "reason": str(file_err)})
+
+    if processed_files == 0:
+        return jsonify({"ok": False, "error": "No files could be parsed successfully", "details": file_summaries}), 400
+
+    return jsonify({
+        "ok": True,
+        "processed_files": processed_files,
+        "total_bars": total_bars_saved,
+        "details": file_summaries
+    })
 
 
 @app.route("/api/fix-misclassified-seconds", methods=["POST"])
@@ -4857,6 +4898,7 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
     <div class="form-group">
       <label>Index / Symbol</label>
       <select id="symbol" name="symbol">
+        <option value="AUTO" selected>Auto-Detect (Recommended)</option>
         <option value="NIFTY">NIFTY</option>
         <option value="SENSEX">SENSEX</option>
       </select>
@@ -4872,8 +4914,9 @@ button:disabled{{opacity:.5;cursor:not-allowed;}}
     </div>
 
     <div class="form-group">
-      <label>TradingView CSV File</label>
-      <input type="file" id="file" name="file" accept=".csv" required>
+      <label>TradingView CSV File(s)</label>
+      <input type="file" id="file" name="file" accept=".csv" multiple required>
+      <span style="font-size:10px; color:#8b949e; margin-top:4px; display:block;">Select single or multiple CSV files to batch upload</span>
     </div>
 
     <button type="submit" id="btn">Upload and Save</button>
@@ -4973,24 +5016,24 @@ async function handleSubmit(e) {{
       }}
       status.style.display = 'block';
       btn.disabled = false;
-      btn.textContent = 'Upload & parse';
+      btn.textContent = 'Upload and Save';
       return;
     }}
     var d = await r.json();
     if (d.ok) {{
       status.className = 'success';
-      status.textContent = '✓ Successfully loaded ' + d.count.toLocaleString('en-IN') + ' bars for ' + d.symbol + ' (' + d.seconds + 's)';
+      status.textContent = '✓ Successfully imported ' + (d.processed_files || 1) + ' CSV file(s) (' + (d.total_bars || d.count).toLocaleString('en-IN') + ' total bars)';
       status.style.display = 'block';
       form.reset();
       loadStats();
     }} else {{
       status.className = 'error';
-      status.textContent = 'Error: ' + (d.error || 'Upload failed');
+      status.textContent = 'Upload error: ' + (d.error || 'Failed to process files');
       status.style.display = 'block';
     }}
   }} catch(err) {{
     status.className = 'error';
-    status.textContent = 'Network error: ' + err.message;
+    status.textContent = 'Upload error: ' + err.message;
     status.style.display = 'block';
   }} finally {{
     btn.disabled = false;
