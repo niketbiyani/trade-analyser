@@ -6220,7 +6220,9 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <div class="chip on" data-v="SHORT" onclick="togD(this)">Short</div>
     <div class="chip on" data-v="LONG"  onclick="togD(this)">Long</div>
   </div>
-  <button class="hbtn on" id="btn1m"  onclick="set1m()"  title="Switch to 1-minute chart">1m</button>
+  <button class="hbtn on" id="btn1m"  onclick="setMins(1)"  title="Switch to 1-minute chart">1m</button>
+  <button class="hbtn"    id="btn3m"  onclick="setMins(3)"  title="Switch to 3-minute chart">3m</button>
+  <button class="hbtn"    id="btn5m"  onclick="setMins(5)"  title="Switch to 5-minute chart">5m</button>
   <button class="hbtn"    id="btn15s" onclick="setTick(15)" title="Switch to 15-second chart">15s</button>
   <button class="hbtn"    id="btn5s"  onclick="setTick(5)" title="Switch to 5-second chart">5s</button>
   <button class="hbtn"    id="btnToggleMarkers" onclick="toggleChartMarkers()" title="Show or hide trade markers on the chart">Hide Markers</button>
@@ -6436,7 +6438,7 @@ var _candleMap={{}}, _rsiMap={{}}, _macdMap={{}};
 var curDate='', curU='NIFTY';
 var typeOn=new Set(['CE','PE']);
 var dirOn=new Set(['SHORT','LONG']);
-var allTrades=[], candles=[], curInterval='1m';
+var allTrades=[], candles=[], curInterval='1m', _curMin=1, _raw1mCandles=[];
 var selId=null, isolateId=null;
 var _curTick=0; // 0 = normal 1m chart; 15 = 15s tick chart
 var _TICK_SIDS={{NIFTY:'13',SENSEX:'51'}};
@@ -6914,22 +6916,66 @@ window.addEventListener('DOMContentLoaded', function() {{
 }});
 
 function _setTickBtns(tickActive) {{
-  var b1=document.getElementById('btn1m'), b15=document.getElementById('btn15s'), b5=document.getElementById('btn5s');
-  if(b1)  b1.className ='hbtn'+(tickActive?'':' on');
-  if(b15) b15.className='hbtn'+(tickActive && _curTick===15?' on':'');
-  if(b5)  b5.className='hbtn'+(tickActive && _curTick===5?' on':'');
+  var b1  = document.getElementById('btn1m');
+  var b3  = document.getElementById('btn3m');
+  var b5  = document.getElementById('btn5m');
+  var b15 = document.getElementById('btn15s');
+  var b5s = document.getElementById('btn5s');
+  if(b1)  b1.className  = 'hbtn' + (!tickActive && _curMin === 1 ? ' on' : '');
+  if(b3)  b3.className  = 'hbtn' + (!tickActive && _curMin === 3 ? ' on' : '');
+  if(b5)  b5.className  = 'hbtn' + (!tickActive && _curMin === 5 ? ' on' : '');
+  if(b15) b15.className = 'hbtn' + (tickActive && _curTick === 15 ? ' on' : '');
+  if(b5s) b5s.className = 'hbtn' + (tickActive && _curTick === 5 ? ' on' : '');
 }}
 function _exitTickMode() {{
   if(!_curTick) return;
   _curTick=0;
   _setTickBtns(false);
-  // No loadChart() here — callers (shiftDay/setU/onDate) do that
 }}
 function set1m() {{
-  if(!_curTick) return;  // already in 1m mode
-  _curTick=0;
+  setMins(1);
+}}
+function setMins(m) {{
+  _curTick = 0;
+  _curMin = m;
   _setTickBtns(false);
-  loadChart();
+  
+  if (_raw1mCandles && _raw1mCandles.length) {{
+    var displayCandles = _aggregateCandles(_raw1mCandles, _curMin);
+    candles = displayCandles;
+    curInterval = _curMin + 'm';
+    document.getElementById('ivl').textContent = curInterval;
+    series.setData(candles);
+    updateIndicators();
+    putMarkers(_filtered());
+  }} else {{
+    loadChart();
+  }}
+}}
+function _aggregateCandles(list, minutes) {{
+  if (!list || !list.length) return [];
+  var bucketSecs = minutes * 60;
+  var buckets = {{}};
+  list.forEach(function(c) {{
+    var bTime = Math.floor(c.time / bucketSecs) * bucketSecs;
+    if (!buckets[bTime]) {{
+      buckets[bTime] = {{
+        time: bTime,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close
+      }};
+    }} else {{
+      var b = buckets[bTime];
+      b.high = Math.max(b.high, c.high);
+      b.low = Math.min(b.low, c.low);
+      b.close = c.close;
+    }}
+  }});
+  return Object.keys(buckets).map(Number).sort(function(a,b){{return a-b;}}).map(function(t) {{
+    return buckets[t];
+  }});
 }}
 function shiftDay(d) {{
   if(!curDate) return;
@@ -6999,6 +7045,7 @@ async function loadChart() {{
     return;
   }}
   // Auto-retry up to 3 attempts with 1.5s pause — Dhan API returns empty transiently
+  _raw1mCandles = [];
   var _maxTry=3, _attempt=0, _d=null;
   while(_attempt < _maxTry) {{
     _attempt++;
@@ -7018,11 +7065,19 @@ async function loadChart() {{
     if(_attempt < _maxTry) await new Promise(function(res){{setTimeout(res,1500);}});
   }}
   var d=_d||{{candles:[],error:'No response'}};
-  candles=d.candles||[]; curInterval=d.interval||'1m';
-  document.getElementById('ivl').textContent=d.interval||'--';
+  _raw1mCandles = d.candles||[];
+  
+  var displayCandles = _raw1mCandles;
+  if (_curMin > 1) {{
+    displayCandles = _aggregateCandles(_raw1mCandles, _curMin);
+  }}
+  candles = displayCandles;
+  curInterval = _curMin + 'm';
+  document.getElementById('ivl').textContent = curInterval;
   if(d.warmup_log) console.log('[warmup]', d.warmup_log);
+  
   var _emin=d.expected_min||50;
-  if (candles.length>=_emin) {{
+  if (candles.length >= Math.ceil(_emin / _curMin)) {{
     series.setData(candles);
     hideChartMsg();
     updateIndicators();
@@ -7031,7 +7086,7 @@ async function loadChart() {{
     try {{ _chartInst.timeScale().setVisibleRange(_r); }} catch(x) {{}}
     putMarkers(_filtered());
   }}
-  else if (candles.length>0) setChartMsg('Chart data incomplete ('+candles.length+'/'+_emin+' candles expected) — Dhan returned daily OHLCV instead of 1m', '');
+  else if (candles.length>0) setChartMsg('Chart data incomplete ('+candles.length+'/'+Math.ceil(_emin/_curMin)+' candles expected) — Dhan returned daily OHLCV instead of 1m', '');
   else setChartMsg('No chart data for '+curU+' '+curDate, d.error||'');
 }}
 
