@@ -6437,6 +6437,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <span id="autoImpStatus"></span>
+  <span id="snapStatus" style="font-size:10px; color:#b388ff; margin-left:4px; font-weight:600; white-space:nowrap; display:none;">📷 Capturing...</span>
   <a href="{root}/upload-seconds" class="hbtn" style="text-decoration:none">&#128229; TV Upload</a>
 </div>
 <div id="main">
