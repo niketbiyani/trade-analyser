@@ -52,7 +52,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             
             # Open TradingView chart URL directly
             if layout_id:
-                url = f"https://www.tradingview.com/chart/{layout_id}/?symbol={symbol}&interval={tv_interval}"
+                url = f"https://www.tradingview.com/chart/{layout_id}/?symbol={symbol}"
             else:
                 url = f"https://www.tradingview.com/chart/?symbol={symbol}&interval={tv_interval}"
             logger.info("Navigating to URL: %s", url)

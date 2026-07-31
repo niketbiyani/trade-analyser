@@ -3973,6 +3973,14 @@ def api_scan_missing_screenshots():
     return jsonify({"ok": True, "queued": queued_count, "found": len(rows)})
 
 
+@app.route("/api/screenshot-queue-status")
+def api_screenshot_queue_status():
+    return jsonify({
+        "active": _queue_worker_started,
+        "pending": _screenshot_queue.qsize()
+    })
+
+
 @app.route("/api/trade/<int:tid>/notes", methods=["PUT"])
 def api_notes(tid: int):
     notes = (request.json or {}).get("notes", "")
@@ -7209,7 +7217,7 @@ function togD(el) {{
   else {{ dirOn.add(v); el.classList.add('on'); }}
   var f=_filtered(); renderTrades(f); putMarkers(f);
 }}
-function loadAll() {{ loadChart(); loadTrades(); }}
+function loadAll() {{ loadChart(); loadTrades(); checkScreenshotQueue(); }}
 
 function setTick(seconds) {{
   _curTick=seconds || 15;
@@ -7572,12 +7580,58 @@ async function scanMissingScreenshots(){{
     var d = await res.json();
     if(d.ok) {{
       alert('Scanning started! Queued ' + d.queued + ' trades (out of ' + d.found + ' total trades) for background screenshot capture.');
+      checkScreenshotQueue();
     }} else {{
       alert('Error: ' + d.error);
     }}
   }} catch(e) {{
     console.error(e);
     alert('Failed to request scan: ' + e.message);
+  }}
+}}
+
+var _queuePollTimer = null;
+async function checkScreenshotQueue() {{
+  try {{
+    var res = await fetch(_root + '/api/screenshot-queue-status');
+    var d = await res.json();
+    var statusEl = document.getElementById('snapStatus');
+    if (!statusEl) return;
+    
+    if (d.active || d.pending > 0) {{
+      statusEl.style.display = 'inline-block';
+      statusEl.textContent = '📷 Capturing TV screenshots (' + d.pending + ' pending)...';
+      
+      // Auto-refresh trades list to display new VIEW buttons in real-time
+      try {{
+        var trRes = await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
+        allTrades = await trRes.json();
+        var f = _filtered();
+        renderTrades(f);
+        putMarkers(f);
+      }} catch(trErr) {{
+        console.error('Failed to reload trades during capture polling:', trErr);
+      }}
+      
+      if (_queuePollTimer) clearTimeout(_queuePollTimer);
+      _queuePollTimer = setTimeout(checkScreenshotQueue, 5000);
+    }} else {{
+      statusEl.style.display = 'none';
+      if (_queuePollTimer) {{
+        clearTimeout(_queuePollTimer);
+        _queuePollTimer = null;
+        // Final refresh when done
+        try {{
+          var trRes = await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
+          allTrades = await trRes.json();
+          var f = _filtered();
+          renderTrades(f);
+          putMarkers(f);
+        }} catch(trErr) {{}}
+      }}
+    }}
+  }} catch(e) {{
+    console.error('Queue poll error:', e);
   }}
 }}
 async function saveNote(id,notes){{
@@ -7655,7 +7709,7 @@ async function doImport(){{
         diag.textContent=JSON.stringify(d.diag,null,2);
         diag.style.display='block';
       }}
-      if(d.imported>0)loadTrades();
+      if(d.imported>0) {{ loadTrades(); checkScreenshotQueue(); }}
     }}else{{res.style.color='#ef5350';res.textContent='Error: '+d.error;}}
   }}catch(e){{res.style.color='#ef5350';res.textContent='Network error: '+e.message;}}
   btn.disabled=false; btn.textContent='Import';
@@ -7689,7 +7743,7 @@ async function doImportCsv(){{
       if((d.total_raw===0||d.total_options===0)&&d.diag){{
         diag.textContent=JSON.stringify(d.diag,null,2); diag.style.display='block';
       }}
-      if(d.imported>0)loadTrades();
+      if(d.imported>0) {{ loadTrades(); checkScreenshotQueue(); }}
     }}else{{res.style.color='#ef5350';res.textContent='Error: '+d.error;}}
   }}catch(e){{res.style.color='#ef5350';res.textContent='Error: '+e.message;}}
   btn.disabled=false; btn.textContent='Upload & Import';
