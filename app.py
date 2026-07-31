@@ -6232,6 +6232,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <span id="autoImpStatus"></span>
+  <span id="snapStatus" style="font-size:10px; color:#a78bfa; margin-left:4px; font-weight:600; white-space:nowrap; display:none;">📷 Capturing...</span>
   <a href="{root}/upload-seconds" class="hbtn" style="text-decoration:none">&#128229; TV Upload</a>
 </div>
 <div id="main">
@@ -7193,6 +7194,7 @@ function renderTrades(trades) {{
       '</tr>';
   }});
   document.getElementById('tbody').innerHTML=rows.join('');
+  triggerAutoCapture();
 }}
 
 function tsFor(ds,ts){{
@@ -7737,7 +7739,230 @@ function toggleChartMarkers() {{
   }}
   putMarkers(_filtered());
 }}
+
+// ── Automated Trade Chart Auto-Capture ──
+var _snapQueue = [];
+var _snapProcessing = false;
+var _snapSkippedIds = new Set();
+
+function triggerAutoCapture() {{
+  if (_snapProcessing) return;
+  var tradesToCapture = allTrades.filter(function(t) {{
+    return t.status !== 'OPEN' && t.exit_time && !t.image_path && !_snapSkippedIds.has(t.id);
+  }});
+  if (tradesToCapture.length === 0) {{
+    var statusEl = document.getElementById('snapStatus');
+    if (statusEl) statusEl.style.display = 'none';
+    return;
+  }}
+  _snapQueue = tradesToCapture;
+  _processNextSnap();
+}}
+
+async function _processNextSnap() {{
+  if (_snapProcessing) return;
+  if (_snapQueue.length === 0) {{
+    var statusEl = document.getElementById('snapStatus');
+    if (statusEl) statusEl.style.display = 'none';
+    return;
+  }}
+  _snapProcessing = true;
+  var t = _snapQueue.shift();
+  
+  var statusEl = document.getElementById('snapStatus');
+  if (statusEl) {{
+    var shStr = t.strike ? (t.strike/100).toString() : '';
+    statusEl.style.display = 'inline-block';
+    statusEl.textContent = '📷 Capturing (' + t.underlying + ' ' + t.option_type + shStr + ')...';
+  }}
+  
+  try {{
+    await _captureTradeChart(t);
+  }} catch(e) {{
+    console.error('Auto-capture error for trade ' + t.id + ':', e);
+    _snapSkippedIds.add(t.id);
+  }} finally {{
+    _snapProcessing = false;
+    setTimeout(triggerAutoCapture, 1000);
+  }}
+}}
+
+async function _captureTradeChart(t) {{
+  return new Promise(async function(resolve, reject) {{
+    var container = document.getElementById('hiddenChartContainer');
+    if (!container) {{
+      return reject(new Error('hiddenChartContainer not found'));
+    }}
+    container.innerHTML = '';
+    
+    var chartEl = document.createElement('div');
+    chartEl.style.width = '1000px';
+    chartEl.style.height = '600px';
+    container.appendChild(chartEl);
+    
+    var chartOpts = {{
+      width: 1000,
+      height: 600,
+      layout: {{ background: {{ color: '#131722' }}, textColor: '#d1d4dc' }},
+      grid: {{ vertLines: {{ color: '#242835' }}, horzLines: {{ color: '#242835' }} }},
+      crosshair: {{ mode: 0 }},
+      rightPriceScale: {{ borderColor: '#2a2e39', minimumWidth: 80 }},
+      timeScale: {{ borderColor: '#2a2e39', timeVisible: true, secondsVisible: true }},
+    }};
+    
+    var hChart = LightweightCharts.createChart(chartEl, chartOpts);
+    var hSeries = hChart.addCandlestickSeries({{
+      upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+      wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+    }});
+    
+    var sid = _TICK_SIDS[t.underlying];
+    var fetchUrl = _root + '/api/tick-candles?security_id=' + sid + '&seconds=15&date=' + t.date;
+    var candlesData = [];
+    
+    try {{
+      var r = await fetch(fetchUrl);
+      var d = await r.json();
+      if (d && d.candles && d.candles.length > 0) {{
+        candlesData = d.candles;
+      }}
+    }} catch(err) {{
+      console.warn('Failed to load 15s ticks for auto-capture, trying 1m fallback:', err);
+    }}
+    
+    if (candlesData.length === 0) {{
+      try {{
+        var r = await fetch(_root + '/api/chart?underlying=' + t.underlying + '&date=' + t.date);
+        var d = await r.json();
+        if (d && d.candles && d.candles.length > 0) {{
+          candlesData = d.candles;
+        }}
+      }} catch(err) {{
+        hChart.remove();
+        return reject(new Error('Failed to load candles for date ' + t.date));
+      }}
+    }}
+    
+    if (candlesData.length === 0) {{
+      hChart.remove();
+      return reject(new Error('No chart data found for ' + t.underlying + ' ' + t.date));
+    }}
+    
+    hSeries.setData(candlesData);
+    
+    var ets = tsFor(t.date, t.entry_time);
+    var xts = t.exit_time ? tsFor(t.date, t.exit_time) : null;
+    
+    function snapHiddenTs(ts) {{
+      if (!ts || !candlesData.length) return ts;
+      var best = candlesData[0].time, diff = Math.abs(candlesData[0].time - ts);
+      for (var i = 0; i < candlesData.length; i++) {{
+        var d = Math.abs(candlesData[i].time - ts);
+        if (d < diff) {{ diff = d; best = candlesData[i].time; }}
+        if (candlesData[i].time > ts + 7200) break;
+      }}
+      return best;
+    }}
+    
+    var markers = [];
+    if (ets) {{
+      var tTime = snapHiddenTs(ets);
+      var shStr = t.strike ? (t.strike/100).toString() : '';
+      var text = t.option_type + shStr;
+      var col = t.option_type === 'CE' ? '#4fc3f7' : '#ffb74d';
+      markers.push({{
+        time: tTime,
+        position: 'aboveBar',
+        color: col,
+        shape: 'arrowDown',
+        text: text,
+        id: 'e_' + tTime
+      }});
+    }}
+    if (xts) {{
+      var tTime = snapHiddenTs(xts);
+      var col = t.pnl != null ? (t.pnl >= 0 ? '#4caf50' : '#ef5350') : '#ef5350';
+      var text = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl) : t.exit_price.toFixed(0);
+      markers.push({{
+        time: tTime,
+        position: 'belowBar',
+        color: col,
+        shape: 'arrowUp',
+        text: text,
+        id: 'x_' + tTime
+      }});
+    }}
+    
+    markers.sort(function(a,b){{return a.time-b.time;}});
+    
+    var hMarkersPlugin = LightweightCharts.createSeriesMarkers(hSeries, markers);
+    
+    if (ets && xts) {{
+      var rangePadding = (xts - ets) * 0.4;
+      if (rangePadding < 300) rangePadding = 300;
+      var rangeFrom = ets - rangePadding;
+      var rangeTo = xts + rangePadding;
+      try {{
+        hChart.timeScale().setVisibleRange({{ from: rangeFrom, to: rangeTo }});
+      }} catch(x) {{}}
+    }} else if (ets) {{
+      var rangeFrom = ets - 600;
+      var rangeTo = ets + 600;
+      try {{
+        hChart.timeScale().setVisibleRange({{ from: rangeFrom, to: rangeTo }});
+      }} catch(x) {{}}
+    }}
+    
+    setTimeout(function() {{
+      try {{
+        var canvas = hChart.takeScreenshot();
+        if (!canvas) {{
+          hChart.remove();
+          return reject(new Error('Failed to take screenshot canvas'));
+        }}
+        
+        canvas.toBlob(function(blob) {{
+          if (!blob) {{
+            hChart.remove();
+            return reject(new Error('Failed to create blob'));
+          }}
+          
+          var formData = new FormData();
+          formData.append('image', blob, 'trade_' + t.id + '.jpg');
+          
+          fetch(_root + '/api/trade/' + t.id + '/image', {{
+            method: 'POST',
+            body: formData
+          }})
+          .then(function(res) {{ return res.json(); }})
+          .then(function(d) {{
+            hChart.remove();
+            if (d.ok) {{
+              var tr = allTrades.find(function(item) {{ return item.id === t.id; }});
+              if (tr) {{
+                tr.image_path = d.images ? d.images.join(',') : d.filename;
+              }}
+              var f = _filtered();
+              renderTrades(f);
+              resolve();
+            }} else {{
+              reject(new Error(d.error || 'Upload failed'));
+            }}
+          }})
+          .catch(function(err) {{
+            hChart.remove();
+            reject(err);
+          }});
+        }}, 'image/jpeg', 0.7);
+      }} catch(screenshotErr) {{
+        hChart.remove();
+        reject(screenshotErr);
+      }}
+    }}, 800);
+  }});
+}}
 </script>
+<div id="hiddenChartContainer" style="position: absolute; left: -9999px; width: 1000px; height: 600px; visibility: hidden;"></div>
 </body>
 </html>"""
 
