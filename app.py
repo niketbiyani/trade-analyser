@@ -3655,8 +3655,10 @@ def trigger_tv_screenshot(tid: int) -> None:
             (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
         ).fetchone()
         if note and note["image_path"]:
-            logger.info("TV Auto-capture: Trade %d already has screenshots. Skipping trigger.", tid)
-            return
+            images = [img.strip() for img in note["image_path"].split(",") if img.strip()]
+            if any(img.startswith("tv_") for img in images):
+                logger.info("TV Auto-capture: Trade %d already has an automated screenshot. Skipping trigger.", tid)
+                return
 
     _screenshot_queue.put(tid)
     global _queue_worker_started
@@ -3958,7 +3960,12 @@ def api_scan_missing_screenshots():
     
     queued_count = 0
     for r in rows:
-        if not r["image_path"]:
+        has_auto = False
+        if r["image_path"]:
+            images = [img.strip() for img in r["image_path"].split(",") if img.strip()]
+            has_auto = any(img.startswith("tv_") for img in images)
+            
+        if not has_auto:
             trigger_tv_screenshot(r["id"])
             queued_count += 1
             
