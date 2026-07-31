@@ -3588,7 +3588,7 @@ def _run_tv_screenshot_sync(tid: int) -> None:
         output_path = os.path.join(UPLOAD_FOLDER, filename)
         
         from capture_tv import capture_screenshot
-        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_SESSIONID_SIGN, TRADINGVIEW_LAYOUT_ID)
+        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_SESSIONID_SIGN, TRADINGVIEW_LAYOUT_ID, t["date"], t["entry_time"])
         
         if success:
             with _db_lock:
