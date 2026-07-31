@@ -26,7 +26,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             # Create a context with desktop HD resolution
             context = browser.new_context(viewport={"width": 1200, "height": 700})
             
