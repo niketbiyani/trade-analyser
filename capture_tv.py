@@ -56,7 +56,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             else:
                 url = f"https://www.tradingview.com/chart/?symbol={symbol}&interval={tv_interval}"
             logger.info("Navigating to URL: %s", url)
-            page.goto(url)
+            page.goto(url, wait_until="domcontentloaded")
             
             # Wait for data loading (6s is safe for fetching index/options data)
             page.wait_for_timeout(6000)
