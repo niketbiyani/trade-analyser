@@ -1449,6 +1449,8 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                         vals.append(existing["id"])
                         db.execute(f"UPDATE trades SET {','.join(updates)} WHERE id=?", vals)
                         db.commit()
+                        if existing["status"] == "OPEN" and status == "CLOSED":
+                            trigger_tv_screenshot(existing["id"])
                         imported += 1
                     else:
                         skipped += 1
@@ -1471,6 +1473,8 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                     ),
                 )
                 db.commit()
+                if status == "CLOSED":
+                    trigger_tv_screenshot(cur.lastrowid)
                 # Restore any note saved before this date was last wiped
                 if entry_time:
                     note_row = db.execute(
@@ -3504,6 +3508,118 @@ loadOptionDates();
 app = Flask(__name__)
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# ── TradingView Screenshot Automation ─────────────────────────────────────────
+
+TRADINGVIEW_SESSIONID = os.getenv("TRADINGVIEW_SESSIONID")
+
+def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_str: str) -> str:
+    """Translate trade options metadata into the exact standard TradingView NSE/BSE weekly or monthly symbol format."""
+    try:
+        dt = datetime.strptime(expiry_date_str, "%Y-%m-%d")
+    except Exception:
+        # Fallback if expiry date format is not standard
+        try:
+            dt = datetime.strptime(expiry_date_str.split(" ")[0], "%Y-%m-%d")
+        except Exception:
+            dt = datetime.today()
+            
+    year_yy = dt.strftime("%y") # e.g. "26"
+    
+    # Check if monthly expiry (last Thursday/weekday of the month)
+    # Check if there are any more occurrences of the same weekday in this month
+    next_week = dt + timedelta(days=7)
+    is_monthly = next_week.month != dt.month
+    
+    exchange = "NSE"
+    u_upper = underlying.upper()
+    if u_upper == "SENSEX":
+        exchange = "BSE"
+        
+    opt_char_weekly = "C" if option_type.upper() in ("CE", "CALL") else "P"
+    opt_char_monthly = "CE" if option_type.upper() in ("CE", "CALL") else "PE"
+    
+    strike_int = int(strike)
+    
+    if is_monthly:
+        # Monthly symbol: e.g. NSE:NIFTY26JUL24300CE
+        month_name = dt.strftime("%b").upper() # "JUL"
+        return f"{exchange}:{u_upper}{year_yy}{month_name}{strike_int}{opt_char_monthly}"
+    else:
+        # Weekly symbol: e.g. NSE:NIFTY26730C24300
+        month_codes = {
+            1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6",
+            7: "7", 8: "8", 9: "9", 10: "O", 11: "N", 12: "D"
+        }
+        month_char = month_codes[dt.month]
+        day_dd = dt.strftime("%d") # e.g. "30"
+        return f"{exchange}:{u_upper}{year_yy}{month_char}{day_dd}{opt_char_weekly}{strike_int}"
+
+
+def trigger_tv_screenshot(tid: int) -> None:
+    """Asynchronously capture a TradingView chart screenshot for the trade and save/upload it."""
+    def worker():
+        try:
+            db = get_db()
+            t = db.execute(
+                "SELECT id, date, underlying, option_type, strike, expiry, timeframe FROM trades WHERE id=?",
+                (tid,)
+            ).fetchone()
+            if not t:
+                logger.error("TV Auto-capture: Trade %d not found", tid)
+                return
+                
+            symbol = get_tv_symbol(t["underlying"], t["strike"], t["option_type"], t["expiry"])
+            # Get trade's timeframe (default '15s')
+            timeframe = t["timeframe"] or "15s"
+            
+            # Generate a unique filename for the screenshot
+            import uuid
+            filename = f"tv_{tid}_{uuid.uuid4().hex[:8]}.jpg"
+            output_path = os.path.join(UPLOAD_FOLDER, filename)
+            
+            from capture_tv import capture_screenshot
+            success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID)
+            
+            if success:
+                # Update database
+                with _db_lock:
+                    note = db.execute(
+                        "SELECT image_path FROM trade_notes WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                        (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+                    ).fetchone()
+                    
+                    if note and note["image_path"]:
+                        current_images = [img.strip() for img in note["image_path"].split(",") if img.strip()]
+                    else:
+                        current_images = []
+                        
+                    if filename not in current_images:
+                        current_images.append(filename)
+                        
+                    new_image_path = ",".join(current_images)
+                    
+                    db.execute(
+                        "INSERT OR IGNORE INTO trade_notes"
+                        " (date, underlying, option_type, strike, entry_time, notes, updated_at, image_path)"
+                        " VALUES (?,?,?,?,?,'',?,?)",
+                        (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"],
+                         datetime.now().timestamp(), new_image_path)
+                    )
+                    db.execute(
+                        "UPDATE trade_notes SET image_path=?, updated_at=?"
+                        " WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                        (new_image_path, datetime.now().timestamp(), t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+                    )
+                    db.commit()
+                    _rebuild_cache(db)
+                logger.info("TV Auto-capture: Successfully attached screenshot to trade %d: %s", tid, filename)
+            else:
+                logger.error("TV Auto-capture: Failed to capture screenshot for trade %d", tid)
+        except Exception as err:
+            logger.error("TV Auto-capture: Worker error for trade %d: %s", tid, err)
+            
+    threading.Thread(target=worker, daemon=True, name=f"tv-capturer-{tid}").start()
 app.config['APPLICATION_ROOT']   = APP_ROOT
 app.config['MAX_CONTENT_LENGTH'] = 1_500 * 1024 * 1024  # 1.5 GB — allows 700 MB ZIP uploads
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -3773,6 +3889,7 @@ def api_close_trade(tid: int):
         )
         db.commit()
     _rebuild_cache()
+    trigger_tv_screenshot(tid)
     return jsonify({"ok": True, "pnl": pnl})
 
 
@@ -6232,7 +6349,6 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
   <button class="hbtn" onclick="doRefreshToken()">&#8635; Token</button>
   <button id="impBtn" onclick="openImp()">&#8595; Import from Dhan</button>
   <span id="autoImpStatus"></span>
-  <span id="snapStatus" style="font-size:10px; color:#a78bfa; margin-left:4px; font-weight:600; white-space:nowrap; display:none;">📷 Capturing...</span>
   <a href="{root}/upload-seconds" class="hbtn" style="text-decoration:none">&#128229; TV Upload</a>
 </div>
 <div id="main">
@@ -7194,7 +7310,6 @@ function renderTrades(trades) {{
       '</tr>';
   }});
   document.getElementById('tbody').innerHTML=rows.join('');
-  triggerAutoCapture();
 }}
 
 function tsFor(ds,ts){{
@@ -7739,230 +7854,7 @@ function toggleChartMarkers() {{
   }}
   putMarkers(_filtered());
 }}
-
-// ── Automated Trade Chart Auto-Capture ──
-var _snapQueue = [];
-var _snapProcessing = false;
-var _snapSkippedIds = new Set();
-
-function triggerAutoCapture() {{
-  if (_snapProcessing) return;
-  var tradesToCapture = allTrades.filter(function(t) {{
-    return t.status !== 'OPEN' && t.exit_time && !t.image_path && !_snapSkippedIds.has(t.id);
-  }});
-  if (tradesToCapture.length === 0) {{
-    var statusEl = document.getElementById('snapStatus');
-    if (statusEl) statusEl.style.display = 'none';
-    return;
-  }}
-  _snapQueue = tradesToCapture;
-  _processNextSnap();
-}}
-
-async function _processNextSnap() {{
-  if (_snapProcessing) return;
-  if (_snapQueue.length === 0) {{
-    var statusEl = document.getElementById('snapStatus');
-    if (statusEl) statusEl.style.display = 'none';
-    return;
-  }}
-  _snapProcessing = true;
-  var t = _snapQueue.shift();
-  
-  var statusEl = document.getElementById('snapStatus');
-  if (statusEl) {{
-    var shStr = t.strike ? (t.strike/100).toString() : '';
-    statusEl.style.display = 'inline-block';
-    statusEl.textContent = '📷 Capturing (' + t.underlying + ' ' + t.option_type + shStr + ')...';
-  }}
-  
-  try {{
-    await _captureTradeChart(t);
-  }} catch(e) {{
-    console.error('Auto-capture error for trade ' + t.id + ':', e);
-    _snapSkippedIds.add(t.id);
-  }} finally {{
-    _snapProcessing = false;
-    setTimeout(triggerAutoCapture, 1000);
-  }}
-}}
-
-async function _captureTradeChart(t) {{
-  return new Promise(async function(resolve, reject) {{
-    var container = document.getElementById('hiddenChartContainer');
-    if (!container) {{
-      return reject(new Error('hiddenChartContainer not found'));
-    }}
-    container.innerHTML = '';
-    
-    var chartEl = document.createElement('div');
-    chartEl.style.width = '1000px';
-    chartEl.style.height = '600px';
-    container.appendChild(chartEl);
-    
-    var chartOpts = {{
-      width: 1000,
-      height: 600,
-      layout: {{ background: {{ color: '#131722' }}, textColor: '#d1d4dc' }},
-      grid: {{ vertLines: {{ color: '#242835' }}, horzLines: {{ color: '#242835' }} }},
-      crosshair: {{ mode: 0 }},
-      rightPriceScale: {{ borderColor: '#2a2e39', minimumWidth: 80 }},
-      timeScale: {{ borderColor: '#2a2e39', timeVisible: true, secondsVisible: true }},
-    }};
-    
-    var hChart = LightweightCharts.createChart(chartEl, chartOpts);
-    var hSeries = hChart.addCandlestickSeries({{
-      upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
-      wickUpColor: '#26a69a', wickDownColor: '#ef5350'
-    }});
-    
-    var sid = _TICK_SIDS[t.underlying];
-    var fetchUrl = _root + '/api/tick-candles?security_id=' + sid + '&seconds=15&date=' + t.date;
-    var candlesData = [];
-    
-    try {{
-      var r = await fetch(fetchUrl);
-      var d = await r.json();
-      if (d && d.candles && d.candles.length > 0) {{
-        candlesData = d.candles;
-      }}
-    }} catch(err) {{
-      console.warn('Failed to load 15s ticks for auto-capture, trying 1m fallback:', err);
-    }}
-    
-    if (candlesData.length === 0) {{
-      try {{
-        var r = await fetch(_root + '/api/chart?underlying=' + t.underlying + '&date=' + t.date);
-        var d = await r.json();
-        if (d && d.candles && d.candles.length > 0) {{
-          candlesData = d.candles;
-        }}
-      }} catch(err) {{
-        hChart.remove();
-        return reject(new Error('Failed to load candles for date ' + t.date));
-      }}
-    }}
-    
-    if (candlesData.length === 0) {{
-      hChart.remove();
-      return reject(new Error('No chart data found for ' + t.underlying + ' ' + t.date));
-    }}
-    
-    hSeries.setData(candlesData);
-    
-    var ets = tsFor(t.date, t.entry_time);
-    var xts = t.exit_time ? tsFor(t.date, t.exit_time) : null;
-    
-    function snapHiddenTs(ts) {{
-      if (!ts || !candlesData.length) return ts;
-      var best = candlesData[0].time, diff = Math.abs(candlesData[0].time - ts);
-      for (var i = 0; i < candlesData.length; i++) {{
-        var d = Math.abs(candlesData[i].time - ts);
-        if (d < diff) {{ diff = d; best = candlesData[i].time; }}
-        if (candlesData[i].time > ts + 7200) break;
-      }}
-      return best;
-    }}
-    
-    var markers = [];
-    if (ets) {{
-      var tTime = snapHiddenTs(ets);
-      var shStr = t.strike ? (t.strike/100).toString() : '';
-      var text = t.option_type + shStr;
-      var col = t.option_type === 'CE' ? '#4fc3f7' : '#ffb74d';
-      markers.push({{
-        time: tTime,
-        position: 'aboveBar',
-        color: col,
-        shape: 'arrowDown',
-        text: text,
-        id: 'e_' + tTime
-      }});
-    }}
-    if (xts) {{
-      var tTime = snapHiddenTs(xts);
-      var col = t.pnl != null ? (t.pnl >= 0 ? '#4caf50' : '#ef5350') : '#ef5350';
-      var text = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl) : t.exit_price.toFixed(0);
-      markers.push({{
-        time: tTime,
-        position: 'belowBar',
-        color: col,
-        shape: 'arrowUp',
-        text: text,
-        id: 'x_' + tTime
-      }});
-    }}
-    
-    markers.sort(function(a,b){{return a.time-b.time;}});
-    
-    var hMarkersPlugin = LightweightCharts.createSeriesMarkers(hSeries, markers);
-    
-    if (ets && xts) {{
-      var rangePadding = (xts - ets) * 0.4;
-      if (rangePadding < 300) rangePadding = 300;
-      var rangeFrom = ets - rangePadding;
-      var rangeTo = xts + rangePadding;
-      try {{
-        hChart.timeScale().setVisibleRange({{ from: rangeFrom, to: rangeTo }});
-      }} catch(x) {{}}
-    }} else if (ets) {{
-      var rangeFrom = ets - 600;
-      var rangeTo = ets + 600;
-      try {{
-        hChart.timeScale().setVisibleRange({{ from: rangeFrom, to: rangeTo }});
-      }} catch(x) {{}}
-    }}
-    
-    setTimeout(function() {{
-      try {{
-        var canvas = hChart.takeScreenshot();
-        if (!canvas) {{
-          hChart.remove();
-          return reject(new Error('Failed to take screenshot canvas'));
-        }}
-        
-        canvas.toBlob(function(blob) {{
-          if (!blob) {{
-            hChart.remove();
-            return reject(new Error('Failed to create blob'));
-          }}
-          
-          var formData = new FormData();
-          formData.append('image', blob, 'trade_' + t.id + '.jpg');
-          
-          fetch(_root + '/api/trade/' + t.id + '/image', {{
-            method: 'POST',
-            body: formData
-          }})
-          .then(function(res) {{ return res.json(); }})
-          .then(function(d) {{
-            hChart.remove();
-            if (d.ok) {{
-              var tr = allTrades.find(function(item) {{ return item.id === t.id; }});
-              if (tr) {{
-                tr.image_path = d.images ? d.images.join(',') : d.filename;
-              }}
-              var f = _filtered();
-              renderTrades(f);
-              resolve();
-            }} else {{
-              reject(new Error(d.error || 'Upload failed'));
-            }}
-          }})
-          .catch(function(err) {{
-            hChart.remove();
-            reject(err);
-          }});
-        }}, 'image/jpeg', 0.7);
-      }} catch(screenshotErr) {{
-        hChart.remove();
-        reject(screenshotErr);
-      }}
-    }}, 800);
-  }});
-}}
 </script>
-<div id="hiddenChartContainer" style="position: absolute; left: -9999px; width: 1000px; height: 600px; visibility: hidden;"></div>
 </body>
 </html>"""
 
