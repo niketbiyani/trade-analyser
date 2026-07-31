@@ -4,7 +4,7 @@ import time
 
 logger = logging.getLogger("trade-analyser.capture_tv")
 
-def capture_screenshot(symbol: str, interval: str, output_path: str, session_id: str = None) -> bool:
+def capture_screenshot(symbol: str, interval: str, output_path: str, session_id: str = None, layout_id: str = None) -> bool:
     """Launch headless Playwright browser to load and capture a clean TradingView chart."""
     try:
         from playwright.sync_api import sync_playwright
@@ -43,7 +43,10 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page = context.new_page()
             
             # Open TradingView chart URL directly
-            url = f"https://www.tradingview.com/chart/?symbol={symbol}&interval={tv_interval}"
+            if layout_id:
+                url = f"https://www.tradingview.com/chart/{layout_id}/?symbol={symbol}&interval={tv_interval}"
+            else:
+                url = f"https://www.tradingview.com/chart/?symbol={symbol}&interval={tv_interval}"
             logger.info("Navigating to URL: %s", url)
             page.goto(url)
             

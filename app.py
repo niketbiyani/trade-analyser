@@ -3512,6 +3512,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # ── TradingView Screenshot Automation ─────────────────────────────────────────
 
 TRADINGVIEW_SESSIONID = os.getenv("TRADINGVIEW_SESSIONID")
+TRADINGVIEW_LAYOUT_ID = os.getenv("TRADINGVIEW_LAYOUT_ID")
 
 def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_str: str) -> str:
     """Translate trade options metadata into the exact standard TradingView NSE/BSE weekly or monthly symbol format."""
@@ -3579,7 +3580,7 @@ def trigger_tv_screenshot(tid: int) -> None:
             output_path = os.path.join(UPLOAD_FOLDER, filename)
             
             from capture_tv import capture_screenshot
-            success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID)
+            success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_LAYOUT_ID)
             
             if success:
                 # Update database
