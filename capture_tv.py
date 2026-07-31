@@ -89,6 +89,13 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page.add_style_tag(content=clean_css)
             page.wait_for_timeout(1000)
             
+            # Dismiss cookie consent dialog if it appears
+            try:
+                page.locator("button:has-text('Accept all')").click(timeout=2000)
+                logger.info("Dismissed cookie consent banner")
+            except Exception:
+                pass
+            
             # Target active chart containers
             widgets = page.locator(".chart-widget, [class*='chart-widget'], .chart-container").all()
             
@@ -149,10 +156,10 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     
                     # Type the time (HH:MM)
                     page.keyboard.type(entry_time[:5])
-                    page.wait_for_timeout(300)
+                    page.wait_for_timeout(500)
                     
-                    # Press Enter to jump to the date
-                    page.keyboard.press("Enter")
+                    # Click the "Go to" submit button in the modal
+                    page.locator("button:has-text('Go to'), [class*='dialog'] button:has-text('Go to')").last.click()
                     page.wait_for_timeout(3000) # wait for scrolling to settle
                 except Exception as scroll_err:
                     logger.error("Error navigating to trade date/time: %s", scroll_err)
