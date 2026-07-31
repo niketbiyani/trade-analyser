@@ -4,7 +4,7 @@ import time
 
 logger = logging.getLogger("trade-analyser.capture_tv")
 
-def capture_screenshot(symbol: str, interval: str, output_path: str, session_id: str = None, layout_id: str = None) -> bool:
+def capture_screenshot(symbol: str, interval: str, output_path: str, session_id: str = None, session_id_sign: str = None, layout_id: str = None) -> bool:
     """Launch headless Playwright browser to load and capture a clean TradingView chart."""
     try:
         from playwright.sync_api import sync_playwright
@@ -30,12 +30,20 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             # Create a context with desktop HD resolution
             context = browser.new_context(viewport={"width": 1200, "height": 700})
             
-            # Inject TradingView login session cookie if provided
+            # Inject TradingView login session cookies if provided
             if session_id:
                 logger.info("Injecting TradingView sessionid cookie")
                 context.add_cookies([{
                     "name": "sessionid",
                     "value": session_id,
+                    "domain": ".tradingview.com",
+                    "path": "/"
+                }])
+            if session_id_sign:
+                logger.info("Injecting TradingView sessionid_sign cookie")
+                context.add_cookies([{
+                    "name": "sessionid_sign",
+                    "value": session_id_sign,
                     "domain": ".tradingview.com",
                     "path": "/"
                 }])

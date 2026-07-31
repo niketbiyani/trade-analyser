@@ -3512,6 +3512,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # ── TradingView Screenshot Automation ─────────────────────────────────────────
 
 TRADINGVIEW_SESSIONID = os.getenv("TRADINGVIEW_SESSIONID")
+TRADINGVIEW_SESSIONID_SIGN = os.getenv("TRADINGVIEW_SESSIONID_SIGN")
 TRADINGVIEW_LAYOUT_ID = os.getenv("TRADINGVIEW_LAYOUT_ID")
 
 def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_str: str) -> str:
@@ -3583,7 +3584,7 @@ def _run_tv_screenshot_sync(tid: int) -> None:
         output_path = os.path.join(UPLOAD_FOLDER, filename)
         
         from capture_tv import capture_screenshot
-        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_LAYOUT_ID)
+        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_SESSIONID_SIGN, TRADINGVIEW_LAYOUT_ID)
         
         if success:
             with _db_lock:
