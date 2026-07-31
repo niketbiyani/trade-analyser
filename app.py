@@ -3557,70 +3557,113 @@ def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_
         return f"{exchange}:{u_upper}{year_yy}{month_char}{day_dd}{opt_char_weekly}{strike_int}"
 
 
-def trigger_tv_screenshot(tid: int) -> None:
-    """Asynchronously capture a TradingView chart screenshot for the trade and save/upload it."""
-    def worker():
-        try:
-            db = get_db()
-            t = db.execute(
-                "SELECT id, date, underlying, option_type, strike, expiry, timeframe FROM trades WHERE id=?",
-                (tid,)
-            ).fetchone()
-            if not t:
-                logger.error("TV Auto-capture: Trade %d not found", tid)
-                return
+import queue
+
+_screenshot_queue = queue.Queue()
+_queue_worker_started = False
+_queue_lock = threading.Lock()
+
+def _run_tv_screenshot_sync(tid: int) -> None:
+    """Synchronously capture a TradingView chart screenshot for the trade and save/upload it."""
+    try:
+        db = get_db()
+        t = db.execute(
+            "SELECT id, date, underlying, option_type, strike, expiry, timeframe FROM trades WHERE id=?",
+            (tid,)
+        ).fetchone()
+        if not t:
+            logger.error("TV Auto-capture: Trade %d not found", tid)
+            return
+            
+        symbol = get_tv_symbol(t["underlying"], t["strike"], t["option_type"], t["expiry"])
+        timeframe = t["timeframe"] or "15s"
+        
+        import uuid
+        filename = f"tv_{tid}_{uuid.uuid4().hex[:8]}.jpg"
+        output_path = os.path.join(UPLOAD_FOLDER, filename)
+        
+        from capture_tv import capture_screenshot
+        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_LAYOUT_ID)
+        
+        if success:
+            with _db_lock:
+                note = db.execute(
+                    "SELECT image_path FROM trade_notes WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                    (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+                ).fetchone()
                 
-            symbol = get_tv_symbol(t["underlying"], t["strike"], t["option_type"], t["expiry"])
-            # Get trade's timeframe (default '15s')
-            timeframe = t["timeframe"] or "15s"
-            
-            # Generate a unique filename for the screenshot
-            import uuid
-            filename = f"tv_{tid}_{uuid.uuid4().hex[:8]}.jpg"
-            output_path = os.path.join(UPLOAD_FOLDER, filename)
-            
-            from capture_tv import capture_screenshot
-            success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_LAYOUT_ID)
-            
-            if success:
-                # Update database
-                with _db_lock:
-                    note = db.execute(
-                        "SELECT image_path FROM trade_notes WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
-                        (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
-                    ).fetchone()
+                if note and note["image_path"]:
+                    current_images = [img.strip() for img in note["image_path"].split(",") if img.strip()]
+                else:
+                    current_images = []
                     
-                    if note and note["image_path"]:
-                        current_images = [img.strip() for img in note["image_path"].split(",") if img.strip()]
-                    else:
-                        current_images = []
-                        
-                    if filename not in current_images:
-                        current_images.append(filename)
-                        
-                    new_image_path = ",".join(current_images)
+                if filename not in current_images:
+                    current_images.append(filename)
                     
-                    db.execute(
-                        "INSERT OR IGNORE INTO trade_notes"
-                        " (date, underlying, option_type, strike, entry_time, notes, updated_at, image_path)"
-                        " VALUES (?,?,?,?,?,'',?,?)",
-                        (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"],
-                         datetime.now().timestamp(), new_image_path)
-                    )
-                    db.execute(
-                        "UPDATE trade_notes SET image_path=?, updated_at=?"
-                        " WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
-                        (new_image_path, datetime.now().timestamp(), t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
-                    )
-                    db.commit()
-                    _rebuild_cache(db)
-                logger.info("TV Auto-capture: Successfully attached screenshot to trade %d: %s", tid, filename)
-            else:
-                logger.error("TV Auto-capture: Failed to capture screenshot for trade %d", tid)
-        except Exception as err:
-            logger.error("TV Auto-capture: Worker error for trade %d: %s", tid, err)
+                new_image_path = ",".join(current_images)
+                
+                db.execute(
+                    "INSERT OR IGNORE INTO trade_notes"
+                    " (date, underlying, option_type, strike, entry_time, notes, updated_at, image_path)"
+                    " VALUES (?,?,?,?,?,'',?,?)",
+                    (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"],
+                     datetime.now().timestamp(), new_image_path)
+                )
+                db.execute(
+                    "UPDATE trade_notes SET image_path=?, updated_at=?"
+                    " WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                    (new_image_path, datetime.now().timestamp(), t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+                )
+                db.commit()
+                _rebuild_cache(db)
+            logger.info("TV Auto-capture: Successfully attached screenshot to trade %d: %s", tid, filename)
+        else:
+            logger.error("TV Auto-capture: Failed to capture screenshot for trade %d", tid)
+    except Exception as err:
+        logger.error("TV Auto-capture: Sync error for trade %d: %s", tid, err)
+
+
+def _screenshot_queue_worker():
+    global _queue_worker_started
+    logger.info("TV Auto-capture sequential queue worker started.")
+    while True:
+        try:
+            tid = _screenshot_queue.get(timeout=10) # wait up to 10s for new items
+        except queue.Empty:
+            with _queue_lock:
+                _queue_worker_started = False
+            logger.info("TV Auto-capture sequential queue empty. Worker shutting down.")
+            break
             
-    threading.Thread(target=worker, daemon=True, name=f"tv-capturer-{tid}").start()
+        try:
+            _run_tv_screenshot_sync(tid)
+        except Exception as e:
+            logger.error("TV Auto-capture: Queue worker error: %s", e)
+        finally:
+            _screenshot_queue.task_done()
+            time.sleep(3) # 3 seconds pause between screenshots to be gentle
+
+
+def trigger_tv_screenshot(tid: int) -> None:
+    """Asynchronously capture a TradingView chart screenshot by queuing it up."""
+    # Check if trade already has a screenshot to avoid duplicate queuing
+    db = get_db()
+    t = db.execute("SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?", (tid,)).fetchone()
+    if t:
+        note = db.execute(
+            "SELECT image_path FROM trade_notes WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+            (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
+        ).fetchone()
+        if note and note["image_path"]:
+            logger.info("TV Auto-capture: Trade %d already has screenshots. Skipping trigger.", tid)
+            return
+
+    _screenshot_queue.put(tid)
+    global _queue_worker_started
+    with _queue_lock:
+        if not _queue_worker_started:
+            _queue_worker_started = True
+            threading.Thread(target=_screenshot_queue_worker, daemon=True, name="tv-screenshot-queue").start()
 app.config['APPLICATION_ROOT']   = APP_ROOT
 app.config['MAX_CONTENT_LENGTH'] = 1_500 * 1024 * 1024  # 1.5 GB — allows 700 MB ZIP uploads
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -3892,6 +3935,34 @@ def api_close_trade(tid: int):
     _rebuild_cache()
     trigger_tv_screenshot(tid)
     return jsonify({"ok": True, "pnl": pnl})
+
+
+@app.route("/api/scan-missing-screenshots", methods=["POST"])
+def api_scan_missing_screenshots():
+    target_date = request.args.get("date") or str(date.today())
+    underlying = request.args.get("underlying")
+    
+    db = get_db()
+    query = (
+        "SELECT t.id, n.image_path FROM trades t"
+        " LEFT JOIN trade_notes n ON t.date=n.date AND t.underlying=n.underlying"
+        " AND t.option_type=n.option_type AND t.strike=n.strike AND t.entry_time=n.entry_time"
+        " WHERE t.date=? AND t.status='CLOSED'"
+    )
+    params = [target_date]
+    if underlying:
+        query += " AND t.underlying=?"
+        params.append(underlying)
+        
+    rows = db.execute(query, params).fetchall()
+    
+    queued_count = 0
+    for r in rows:
+        if not r["image_path"]:
+            trigger_tv_screenshot(r["id"])
+            queued_count += 1
+            
+    return jsonify({"ok": True, "queued": queued_count, "found": len(rows)})
 
 
 @app.route("/api/trade/<int:tid>/notes", methods=["PUT"])
@@ -6384,6 +6455,7 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <span id="psummary"></span>
       <button class="hbtn" style="margin-left:auto;font-size:10px" onclick="window.open(_root+'/report?date='+curDate,'_blank')" title="Download PDF report for this date">&#128196; PDF</button>
       <button class="hbtn" style="font-size:10px" onclick="wipeDate()" title="Delete all trades for this date and reimport">&#128465; Wipe &amp; reimport</button>
+      <button class="hbtn" style="font-size:10px; background:rgba(124,77,255,.15); color:#b388ff; border:1px solid #7c4dff;" onclick="scanMissingScreenshots()" title="Scan and capture missing TradingView screenshots for this date">📷 TV Screenshots</button>
     </div>
     <div id="pbody">
       <div id="empty">No trades for this date &#8212; import from Dhan or pick another day.</div>
@@ -7484,6 +7556,21 @@ async function wipeDate(){{
     document.getElementById('mTo').value=curDate;
     document.getElementById('ov').classList.add('show');
   }}catch(e){{console.error(e);}}
+}}
+async function scanMissingScreenshots(){{
+  if(!confirm('Scan and capture missing TradingView screenshots for ' + curDate + '?')) return;
+  try {{
+    var res = await fetch(_root + '/api/scan-missing-screenshots?date=' + curDate + '&underlying=' + curU, {{ method: 'POST' }});
+    var d = await res.json();
+    if(d.ok) {{
+      alert('Scanning started! Queued ' + d.queued + ' trades (out of ' + d.found + ' total trades) for background screenshot capture.');
+    }} else {{
+      alert('Error: ' + d.error);
+    }}
+  }} catch(e) {{
+    console.error(e);
+    alert('Failed to request scan: ' + e.message);
+  }}
 }}
 async function saveNote(id,notes){{
   try{{
