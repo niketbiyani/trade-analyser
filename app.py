@@ -3516,7 +3516,7 @@ TRADINGVIEW_SESSIONID_SIGN = os.getenv("TRADINGVIEW_SESSIONID_SIGN")
 TRADINGVIEW_LAYOUT_ID = os.getenv("TRADINGVIEW_LAYOUT_ID")
 
 def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_str: str) -> str:
-    """Translate trade options metadata into the exact standard TradingView NSE/BSE weekly or monthly symbol format."""
+    """Translate trade options metadata into the exact standard TradingView NSE/BSE YYMMDD symbol format."""
     try:
         dt = datetime.strptime(expiry_date_str, "%Y-%m-%d")
     except Exception:
@@ -3526,36 +3526,20 @@ def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_
         except Exception:
             dt = datetime.today()
             
-    year_yy = dt.strftime("%y") # e.g. "26"
-    
-    # Check if monthly expiry (last Thursday/weekday of the month)
-    # Check if there are any more occurrences of the same weekday in this month
-    next_week = dt + timedelta(days=7)
-    is_monthly = next_week.month != dt.month
+    year_yy = dt.strftime("%y")   # e.g. "26"
+    month_mm = dt.strftime("%m")  # e.g. "08" (always 2 digits on TradingView)
+    day_dd = dt.strftime("%d")    # e.g. "04" (always 2 digits on TradingView)
     
     exchange = "NSE"
     u_upper = underlying.upper()
     if u_upper == "SENSEX":
         exchange = "BSE"
         
-    opt_char_weekly = "C" if option_type.upper() in ("CE", "CALL") else "P"
-    opt_char_monthly = "CE" if option_type.upper() in ("CE", "CALL") else "PE"
-    
+    opt_char = "C" if option_type.upper() in ("CE", "CALL") else "P"
     strike_int = int(strike)
     
-    if is_monthly:
-        # Monthly symbol: e.g. NSE:NIFTY26JUL24300CE
-        month_name = dt.strftime("%b").upper() # "JUL"
-        return f"{exchange}:{u_upper}{year_yy}{month_name}{strike_int}{opt_char_monthly}"
-    else:
-        # Weekly symbol: e.g. NSE:NIFTY26730C24300
-        month_codes = {
-            1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6",
-            7: "7", 8: "8", 9: "9", 10: "O", 11: "N", 12: "D"
-        }
-        month_char = month_codes[dt.month]
-        day_dd = dt.strftime("%d") # e.g. "30"
-        return f"{exchange}:{u_upper}{year_yy}{month_char}{day_dd}{opt_char_weekly}{strike_int}"
+    # TradingView Format: NSE:NIFTY260804P24300
+    return f"{exchange}:{u_upper}{year_yy}{month_mm}{day_dd}{opt_char}{strike_int}"
 
 
 import queue
