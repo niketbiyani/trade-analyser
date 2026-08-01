@@ -166,6 +166,8 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
+                            page.keyboard.press("Escape")
+                            page.wait_for_timeout(200)
                         except Exception as scroll_err1:
                             logger.error("Error scrolling Pane 1: %s", scroll_err1)
 
@@ -210,6 +212,8 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
+                            page.keyboard.press("Escape")
+                            page.wait_for_timeout(200)
                         except Exception as scroll_err2:
                             logger.error("Error scrolling Pane 2: %s", scroll_err2)
                             
@@ -262,6 +266,8 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                             page.keyboard.type(entry_time[:5])
                         page.locator("text=Go to").last.click(timeout=2000)
                         page.wait_for_timeout(3000)
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(200)
                     except Exception as scroll_err:
                         logger.error("Error navigating single chart to trade date/time: %s", scroll_err)
             
