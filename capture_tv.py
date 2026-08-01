@@ -166,8 +166,9 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
-                            page.keyboard.press("Escape")
-                            page.wait_for_timeout(200)
+                            # Click Pane 1 again to deselect the Go To highlight anchor
+                            widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
+                            page.wait_for_timeout(300)
                         except Exception as scroll_err1:
                             logger.error("Error scrolling Pane 1: %s", scroll_err1)
 
@@ -212,8 +213,9 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
-                            page.keyboard.press("Escape")
-                            page.wait_for_timeout(200)
+                            # Click Pane 2 again to deselect the Go To highlight anchor
+                            widgets[1].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
+                            page.wait_for_timeout(300)
                         except Exception as scroll_err2:
                             logger.error("Error scrolling Pane 2: %s", scroll_err2)
                             
@@ -266,8 +268,9 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                             page.keyboard.type(entry_time[:5])
                         page.locator("text=Go to").last.click(timeout=2000)
                         page.wait_for_timeout(3000)
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(200)
+                        # Click chart canvas again to deselect highlight anchor
+                        widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
+                        page.wait_for_timeout(300)
                     except Exception as scroll_err:
                         logger.error("Error navigating single chart to trade date/time: %s", scroll_err)
             
