@@ -77,7 +77,9 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             [class*="consent" i],
             [id*="cookie" i],
             [id*="consent" i],
+            .tv-floating-toolbar,
             [class*="drawing-toolbar" i],
+            [class*="drawingToolbar" i],
             [class*="quick-tool" i],
             [class*="favorites-bar" i] { 
                 display: none !important; 
@@ -284,8 +286,8 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page.wait_for_timeout(100)
             page.keyboard.press("Escape")
             
-            # Move mouse cursor to top-left corner (0, 0) to hide chart hover tooltips/crosshairs
-            page.mouse.move(0, 0)
+            # Move mouse cursor to header toolbar center (500, 10) to hide hover tooltips/crosshairs without triggering profile overlay
+            page.mouse.move(500, 10)
             page.wait_for_timeout(200)
             
             # Final layout settlement wait
