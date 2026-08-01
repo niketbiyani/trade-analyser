@@ -23,11 +23,20 @@ print(f"Output path: {output_path}")
 from capture_tv import capture_screenshot
 print("Launching browser and loading chart. Please wait...")
 
-success = capture_screenshot("NSE:NIFTY", "15s", output_path, session_id, session_sign, layout_id)
+success = capture_screenshot(
+    symbol="NSE:NIFTY260804P24300",
+    interval="15s",
+    output_path=output_path,
+    session_id=session_id,
+    session_sign=session_sign,
+    layout_id=layout_id,
+    trade_date="2026-07-31",
+    entry_time="12:28:00"
+)
 
 if success:
     print("\n✓ SUCCESS!")
-    print(f"A test screenshot of NSE:NIFTY (15s) has been successfully saved to: {output_path}")
+    print(f"A test screenshot of NSE:NIFTY260804P24300 (15s/1m) has been successfully saved to: {output_path}")
     print("You can verify it by visiting: http://<your_vps_ip>/static/uploads/tv_test.jpg in your browser (replace <your_vps_ip> with your actual VPS IP address).")
 else:
     print("\n✗ FAILED!")
