@@ -286,8 +286,9 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page.wait_for_timeout(100)
             page.keyboard.press("Escape")
             
-            # Move mouse cursor to header toolbar center (500, 10) to hide hover tooltips/crosshairs without triggering profile overlay
-            page.mouse.move(500, 10)
+            # Move mouse cursor to the hidden left panel zone (10, 500) and click to clear chart hover tooltips/crosshairs
+            page.mouse.move(10, 500)
+            page.mouse.click(10, 500)
             page.wait_for_timeout(200)
             
             # Final layout settlement wait
