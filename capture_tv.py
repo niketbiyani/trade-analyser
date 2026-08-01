@@ -93,13 +93,15 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     frame.add_style_tag(content=clean_css)
                 except Exception:
                     pass
-                try:
-                    accept_btn = frame.locator("text=Accept all, button:has-text('Accept'), [class*='cookie' i] button").first
-                    if accept_btn.is_visible():
-                        accept_btn.click(timeout=1000)
-                        logger.info("Dismissed cookie consent banner in frame: %s", frame.url)
-                except Exception:
-                    pass
+                for selector in ["text=Accept all", "button:has-text('Accept')", "[class*='cookie' i] button"]:
+                    try:
+                        btn = frame.locator(selector).first
+                        if btn.is_visible():
+                            btn.click(timeout=1000)
+                            logger.info("Dismissed cookie consent banner in frame with: %s", selector)
+                            break
+                    except Exception:
+                        pass
             
             page.wait_for_timeout(1000)
             
@@ -246,13 +248,15 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     frame.add_style_tag(content=clean_css)
                 except Exception:
                     pass
-                try:
-                    accept_btn = frame.locator("text=Accept all, button:has-text('Accept'), [class*='cookie' i] button").first
-                    if accept_btn.is_visible():
-                        accept_btn.click(timeout=800)
-                        logger.info("Dismissed cookie consent banner late check in frame")
-                except Exception:
-                    pass
+                for selector in ["text=Accept all", "button:has-text('Accept')", "[class*='cookie' i] button"]:
+                    try:
+                        btn = frame.locator(selector).first
+                        if btn.is_visible():
+                            btn.click(timeout=800)
+                            logger.info("Dismissed cookie consent banner late check in frame with: %s", selector)
+                            break
+                    except Exception:
+                        pass
                 
             # Press Escape twice to close any lingering modals/search boxes
             page.keyboard.press("Escape")
