@@ -286,7 +286,9 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page.wait_for_timeout(100)
             page.keyboard.press("Escape")
             
-            # Move mouse cursor to the hidden left panel zone (10, 500) and click to clear chart hover tooltips/crosshairs
+            # Move mouse over Pane 2 canvas, then move it out to the hidden left panel zone (10, 500) to trigger mouseout events and clear crosshairs
+            page.mouse.move(1200, 500)
+            page.wait_for_timeout(100)
             page.mouse.move(10, 500)
             page.mouse.click(10, 500)
             page.wait_for_timeout(200)
