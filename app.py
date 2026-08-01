@@ -3571,8 +3571,11 @@ def _run_tv_screenshot_sync(tid: int) -> None:
         filename = f"tv_{tid}_{uuid.uuid4().hex[:8]}.jpg"
         output_path = os.path.join(UPLOAD_FOLDER, filename)
         
+        # Scroll back to exit_time if available (giving full context of trade), otherwise entry_time
+        scroll_time = t["exit_time"] if (t["exit_time"] and t["exit_time"].strip()) else t["entry_time"]
+        
         from capture_tv import capture_screenshot
-        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_SESSIONID_SIGN, TRADINGVIEW_LAYOUT_ID, t["date"], t["entry_time"])
+        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_SESSIONID_SIGN, TRADINGVIEW_LAYOUT_ID, t["date"], scroll_time)
         
         if success:
             with _db_lock:
