@@ -76,7 +76,10 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             [class*="cookie" i],
             [class*="consent" i],
             [id*="cookie" i],
-            [id*="consent" i] { 
+            [id*="consent" i],
+            [class*="drawing-toolbar" i],
+            [class*="quick-tool" i],
+            [class*="favorites-bar" i] { 
                 display: none !important; 
             }
             body, html, .layout__area--center {
@@ -280,6 +283,10 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page.keyboard.press("Escape")
             page.wait_for_timeout(100)
             page.keyboard.press("Escape")
+            
+            # Move mouse cursor to top-left corner (0, 0) to hide chart hover tooltips/crosshairs
+            page.mouse.move(0, 0)
+            page.wait_for_timeout(200)
             
             # Final layout settlement wait
             page.wait_for_timeout(1000)
