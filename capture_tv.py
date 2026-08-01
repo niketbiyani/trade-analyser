@@ -73,10 +73,10 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             .bottom-widgetbar-content,
             #onetrust-consent-sdk,
             .ot-sdk-container,
-            [class*="cookie"],
-            [class*="consent"],
-            [id*="cookie"],
-            [id*="consent"] { 
+            [class*="cookie" i],
+            [class*="consent" i],
+            [id*="cookie" i],
+            [id*="consent" i] { 
                 display: none !important; 
             }
             body, html, .layout__area--center {
@@ -91,7 +91,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             
             # Dismiss cookie consent dialog if it appears
             try:
-                page.locator("button:has-text('Accept all')").click(timeout=2000)
+                page.locator("button:has-text('Accept all')").click(timeout=1500)
                 logger.info("Dismissed cookie consent banner")
             except Exception:
                 pass
@@ -106,7 +106,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     # Focus first widget and change to Option symbol
                     widgets[0].click()
                     page.wait_for_timeout(300)
-                    page.keyboard.press("Control+k")
+                    page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800) # wait for search modal
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
@@ -116,7 +116,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     # Focus second widget and change to the SAME Option symbol (loads 1m option chart in second pane)
                     widgets[1].click()
                     page.wait_for_timeout(300)
-                    page.keyboard.press("Control+k")
+                    page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
@@ -131,15 +131,18 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             else:
                 # Single chart layout, change active pane symbol directly via keyboard
                 logger.info("Single chart layout. Changing active symbol to: %s", symbol)
-                if len(widgets) > 0:
-                    widgets[0].click()
-                    page.wait_for_timeout(300)
-                page.keyboard.press("Control+k")
-                page.wait_for_timeout(800)
-                page.keyboard.type(symbol)
-                page.wait_for_timeout(500)
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(2000)
+                try:
+                    if len(widgets) > 0:
+                        widgets[0].click()
+                        page.wait_for_timeout(300)
+                    page.locator("#header-toolbar-symbol-search").click()
+                    page.wait_for_timeout(800)
+                    page.keyboard.type(symbol)
+                    page.wait_for_timeout(500)
+                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(2000)
+                except Exception as sym_err:
+                    logger.error("Error setting symbol on single layout: %s", sym_err)
 
             # Scroll chart to trade execution time using Alt+G date navigation
             if trade_date and entry_time:
