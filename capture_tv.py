@@ -104,7 +104,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 logger.info("Multi-chart layout detected (%d widgets). setting symbols individually.", len(widgets))
                 try:
                     # Focus first widget and change to Option symbol
-                    widgets[0].click()
+                    widgets[0].click(position={"x": 100, "y": 100})
                     page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800) # wait for search modal
@@ -122,7 +122,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     page.wait_for_timeout(1500)
                     
                     # Focus second widget and change to the SAME Option symbol
-                    widgets[1].click()
+                    widgets[1].click(position={"x": 100, "y": 100})
                     page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
@@ -137,10 +137,6 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     page.wait_for_timeout(500)
                     page.keyboard.press("Enter")
                     page.wait_for_timeout(1500)
-                    
-                    # Click back on the main option widget
-                    widgets[0].click()
-                    page.wait_for_timeout(300)
                 except Exception as pane_err:
                     logger.error("Error setting symbols on split pane layout: %s", pane_err)
             else:
@@ -148,7 +144,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 logger.info("Single chart layout. Changing active symbol to: %s", symbol)
                 try:
                     if len(widgets) > 0:
-                        widgets[0].click()
+                        widgets[0].click(position={"x": 100, "y": 100})
                         page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
@@ -171,7 +167,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 logger.info("Scrolling chart to trade execution time: %s %s", trade_date, entry_time)
                 try:
                     if len(widgets) > 0:
-                        widgets[0].click()
+                        widgets[0].click(position={"x": 100, "y": 100})
                         page.wait_for_timeout(300)
                     page.keyboard.press("Alt+g")
                     page.wait_for_timeout(800) # wait for Go To modal to open and focus date input
