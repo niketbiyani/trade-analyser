@@ -108,16 +108,31 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800) # wait for search modal
+                    
+                    # Force "All" tab to prevent Options Chain dialog from opening
+                    try:
+                        page.locator("[role='tab']:has-text('All'), button:has-text('All')").first().click(timeout=1000)
+                        page.wait_for_timeout(300)
+                    except Exception:
+                        pass
+                        
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
                     page.keyboard.press("Enter")
                     page.wait_for_timeout(1500)
                     
-                    # Focus second widget and change to the SAME Option symbol (loads 1m option chart in second pane)
+                    # Focus second widget and change to the SAME Option symbol
                     widgets[1].click()
                     page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
+                    
+                    try:
+                        page.locator("[role='tab']:has-text('All'), button:has-text('All')").first().click(timeout=1000)
+                        page.wait_for_timeout(300)
+                    except Exception:
+                        pass
+                        
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
                     page.keyboard.press("Enter")
@@ -129,7 +144,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 except Exception as pane_err:
                     logger.error("Error setting symbols on split pane layout: %s", pane_err)
             else:
-                # Single chart layout, change active pane symbol directly via keyboard
+                # Single chart layout
                 logger.info("Single chart layout. Changing active symbol to: %s", symbol)
                 try:
                     if len(widgets) > 0:
@@ -137,6 +152,13 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                         page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
+                    
+                    try:
+                        page.locator("[role='tab']:has-text('All'), button:has-text('All')").first().click(timeout=1000)
+                        page.wait_for_timeout(300)
+                    except Exception:
+                        pass
+                        
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
                     page.keyboard.press("Enter")
@@ -171,6 +193,18 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     page.wait_for_timeout(3000) # wait for scrolling to settle
                 except Exception as scroll_err:
                     logger.error("Error navigating to trade date/time: %s", scroll_err)
+            
+            # Dismiss cookie consent dialog one last time before screenshot in case it popped up late
+            try:
+                page.locator("button:has-text('Accept all')").click(timeout=800)
+                logger.info("Dismissed cookie consent banner late check")
+            except Exception:
+                pass
+                
+            # Press Escape twice to close any lingering modals/search boxes
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(100)
+            page.keyboard.press("Escape")
             
             # Final layout settlement wait
             page.wait_for_timeout(1000)
