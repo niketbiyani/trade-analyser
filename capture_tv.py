@@ -86,15 +86,22 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 padding: 0 !important;
             }
             """
-            page.add_style_tag(content=clean_css)
-            page.wait_for_timeout(1000)
             
-            # Dismiss cookie consent dialog if it appears
-            try:
-                page.locator("text=Accept all").first.click(timeout=1500)
-                logger.info("Dismissed cookie consent banner")
-            except Exception:
-                pass
+            # Inject CSS and dismiss cookie banner across all page frames (handles iframes)
+            for frame in page.frames:
+                try:
+                    frame.add_style_tag(content=clean_css)
+                except Exception:
+                    pass
+                try:
+                    accept_btn = frame.locator("text=Accept all, button:has-text('Accept'), [class*='cookie' i] button").first
+                    if accept_btn.is_visible():
+                        accept_btn.click(timeout=1000)
+                        logger.info("Dismissed cookie consent banner in frame: %s", frame.url)
+                except Exception:
+                    pass
+            
+            page.wait_for_timeout(1000)
             
             # If any pane is currently maximized (e.g. RSI), restore the split layout
             try:
@@ -106,15 +113,16 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             except Exception as restore_err:
                 logger.error("Error checking/restoring maximized pane layout: %s", restore_err)
             
-            # Target active chart containers
-            widgets = page.locator(".chart-widget, [class*='chart-widget'], .chart-container").all()
+            # Target active chart containers within layout__area--center to exclude sidebars/watchlists
+            widgets = page.locator(".layout__area--center > .chart-container").all()
             
             # Set the symbols on the layout
             if len(widgets) > 1:
-                logger.info("Multi-chart layout detected (%d widgets). setting symbols individually.", len(widgets))
+                logger.info("Multi-chart layout detected (%d widgets). setting symbols and scrolling split panes sequentially.", len(widgets))
                 try:
-                    # Focus first widget and change to Option symbol
-                    widgets[0].click(position={"x": 100, "y": 100})
+                    # ── PANE 1 (Left Option Pane) ──
+                    # Focus first chart by clicking its canvas directly
+                    widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100})
                     page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800) # wait for search modal
@@ -129,11 +137,32 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
                     page.keyboard.press("Enter")
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(2000)
                     
-                    # Focus second widget and change to the SAME Option symbol
-                    widgets[1].click(position={"x": 100, "y": 100})
+                    # Scroll Pane 1 to trade execution time
+                    if trade_date and entry_time:
+                        logger.info("Scrolling Pane 1 to trade execution time: %s %s", trade_date, entry_time)
+                        try:
+                            page.keyboard.press("Alt+g")
+                            page.wait_for_timeout(800)
+                            page.keyboard.type(trade_date)
+                            page.wait_for_timeout(300)
+                            page.keyboard.press("Tab")
+                            page.wait_for_timeout(200)
+                            page.keyboard.type(entry_time[:5])
+                            page.wait_for_timeout(500)
+                            page.locator("text=Go to").last.click(timeout=2000)
+                            page.wait_for_timeout(2000)
+                        except Exception as scroll_err1:
+                            logger.error("Error scrolling Pane 1: %s", scroll_err1)
+
+                    # ── PANE 2 (Right Option Pane) ──
+                    # Focus second pane by clicking its canvas directly
+                    logger.info("Clicking Pane 2 canvas directly to activate Pane 2")
+                    widgets[1].locator("canvas").first.click(position={"x": 100, "y": 100})
                     page.wait_for_timeout(300)
+                    
+                    # Change symbol on Pane 2 to the same Option symbol
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
                     
@@ -146,15 +175,37 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
                     page.keyboard.press("Enter")
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(2000)
+                    
+                    # Scroll Pane 2 to trade execution time
+                    if trade_date and entry_time:
+                        logger.info("Scrolling Pane 2 to trade execution time: %s %s", trade_date, entry_time)
+                        try:
+                            page.keyboard.press("Alt+g")
+                            page.wait_for_timeout(800)
+                            page.keyboard.type(trade_date)
+                            page.wait_for_timeout(300)
+                            page.keyboard.press("Tab")
+                            page.wait_for_timeout(200)
+                            page.keyboard.type(entry_time[:5])
+                            page.wait_for_timeout(500)
+                            page.locator("text=Go to").last.click(timeout=2000)
+                            page.wait_for_timeout(2000)
+                        except Exception as scroll_err2:
+                            logger.error("Error scrolling Pane 2: %s", scroll_err2)
+                            
+                    # Focus back on Pane 1
+                    widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100})
+                    page.wait_for_timeout(300)
+                    
                 except Exception as pane_err:
-                    logger.error("Error setting symbols on split pane layout: %s", pane_err)
+                    logger.error("Error setting symbols and scrolling split pane layout: %s", pane_err)
             else:
                 # Single chart layout
                 logger.info("Single chart layout. Changing active symbol to: %s", symbol)
                 try:
                     if len(widgets) > 0:
-                        widgets[0].click(position={"x": 100, "y": 100})
+                        widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100})
                         page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
@@ -172,40 +223,36 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 except Exception as sym_err:
                     logger.error("Error setting symbol on single layout: %s", sym_err)
 
-            # Scroll chart to trade execution time using Alt+G date navigation
-            if trade_date and entry_time:
-                logger.info("Scrolling chart to trade execution time: %s %s", trade_date, entry_time)
-                try:
-                    if len(widgets) > 0:
-                        widgets[0].click(position={"x": 100, "y": 100})
+                # Scroll single chart to trade execution time
+                if trade_date and entry_time:
+                    logger.info("Scrolling single chart to trade execution time: %s %s", trade_date, entry_time)
+                    try:
+                        page.keyboard.press("Alt+g")
+                        page.wait_for_timeout(800)
+                        page.keyboard.type(trade_date)
                         page.wait_for_timeout(300)
-                    page.keyboard.press("Alt+g")
-                    page.wait_for_timeout(800) # wait for Go To modal to open and focus date input
-                    
-                    # Type the date: YYYY-MM-DD
-                    page.keyboard.type(trade_date)
-                    page.wait_for_timeout(300)
-                    
-                    # Press Tab to focus time input
-                    page.keyboard.press("Tab")
-                    page.wait_for_timeout(200)
-                    
-                    # Type the time (HH:MM)
-                    page.keyboard.type(entry_time[:5])
-                    page.wait_for_timeout(500)
-                    
-                    # Click the "Go to" submit button in the modal
-                    page.locator("text=Go to").last.click(timeout=2000)
-                    page.wait_for_timeout(3000) # wait for scrolling to settle
-                except Exception as scroll_err:
-                    logger.error("Error navigating to trade date/time: %s", scroll_err)
+                        page.keyboard.press("Tab")
+                        page.wait_for_timeout(200)
+                        page.keyboard.type(entry_time[:5])
+                        page.wait_for_timeout(500)
+                        page.locator("text=Go to").last.click(timeout=2000)
+                        page.wait_for_timeout(3000)
+                    except Exception as scroll_err:
+                        logger.error("Error navigating single chart to trade date/time: %s", scroll_err)
             
-            # Dismiss cookie consent dialog one last time before screenshot in case it popped up late
-            try:
-                page.locator("text=Accept all").first.click(timeout=800)
-                logger.info("Dismissed cookie consent banner late check")
-            except Exception:
-                pass
+            # Dismiss cookie consent dialog on all frames one last time before screenshot
+            for frame in page.frames:
+                try:
+                    frame.add_style_tag(content=clean_css)
+                except Exception:
+                    pass
+                try:
+                    accept_btn = frame.locator("text=Accept all, button:has-text('Accept'), [class*='cookie' i] button").first
+                    if accept_btn.is_visible():
+                        accept_btn.click(timeout=800)
+                        logger.info("Dismissed cookie consent banner late check in frame")
+                except Exception:
+                    pass
                 
             # Press Escape twice to close any lingering modals/search boxes
             page.keyboard.press("Escape")
