@@ -350,3 +350,59 @@ sudo systemctl start trade-analyser
 | `GET` | `/api/dates` | List dates with imported trades |
 | `POST` | `/api/refresh-token` | Manually refresh Dhan token |
 | `GET` | `/api/debug-dhan` | Raw Dhan API response dump `?from_date=&to_date=` |
+
+---
+
+## TradingView Auto-Screenshot Capture
+
+The application features an automated, headless browser integration (powered by Playwright) that logs into TradingView, opens your custom multi-pane chart layout, sets the traded option contract symbol on both panes, scrolls back both charts to the exact second of trade execution, dismisses cookie/consent dialogs, and takes a clean screenshot to attach directly to your trades list.
+
+### 1. How It Works Under the Hood
+1. **Headless Browser Launch**: Playwright launches a headless Chromium instance using a Mac user-agent.
+2. **Session Authentication**: It injects your `TRADINGVIEW_SESSIONID` and `TRADINGVIEW_SESSIONID_SIGN` session cookies to bypass login.
+3. **Layout Initialization**: It opens your layout using `TRADINGVIEW_LAYOUT_ID` (e.g. `https://www.tradingview.com/chart/<layout_id>/`).
+4. **Maximized Pane Restoration**: If a chart pane (such as RSI) was saved in a maximized state, it automatically clicks the "Restore pane" button to restore your split-pane (15s / 1m) layout.
+5. **Cookie Consent Hiding**: It injects custom CSS and automatically scans all nested frames/iframes to click `Accept all` on the cookie consent popups.
+6. **Symbol Synchronization**:
+   - It targets `.layout__area--center > .chart-container` to isolate your exact split chart panes.
+   - It clicks the inner canvas of the **left pane** (Pane 1), opens the Symbol Search, switches to the `All` tab (to bypass option chain dialogs), types the option symbol (`Exchange:UnderlyingYYMMDD[C/P]Strike`), and presses Enter.
+   - It clicks the inner canvas of the **right pane** (Pane 2) and repeats the exact same symbol search.
+7. **Date Navigation Scrolling**:
+   - It targets the Date and Time fields inside the `Alt + G` dialog directly.
+   - It uses Playwright's `.fill()` method to populate `YYYY-MM-DD` and `HH:MM` directly (bypassing calendar keyboard capture).
+   - It clicks the `"Go to"` submit button on both panes to scroll them back to the exact trade execution time.
+8. **Clean Capture Layout**:
+   - It presses `Escape` twice to close any lingering search modals.
+   - It parks the mouse cursor at `(10, 500)` (inside the hidden left sidebar area) and clicks once to trigger `mouseout` events on the charts, completely dismissing all crosshair lines, time tooltip badges, and timeframe buttons hover tooltips.
+   - Saves the final screenshot to `static/uploads/tv_<trade_id>_<hash>.jpg`.
+
+### 2. Configuration (`.env`)
+To enable this feature, configure these variables in `/root/trade-analyser/.env`:
+
+```env
+# Your TradingView session cookies (get from Chrome Developer Tools -> Application -> Cookies)
+TRADINGVIEW_SESSIONID=your_sessionid_cookie
+TRADINGVIEW_SESSIONID_SIGN=your_sessionid_sign_cookie
+
+# Your TradingView multi-pane layout ID (find in your browser address bar: tradingview.com/chart/<layout_id>/)
+TRADINGVIEW_LAYOUT_ID=your_layout_id
+```
+
+### 3. Troubleshooting
+If screenshots fail or look incorrect:
+
+**1. Run the connection test script**
+Execute this script to run the capture synchronously and see detailed logs directly on your terminal:
+```bash
+python3 test_tv_connection.py
+```
+Check the generated test screenshot at `static/uploads/tv_test.jpg` (or open `http://<your_vps_ip>/static/uploads/tv_test.jpg` in your browser).
+
+**2. Headless Chrome process is stuck/hanging**
+If the script hangs on "Launching browser...", lingering background Chrome processes are locking the browser context. Clean them up using:
+```bash
+pkill -f chrome && pkill -f chromium
+```
+
+**3. Split timeframes are syncing (both show 15s or 1m)**
+If both panes keep showing the exact same timeframe, you have **Sync Interval** enabled in your TradingView chart settings. Load your chart in a standard browser, click the grid layout dropdown in the top toolbar, and **uncheck/disable "Sync Interval"** (or sync interval/timeframe). Save the layout.
