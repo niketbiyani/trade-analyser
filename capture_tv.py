@@ -106,7 +106,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     # Focus first widget and change to Option symbol
                     widgets[0].click()
                     page.wait_for_timeout(300)
-                    page.keyboard.press("/")
+                    page.keyboard.press("Control+k")
                     page.wait_for_timeout(800) # wait for search modal
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
@@ -116,7 +116,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     # Focus second widget and change to the SAME Option symbol (loads 1m option chart in second pane)
                     widgets[1].click()
                     page.wait_for_timeout(300)
-                    page.keyboard.press("/")
+                    page.keyboard.press("Control+k")
                     page.wait_for_timeout(800)
                     page.keyboard.type(symbol)
                     page.wait_for_timeout(500)
@@ -134,7 +134,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 if len(widgets) > 0:
                     widgets[0].click()
                     page.wait_for_timeout(300)
-                page.keyboard.press("/")
+                page.keyboard.press("Control+k")
                 page.wait_for_timeout(800)
                 page.keyboard.type(symbol)
                 page.wait_for_timeout(500)
