@@ -124,7 +124,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 try:
                     # ── PANE 1 (Left Option Pane) ──
                     # Focus first chart by clicking its canvas directly
-                    widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100})
+                    widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
                     page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800) # wait for search modal
@@ -161,7 +161,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                     # ── PANE 2 (Right Option Pane) ──
                     # Focus second pane by clicking its canvas directly
                     logger.info("Clicking Pane 2 canvas directly to activate Pane 2")
-                    widgets[1].locator("canvas").first.click(position={"x": 100, "y": 100})
+                    widgets[1].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
                     page.wait_for_timeout(300)
                     
                     # Change symbol on Pane 2 to the same Option symbol
@@ -197,7 +197,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                             logger.error("Error scrolling Pane 2: %s", scroll_err2)
                             
                     # Focus back on Pane 1
-                    widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100})
+                    widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
                     page.wait_for_timeout(300)
                     
                 except Exception as pane_err:
@@ -207,7 +207,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 logger.info("Single chart layout. Changing active symbol to: %s", symbol)
                 try:
                     if len(widgets) > 0:
-                        widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100})
+                        widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
                         page.wait_for_timeout(300)
                     page.locator("#header-toolbar-symbol-search").click()
                     page.wait_for_timeout(800)
