@@ -8068,6 +8068,10 @@ var _drawCanvas, _drawCtx;
 var _isDrawing = false;
 var _lastX = 0;
 var _lastY = 0;
+var _startX = 0;
+var _startY = 0;
+var _cacheCanvas = document.createElement('canvas');
+var _cacheCtx = _cacheCanvas.getContext('2d');
 var _originalImage = null;
 var _undoStack = [];
 
@@ -8127,8 +8131,17 @@ function saveDrawingState() {{
 
 function startDrawing(e) {{
   saveDrawingState();
+  
+  // Cache current canvas state to off-screen canvas synchronously for smooth straight line previews
+  _cacheCanvas.width = _drawCanvas.width;
+  _cacheCanvas.height = _drawCanvas.height;
+  _cacheCtx.clearRect(0, 0, _cacheCanvas.width, _cacheCanvas.height);
+  _cacheCtx.drawImage(_drawCanvas, 0, 0);
+  
   _isDrawing = true;
   const coords = getCanvasCoords(e);
+  _startX = coords.x;
+  _startY = coords.y;
   _lastX = coords.x;
   _lastY = coords.y;
 }}
@@ -8137,17 +8150,34 @@ function draw(e) {{
   if (!_isDrawing) return;
   const coords = getCanvasCoords(e);
   
-  _drawCtx.beginPath();
-  _drawCtx.moveTo(_lastX, _lastY);
-  _drawCtx.lineTo(coords.x, coords.y);
-  _drawCtx.strokeStyle = document.getElementById('drawColorPicker').value;
-  _drawCtx.lineWidth = parseInt(document.getElementById('drawBrushSize').value);
-  _drawCtx.lineCap = 'round';
-  _drawCtx.lineJoin = 'round';
-  _drawCtx.stroke();
-  
-  _lastX = coords.x;
-  _lastY = coords.y;
+  if (e.shiftKey) {{
+    // Restore base clean state from offscreen cache canvas synchronously
+    _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
+    _drawCtx.drawImage(_cacheCanvas, 0, 0);
+    
+    // Draw straight line from starting click point to current mouse position
+    _drawCtx.beginPath();
+    _drawCtx.moveTo(_startX, _startY);
+    _drawCtx.lineTo(coords.x, coords.y);
+    _drawCtx.strokeStyle = document.getElementById('drawColorPicker').value;
+    _drawCtx.lineWidth = parseInt(document.getElementById('drawBrushSize').value);
+    _drawCtx.lineCap = 'round';
+    _drawCtx.lineJoin = 'round';
+    _drawCtx.stroke();
+  }} else {{
+    // Freehand drawing
+    _drawCtx.beginPath();
+    _drawCtx.moveTo(_lastX, _lastY);
+    _drawCtx.lineTo(coords.x, coords.y);
+    _drawCtx.strokeStyle = document.getElementById('drawColorPicker').value;
+    _drawCtx.lineWidth = parseInt(document.getElementById('drawBrushSize').value);
+    _drawCtx.lineCap = 'round';
+    _drawCtx.lineJoin = 'round';
+    _drawCtx.stroke();
+    
+    _lastX = coords.x;
+    _lastY = coords.y;
+  }}
 }}
 
 function stopDrawing() {{
@@ -8218,6 +8248,18 @@ function saveAnnotatedImage() {{
   }})
   .catch(err => alert('Error saving edit: ' + err));
 }}
+
+window.addEventListener('keydown', function(e) {{
+  const modal = document.getElementById('drawingModal');
+  if (modal && modal.style.display === 'flex') {{
+    const isZ = e.key === 'z' || e.key === 'Z';
+    const isUndo = isZ && (e.metaKey || e.ctrlKey);
+    if (isUndo) {{
+      e.preventDefault();
+      undoDrawing();
+    }}
+  }}
+}});
 </script>
 </body>
 </html>"""
