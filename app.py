@@ -4593,6 +4593,41 @@ def api_delete_trade_image(tid):
     return jsonify({"ok": True})
 
 
+@app.route("/api/screenshot/edit", methods=["POST"])
+def edit_screenshot():
+    try:
+        data = request.get_json() or {}
+        filename = data.get("filename")
+        image_data = data.get("image_data")
+        
+        if not filename or not image_data:
+            return jsonify({"success": False, "error": "Missing filename or image_data"}), 400
+            
+        from werkzeug.utils import secure_filename
+        safe_filename = secure_filename(filename)
+        
+        file_path = os.path.join(UPLOAD_FOLDER, safe_filename)
+        if not os.path.exists(file_path):
+            return jsonify({"success": False, "error": "File not found"}), 404
+            
+        if "," in image_data:
+            header, base64_str = image_data.split(",", 1)
+        else:
+            base64_str = image_data
+            
+        import base64
+        decoded_bytes = base64.b64decode(base64_str)
+        
+        with open(file_path, "wb") as f:
+            f.write(decoded_bytes)
+            
+        logger.info("Successfully edited and saved screenshot: %s", safe_filename)
+        return jsonify({"success": True})
+    except Exception as err:
+        logger.error("Error editing screenshot: %s", err)
+        return jsonify({"success": False, "error": str(err)}), 500
+
+
 @app.route("/api/clear-option-data", methods=["DELETE"])
 def api_clear_option_data():
     """Delete all uploaded option OHLCV data and metadata. Spot data cleared too.
@@ -6541,8 +6576,39 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     <button id="bottomPrevBtn" class="btn btns" onclick="navTradeImage(-1, event)" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">&#9664; Prev</button>
     <button id="bottomNextBtn" class="btn btns" onclick="navTradeImage(1, event)" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">Next &#9654;</button>
     <button class="btn btnp" onclick="modalAddImage()" style="background:#7c4dff; border:none; color:#fff; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">&#128247; Add Screenshot</button>
+    <button class="btn btnp" onclick="openDrawingEditor()" style="background:#00bcd4; border:none; color:#fff; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">🖊️ Edit / Draw</button>
     <button class="btn btns" onclick="modalDeleteCurrentImage()" style="background:#f85149; border:none; color:#fff; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">&#128465; Delete This</button>
     <button class="btn btns" onclick="document.getElementById('imgModal').style.display='none'" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">Close</button>
+  </div>
+</div>
+
+<div id="drawingModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.98); z-index:10000; align-items:center; justify-content:center; flex-direction:column; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;" onclick="event.stopPropagation()">
+  <div style="position:relative; max-width:95%; max-height:85%; display:flex; align-items:center; justify-content:center; flex-direction:column;">
+    <div id="canvasContainer" style="position:relative; background:#111; border:2px solid #333; border-radius:6px; box-shadow:0 10px 45px rgba(0,0,0,.9); overflow:auto;">
+      <canvas id="drawingCanvas" style="display:block; max-width:100%; max-height:80vh; cursor:crosshair;"></canvas>
+    </div>
+    
+    <div style="margin-top:14px; display:flex; gap:12px; align-items:center; background:#161b22; padding:8px 18px; border-radius:8px; border:1px solid #30363d; flex-wrap:wrap; justify-content:center;">
+      <span style="font-size:11px; color:#8b949e; font-weight:600; text-transform:uppercase;">Brush Color:</span>
+      <input type="color" id="drawColorPicker" value="#ff3b30" style="width:34px; height:26px; border:1px solid #30363d; border-radius:4px; background:none; cursor:pointer; padding:0;">
+      
+      <span style="font-size:11px; color:#8b949e; font-weight:600; text-transform:uppercase;">Size:</span>
+      <select id="drawBrushSize" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:3px 6px; border-radius:4px; cursor:pointer;">
+        <option value="2">Thin</option>
+        <option value="5" selected>Medium</option>
+        <option value="10">Thick</option>
+      </select>
+      
+      <span style="width:1px; height:16px; background:#30363d; margin:0 4px;"></span>
+      
+      <button class="btn btns" onclick="undoDrawing()" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:4px 10px; border-radius:4px; cursor:pointer; font-weight:500;">↩ Undo</button>
+      <button class="btn btns" onclick="clearDrawingCanvas()" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:4px 10px; border-radius:4px; cursor:pointer; font-weight:500;">🗑️ Clear All</button>
+      
+      <span style="width:1px; height:16px; background:#30363d; margin:0 4px;"></span>
+      
+      <button class="btn btnp" onclick="saveAnnotatedImage()" style="background:#2ea44f; border:none; color:#fff; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:600;">Save Edit</button>
+      <button class="btn btns" onclick="closeDrawingEditor()" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:6px 14px; border-radius:4px; cursor:pointer; font-weight:500;">Cancel</button>
+    </div>
   </div>
 </div>
 
@@ -7995,6 +8061,162 @@ function toggleChartMarkers() {{
     }}
   }}
   putMarkers(_filtered());
+}}
+
+
+var _drawCanvas, _drawCtx;
+var _isDrawing = false;
+var _lastX = 0;
+var _lastY = 0;
+var _originalImage = null;
+var _undoStack = [];
+
+function openDrawingEditor() {{
+  const imgSrc = document.getElementById('imgModalSrc').src;
+  if (!imgSrc) return;
+  
+  document.getElementById('imgModal').style.display = 'none';
+  document.getElementById('drawingModal').style.display = 'flex';
+  
+  _drawCanvas = document.getElementById('drawingCanvas');
+  _drawCtx = _drawCanvas.getContext('2d');
+  _undoStack = [];
+  
+  _originalImage = new Image();
+  _originalImage.crossOrigin = "anonymous";
+  _originalImage.src = imgSrc;
+  _originalImage.onload = function() {{
+    _drawCanvas.width = _originalImage.naturalWidth;
+    _drawCanvas.height = _originalImage.naturalHeight;
+    _drawCtx.drawImage(_originalImage, 0, 0);
+    
+    _drawCanvas.onmousedown = startDrawing;
+    _drawCanvas.onmousemove = draw;
+    _drawCanvas.onmouseup = stopDrawing;
+    _drawCanvas.onmouseout = stopDrawing;
+    
+    _drawCanvas.ontouchstart = handleTouchStart;
+    _drawCanvas.ontouchmove = handleTouchMove;
+    _drawCanvas.ontouchend = stopDrawing;
+  }};
+}}
+
+function getCanvasCoords(e) {{
+  const rect = _drawCanvas.getBoundingClientRect();
+  const scaleX = _drawCanvas.width / rect.width;
+  const scaleY = _drawCanvas.height / rect.height;
+  
+  let clientX = e.clientX;
+  let clientY = e.clientY;
+  
+  if (e.touches && e.touches.length > 0) {{
+    clientX = e.touches[0].clientX;
+    clientY = e.touches[0].clientY;
+  }}
+  
+  return {{
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY
+  }};
+}}
+
+function saveDrawingState() {{
+  if (_undoStack.length >= 15) _undoStack.shift();
+  _undoStack.push(_drawCanvas.toDataURL("image/jpeg", 0.9));
+}}
+
+function startDrawing(e) {{
+  saveDrawingState();
+  _isDrawing = true;
+  const coords = getCanvasCoords(e);
+  _lastX = coords.x;
+  _lastY = coords.y;
+}}
+
+function draw(e) {{
+  if (!_isDrawing) return;
+  const coords = getCanvasCoords(e);
+  
+  _drawCtx.beginPath();
+  _drawCtx.moveTo(_lastX, _lastY);
+  _drawCtx.lineTo(coords.x, coords.y);
+  _drawCtx.strokeStyle = document.getElementById('drawColorPicker').value;
+  _drawCtx.lineWidth = parseInt(document.getElementById('drawBrushSize').value);
+  _drawCtx.lineCap = 'round';
+  _drawCtx.lineJoin = 'round';
+  _drawCtx.stroke();
+  
+  _lastX = coords.x;
+  _lastY = coords.y;
+}}
+
+function stopDrawing() {{
+  _isDrawing = false;
+}}
+
+function handleTouchStart(e) {{
+  if (e.touches.length === 1) {{
+    e.preventDefault();
+    startDrawing(e);
+  }}
+}}
+
+function handleTouchMove(e) {{
+  if (e.touches.length === 1) {{
+    e.preventDefault();
+    draw(e);
+  }}
+}}
+
+function undoDrawing() {{
+  if (_undoStack.length === 0) return;
+  const prevState = _undoStack.pop();
+  const img = new Image();
+  img.src = prevState;
+  img.onload = function() {{
+    _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
+    _drawCtx.drawImage(img, 0, 0);
+  }};
+}}
+
+function clearDrawingCanvas() {{
+  if (confirm('Clear all your edits?')) {{
+    saveDrawingState();
+    _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
+    _drawCtx.drawImage(_originalImage, 0, 0);
+  }}
+}}
+
+function closeDrawingEditor() {{
+  document.getElementById('drawingModal').style.display = 'none';
+  document.getElementById('imgModal').style.display = 'flex';
+}}
+
+function saveAnnotatedImage() {{
+  if (!_viewingImages.length) return;
+  const currentFilename = _viewingImages[_viewingIndex];
+  const base64Data = _drawCanvas.toDataURL("image/jpeg", 0.9);
+  
+  fetch(_root + '/api/screenshot/edit', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{
+      filename: currentFilename,
+      image_data: base64Data
+    }})
+  }})
+  .then(res => res.json())
+  .then(data => {{
+    if (data.success) {{
+      const cacheBust = '?t=' + Date.now();
+      document.getElementById('imgModalSrc').src = _root + '/static/uploads/' + currentFilename + cacheBust;
+      document.getElementById('drawingModal').style.display = 'none';
+      document.getElementById('imgModal').style.display = 'flex';
+    }} else {{
+      alert('Failed to save edit: ' + (data.error || 'Unknown error'));
+    }}
+  }})
+  .catch(err => alert('Error saving edit: ' + err));
 }}
 </script>
 </body>
