@@ -6589,6 +6589,12 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
     </div>
     
     <div style="margin-top:14px; display:flex; gap:12px; align-items:center; background:#161b22; padding:8px 18px; border-radius:8px; border:1px solid #30363d; flex-wrap:wrap; justify-content:center;">
+      <span style="font-size:11px; color:#8b949e; font-weight:600; text-transform:uppercase;">Tool:</span>
+      <button id="toolPenBtn" class="btn" onclick="setDrawingTool('pen')" style="background:#7c4dff; border:none; color:#fff; font-size:11px; padding:4px 10px; border-radius:4px; cursor:pointer; font-weight:600;">✏️ Pen</button>
+      <button id="toolCircleBtn" class="btn" onclick="setDrawingTool('circle')" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:4px 10px; border-radius:4px; cursor:pointer; font-weight:600; margin-right:6px;">◯ Circle</button>
+      
+      <span style="width:1px; height:16px; background:#30363d; margin:0 4px;"></span>
+      
       <span style="font-size:11px; color:#8b949e; font-weight:600; text-transform:uppercase;">Brush Color:</span>
       <input type="color" id="drawColorPicker" value="#ff3b30" style="width:34px; height:26px; border:1px solid #30363d; border-radius:4px; background:none; cursor:pointer; padding:0;">
       
@@ -7912,7 +7918,7 @@ function submitModalUpload() {{
     }} else {{
       if (height > MAX_HEIGHT) {{
         width *= MAX_HEIGHT / height;
-        height = MAX_HEIGHT;
+        width = MAX_HEIGHT;
       }}
     }}
     canvas.width = width;
@@ -8074,6 +8080,7 @@ var _cacheCanvas = document.createElement('canvas');
 var _cacheCtx = _cacheCanvas.getContext('2d');
 var _originalImage = null;
 var _undoStack = [];
+var _drawTool = 'pen';
 
 function openDrawingEditor() {{
   const imgSrc = document.getElementById('imgModalSrc').src;
@@ -8102,6 +8109,8 @@ function openDrawingEditor() {{
     _drawCanvas.ontouchstart = handleTouchStart;
     _drawCanvas.ontouchmove = handleTouchMove;
     _drawCanvas.ontouchend = stopDrawing;
+    
+    setDrawingTool('pen');
   }};
 }}
 
@@ -8150,7 +8159,24 @@ function draw(e) {{
   if (!_isDrawing) return;
   const coords = getCanvasCoords(e);
   
-  if (e.shiftKey) {{
+  if (_drawTool === 'circle') {{
+    // Restore base clean state from offscreen cache canvas synchronously
+    _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
+    _drawCtx.drawImage(_cacheCanvas, 0, 0);
+    
+    // Calculate radius as distance from starting click point
+    let dx = coords.x - _startX;
+    let dy = coords.y - _startY;
+    let r = Math.sqrt(dx * dx + dy * dy);
+    
+    // Draw circle
+    _drawCtx.beginPath();
+    _drawCtx.arc(_startX, _startY, r, 0, 2 * Math.PI);
+    _drawCtx.strokeStyle = document.getElementById('drawColorPicker').value;
+    _drawCtx.lineWidth = parseInt(document.getElementById('drawBrushSize').value);
+    _drawCtx.lineCap = 'round';
+    _drawCtx.stroke();
+  }} else if (e.shiftKey) {{
     // Restore base clean state from offscreen cache canvas synchronously
     _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
     _drawCtx.drawImage(_cacheCanvas, 0, 0);
@@ -8260,6 +8286,30 @@ window.addEventListener('keydown', function(e) {{
     }}
   }}
 }});
+
+function setDrawingTool(tool) {{
+  _drawTool = tool;
+  const penBtn = document.getElementById('toolPenBtn');
+  const circleBtn = document.getElementById('toolCircleBtn');
+  
+  if (tool === 'pen') {{
+    penBtn.style.background = '#7c4dff';
+    penBtn.style.color = '#fff';
+    penBtn.style.border = 'none';
+    
+    circleBtn.style.background = '#21262d';
+    circleBtn.style.color = '#e0e0e0';
+    circleBtn.style.border = '1px solid #30363d';
+  }} else {{
+    circleBtn.style.background = '#7c4dff';
+    circleBtn.style.color = '#fff';
+    circleBtn.style.border = 'none';
+    
+    penBtn.style.background = '#21262d';
+    penBtn.style.color = '#e0e0e0';
+    penBtn.style.border = '1px solid #30363d';
+  }}
+}}
 </script>
 </body>
 </html>"""
