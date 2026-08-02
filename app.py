@@ -6594,8 +6594,8 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       
       <span style="font-size:11px; color:#8b949e; font-weight:600; text-transform:uppercase;">Size:</span>
       <select id="drawBrushSize" style="background:#21262d; border:1px solid #30363d; color:#e0e0e0; font-size:11px; padding:3px 6px; border-radius:4px; cursor:pointer;">
-        <option value="2">Thin</option>
-        <option value="5" selected>Medium</option>
+        <option value="2" selected>Thin</option>
+        <option value="5">Medium</option>
         <option value="10">Thick</option>
       </select>
       
