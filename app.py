@@ -3553,7 +3553,7 @@ def _run_tv_screenshot_sync(tid: int) -> None:
     try:
         db = get_db()
         t = db.execute(
-            "SELECT t.id, t.date, t.underlying, t.option_type, t.strike, t.expiry, t.entry_time,"
+            "SELECT t.id, t.date, t.underlying, t.option_type, t.strike, t.expiry, t.entry_time, t.exit_time,"
             " COALESCE(n.timeframe, '') AS timeframe FROM trades t"
             " LEFT JOIN trade_notes n ON t.date=n.date AND t.underlying=n.underlying"
             " AND t.option_type=n.option_type AND t.strike=n.strike AND t.entry_time=n.entry_time"
