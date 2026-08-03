@@ -8081,6 +8081,15 @@ var _cacheCtx = _cacheCanvas.getContext('2d');
 var _originalImage = null;
 var _undoStack = [];
 var _drawTool = 'pen';
+var _activeShape = null;
+var _resizeHandle = null;
+var _isResizing = false;
+var _isMoving = false;
+var _dragStartX = 0;
+var _dragStartY = 0;
+var _shapeOriginalCx = 0;
+var _shapeOriginalCy = 0;
+var _shapeOriginalR = 0;
 
 function openDrawingEditor() {{
   const imgSrc = document.getElementById('imgModalSrc').src;
@@ -8138,50 +8147,176 @@ function saveDrawingState() {{
   _undoStack.push(_drawCanvas.toDataURL("image/jpeg", 0.9));
 }}
 
+function redrawCanvas() {{
+  _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
+  _drawCtx.drawImage(_cacheCanvas, 0, 0);
+  
+  if (_activeShape) {{
+    const cx = _activeShape.cx;
+    const cy = _activeShape.cy;
+    const r = _activeShape.r;
+    const strokeColor = document.getElementById('drawColorPicker').value;
+    const lineWidth = parseInt(document.getElementById('drawBrushSize').value);
+    
+    // Draw circle shape
+    _drawCtx.beginPath();
+    _drawCtx.arc(cx, cy, r, 0, 2 * Math.PI);
+    _drawCtx.strokeStyle = strokeColor;
+    _drawCtx.lineWidth = lineWidth;
+    _drawCtx.lineCap = 'round';
+    _drawCtx.stroke();
+    
+    // Draw selection bounding box (dashed rectangle)
+    _drawCtx.strokeStyle = '#00bcd4';
+    _drawCtx.lineWidth = 1;
+    _drawCtx.setLineDash([4, 4]);
+    _drawCtx.strokeRect(cx - r, cy - r, r * 2, r * 2);
+    _drawCtx.setLineDash([]);
+    
+    // Draw 4 corner handles
+    const handleSize = 8;
+    _drawCtx.fillStyle = '#ffffff';
+    _drawCtx.strokeStyle = '#00bcd4';
+    _drawCtx.lineWidth = 1.5;
+    
+    const corners = [
+      {{ x: cx - r, y: cy - r, type: 'tl' }},
+      {{ x: cx + r, y: cy - r, type: 'tr' }},
+      {{ x: cx - r, y: cy + r, type: 'bl' }},
+      {{ x: cx + r, y: cy + r, type: 'br' }}
+    ];
+    
+    corners.forEach(c => {{
+      _drawCtx.fillRect(c.x - handleSize/2, c.y - handleSize/2, handleSize, handleSize);
+      _drawCtx.strokeRect(c.x - handleSize/2, c.y - handleSize/2, handleSize, handleSize);
+    }});
+  }}
+}}
+
+function commitActiveShape() {{
+  if (!_activeShape) return;
+  _cacheCtx.beginPath();
+  _cacheCtx.arc(_activeShape.cx, _activeShape.cy, _activeShape.r, 0, 2 * Math.PI);
+  _cacheCtx.strokeStyle = document.getElementById('drawColorPicker').value;
+  _cacheCtx.lineWidth = parseInt(document.getElementById('drawBrushSize').value);
+  _cacheCtx.lineCap = 'round';
+  _cacheCtx.stroke();
+  
+  _activeShape = null;
+  redrawCanvas();
+}}
+
 function startDrawing(e) {{
+  const coords = getCanvasCoords(e);
+  
+  // Check if clicked on a corner handle of an existing active shape
+  if (_activeShape) {{
+    const cx = _activeShape.cx;
+    const cy = _activeShape.cy;
+    const r = _activeShape.r;
+    const clickTolerance = 12;
+    
+    const corners = [
+      {{ x: cx - r, y: cy - r, type: 'tl' }},
+      {{ x: cx + r, y: cy - r, type: 'tr' }},
+      {{ x: cx - r, y: cy + r, type: 'bl' }},
+      {{ x: cx + r, y: cy + r, type: 'br' }}
+    ];
+    
+    let clickedHandle = null;
+    corners.forEach(c => {{
+      if (Math.abs(coords.x - c.x) <= clickTolerance && Math.abs(coords.y - c.y) <= clickTolerance) {{
+        clickedHandle = c.type;
+      }}
+    }});
+    
+    if (clickedHandle) {{
+      _isResizing = true;
+      _resizeHandle = clickedHandle;
+      _startX = coords.x;
+      _startY = coords.y;
+      _shapeOriginalCx = cx;
+      _shapeOriginalCy = cy;
+      _shapeOriginalR = r;
+      return;
+    }}
+    
+    // Check if clicked inside the circle (to drag/move it)
+    const dist = Math.sqrt((coords.x - cx)**2 + (coords.y - cy)**2);
+    if (dist <= r) {{
+      _isMoving = true;
+      _dragStartX = coords.x;
+      _dragStartY = coords.y;
+      _shapeOriginalCx = cx;
+      _shapeOriginalCy = cy;
+      return;
+    }}
+    
+    // Clicked elsewhere: commit the shape and start new drawing
+    commitActiveShape();
+  }}
+  
   saveDrawingState();
   
-  // Cache current canvas state to off-screen canvas synchronously for smooth straight line previews
   _cacheCanvas.width = _drawCanvas.width;
   _cacheCanvas.height = _drawCanvas.height;
   _cacheCtx.clearRect(0, 0, _cacheCanvas.width, _cacheCanvas.height);
   _cacheCtx.drawImage(_drawCanvas, 0, 0);
   
   _isDrawing = true;
-  const coords = getCanvasCoords(e);
   _startX = coords.x;
   _startY = coords.y;
   _lastX = coords.x;
   _lastY = coords.y;
+  
+  if (_drawTool === 'circle') {{
+    _activeShape = {{ type: 'circle', cx: _startX, cy: _startY, r: 0 }};
+  }}
 }}
 
 function draw(e) {{
-  if (!_isDrawing) return;
   const coords = getCanvasCoords(e);
   
-  if (_drawTool === 'circle') {{
-    // Restore base clean state from offscreen cache canvas synchronously
-    _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
-    _drawCtx.drawImage(_cacheCanvas, 0, 0);
+  if (_isResizing && _activeShape) {{
+    const dx = coords.x - _startX;
+    const dy = coords.y - _startY;
+    let newR = _shapeOriginalR;
     
-    // Calculate radius as distance from starting click point
+    if (_resizeHandle === 'br') {{
+      newR = Math.max(5, _shapeOriginalR + Math.max(dx, dy));
+    }} else if (_resizeHandle === 'tl') {{
+      newR = Math.max(5, _shapeOriginalR - Math.min(dx, dy));
+    }} else if (_resizeHandle === 'tr') {{
+      newR = Math.max(5, _shapeOriginalR + Math.max(coords.x - (_shapeOriginalCx + _shapeOriginalR), (_shapeOriginalCy - _shapeOriginalR) - coords.y));
+    }} else if (_resizeHandle === 'bl') {{
+      newR = Math.max(5, _shapeOriginalR + Math.max((_shapeOriginalCx - _shapeOriginalR) - coords.x, coords.y - (_shapeOriginalCy + _shapeOriginalR)));
+    }}
+    
+    _activeShape.r = newR;
+    redrawCanvas();
+    return;
+  }}
+  
+  if (_isMoving && _activeShape) {{
+    const dx = coords.x - _dragStartX;
+    const dy = coords.y - _dragStartY;
+    _activeShape.cx = _shapeOriginalCx + dx;
+    _activeShape.cy = _shapeOriginalCy + dy;
+    redrawCanvas();
+    return;
+  }}
+  
+  if (!_isDrawing) return;
+  
+  if (_drawTool === 'circle' && _activeShape) {{
     let dx = coords.x - _startX;
     let dy = coords.y - _startY;
-    let r = Math.sqrt(dx * dx + dy * dy);
-    
-    // Draw circle
-    _drawCtx.beginPath();
-    _drawCtx.arc(_startX, _startY, r, 0, 2 * Math.PI);
-    _drawCtx.strokeStyle = document.getElementById('drawColorPicker').value;
-    _drawCtx.lineWidth = parseInt(document.getElementById('drawBrushSize').value);
-    _drawCtx.lineCap = 'round';
-    _drawCtx.stroke();
+    _activeShape.r = Math.sqrt(dx * dx + dy * dy);
+    redrawCanvas();
   }} else if (e.shiftKey) {{
-    // Restore base clean state from offscreen cache canvas synchronously
     _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
     _drawCtx.drawImage(_cacheCanvas, 0, 0);
     
-    // Draw straight line from starting click point to current mouse position
     _drawCtx.beginPath();
     _drawCtx.moveTo(_startX, _startY);
     _drawCtx.lineTo(coords.x, coords.y);
@@ -8191,7 +8326,6 @@ function draw(e) {{
     _drawCtx.lineJoin = 'round';
     _drawCtx.stroke();
   }} else {{
-    // Freehand drawing
     _drawCtx.beginPath();
     _drawCtx.moveTo(_lastX, _lastY);
     _drawCtx.lineTo(coords.x, coords.y);
@@ -8208,6 +8342,17 @@ function draw(e) {{
 
 function stopDrawing() {{
   _isDrawing = false;
+  _isResizing = false;
+  _isMoving = false;
+  
+  if (_drawTool === 'circle' && _activeShape) {{
+    redrawCanvas();
+  }} else {{
+    _cacheCanvas.width = _drawCanvas.width;
+    _cacheCanvas.height = _drawCanvas.height;
+    _cacheCtx.clearRect(0, 0, _cacheCanvas.width, _cacheCanvas.height);
+    _cacheCtx.drawImage(_drawCanvas, 0, 0);
+  }}
 }}
 
 function handleTouchStart(e) {{
@@ -8225,6 +8370,7 @@ function handleTouchMove(e) {{
 }}
 
 function undoDrawing() {{
+  _activeShape = null;
   if (_undoStack.length === 0) return;
   const prevState = _undoStack.pop();
   const img = new Image();
@@ -8232,14 +8378,21 @@ function undoDrawing() {{
   img.onload = function() {{
     _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
     _drawCtx.drawImage(img, 0, 0);
+    
+    _cacheCtx.clearRect(0, 0, _cacheCanvas.width, _cacheCanvas.height);
+    _cacheCtx.drawImage(_drawCanvas, 0, 0);
   }};
 }}
 
 function clearDrawingCanvas() {{
   if (confirm('Clear all your edits?')) {{
+    _activeShape = null;
     saveDrawingState();
     _drawCtx.clearRect(0, 0, _drawCanvas.width, _drawCanvas.height);
     _drawCtx.drawImage(_originalImage, 0, 0);
+    
+    _cacheCtx.clearRect(0, 0, _cacheCanvas.width, _cacheCanvas.height);
+    _cacheCtx.drawImage(_drawCanvas, 0, 0);
   }}
 }}
 
@@ -8249,6 +8402,7 @@ function closeDrawingEditor() {{
 }}
 
 function saveAnnotatedImage() {{
+  commitActiveShape();
   if (!_viewingImages.length) return;
   const currentFilename = _viewingImages[_viewingIndex];
   const base64Data = _drawCanvas.toDataURL("image/jpeg", 0.9);
