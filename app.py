@@ -8090,6 +8090,8 @@ var _dragStartY = 0;
 var _shapeOriginalCx = 0;
 var _shapeOriginalCy = 0;
 var _shapeOriginalR = 0;
+var _fixedX = 0;
+var _fixedY = 0;
 
 function openDrawingEditor() {{
   const imgSrc = document.getElementById('imgModalSrc').src;
@@ -8238,6 +8240,21 @@ function startDrawing(e) {{
       _shapeOriginalCx = cx;
       _shapeOriginalCy = cy;
       _shapeOriginalR = r;
+      
+      // Calculate and store the coordinates of the opposite corner that must remain fixed
+      if (clickedHandle === 'br') {{
+        _fixedX = cx - r; // top-left is fixed
+        _fixedY = cy - r;
+      }} else if (clickedHandle === 'tl') {{
+        _fixedX = cx + r; // bottom-right is fixed
+        _fixedY = cy + r;
+      }} else if (clickedHandle === 'tr') {{
+        _fixedX = cx - r; // bottom-left is fixed
+        _fixedY = cy + r;
+      }} else if (clickedHandle === 'bl') {{
+        _fixedX = cx + r; // top-right is fixed
+        _fixedY = cy - r;
+      }}
       return;
     }}
     
@@ -8278,21 +8295,30 @@ function draw(e) {{
   const coords = getCanvasCoords(e);
   
   if (_isResizing && _activeShape) {{
-    const dx = coords.x - _startX;
-    const dy = coords.y - _startY;
-    let newR = _shapeOriginalR;
+    let d = 0;
     
     if (_resizeHandle === 'br') {{
-      newR = Math.max(5, _shapeOriginalR + Math.max(dx, dy));
+      d = Math.max(10, Math.max(coords.x - _fixedX, coords.y - _fixedY));
+      _activeShape.cx = _fixedX + d / 2;
+      _activeShape.cy = _fixedY + d / 2;
+      _activeShape.r = d / 2;
     }} else if (_resizeHandle === 'tl') {{
-      newR = Math.max(5, _shapeOriginalR - Math.min(dx, dy));
+      d = Math.max(10, Math.max(_fixedX - coords.x, _fixedY - coords.y));
+      _activeShape.cx = _fixedX - d / 2;
+      _activeShape.cy = _fixedY - d / 2;
+      _activeShape.r = d / 2;
     }} else if (_resizeHandle === 'tr') {{
-      newR = Math.max(5, _shapeOriginalR + Math.max(coords.x - (_shapeOriginalCx + _shapeOriginalR), (_shapeOriginalCy - _shapeOriginalR) - coords.y));
+      d = Math.max(10, Math.max(coords.x - _fixedX, _fixedY - coords.y));
+      _activeShape.cx = _fixedX + d / 2;
+      _activeShape.cy = _fixedY - d / 2;
+      _activeShape.r = d / 2;
     }} else if (_resizeHandle === 'bl') {{
-      newR = Math.max(5, _shapeOriginalR + Math.max((_shapeOriginalCx - _shapeOriginalR) - coords.x, coords.y - (_shapeOriginalCy + _shapeOriginalR)));
+      d = Math.max(10, Math.max(_fixedX - coords.x, coords.y - _fixedY));
+      _activeShape.cx = _fixedX - d / 2;
+      _activeShape.cy = _fixedY + d / 2;
+      _activeShape.r = d / 2;
     }}
     
-    _activeShape.r = newR;
     redrawCanvas();
     return;
   }}
