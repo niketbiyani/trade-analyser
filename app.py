@@ -3517,12 +3517,6 @@ TRADINGVIEW_LAYOUT_ID = os.getenv("TRADINGVIEW_LAYOUT_ID")
 
 def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_str: str) -> str:
     """Translate trade options metadata into the exact standard TradingView NSE/BSE YYMMDD symbol format."""
-    u_upper = underlying.upper()
-    if u_upper == "SENSEX":
-        return "BSE:SENSEX"
-    if u_upper == "BANKEX":
-        return "BSE:BANKEX"
-        
     try:
         dt = datetime.strptime(expiry_date_str, "%Y-%m-%d")
     except Exception:
@@ -3536,12 +3530,23 @@ def get_tv_symbol(underlying: str, strike: float, option_type: str, expiry_date_
     month_mm = dt.strftime("%m")  # e.g. "08" (always 2 digits on TradingView)
     day_dd = dt.strftime("%d")    # e.g. "04" (always 2 digits on TradingView)
     
+    u_upper = underlying.upper()
     exchange = "NSE"
+    
+    if u_upper in ("SENSEX", "BSX"):
+        exchange = "BSE"
+        tv_underlying = "BSX"
+    elif u_upper in ("BANKEX", "BKX"):
+        exchange = "BSE"
+        tv_underlying = "BKX"
+    else:
+        tv_underlying = u_upper
+        
     opt_char = "C" if option_type.upper() in ("CE", "CALL") else "P"
     strike_int = int(strike)
     
-    # TradingView Format: NSE:NIFTY260804P24300
-    return f"{exchange}:{u_upper}{year_yy}{month_mm}{day_dd}{opt_char}{strike_int}"
+    # TradingView Format: BSE:BSX260806C79400 or NSE:NIFTY260804P24300
+    return f"{exchange}:{tv_underlying}{year_yy}{month_mm}{day_dd}{opt_char}{strike_int}"
 
 
 import queue
