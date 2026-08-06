@@ -3642,6 +3642,10 @@ def trigger_tv_screenshot(tid: int) -> None:
     db = get_db()
     t = db.execute("SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?", (tid,)).fetchone()
     if t:
+        if t["underlying"] in ("SENSEX", "BANKEX"):
+            logger.info("TV Auto-capture: %s options (BSE) are not supported on TradingView. Skipping trigger for trade %d.", t["underlying"], tid)
+            return
+
         note = db.execute(
             "SELECT image_path FROM trade_notes WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
             (t["date"], t["underlying"], t["option_type"], t["strike"], t["entry_time"])
