@@ -7462,7 +7462,7 @@ function renderTrades(trades) {{
           '<span class="'+tfCls+'"  data-tid="'+t.id+'" data-field="timeframe"   data-opts="5s,15s,1m,3m,5m"  title="Toggle timeframe"       onclick="cycleTagEl(this,event)">'+tfLabel+'</span>' +
           '<span class="'+rfCls+'"  data-tid="'+t.id+'"                                                  title="Rules followed?"        onclick="cycleRulesEl(this,event)">'+rfLabel+'</span>' +
           '<input class="strat-ni" value="'+strat+'" placeholder="strategy…" data-tid="'+t.id+'" data-field="strategy" onclick="event.stopPropagation()" onblur="saveTagEl(this)">' +
-          imgHtml +
+          '<span id="img-container-'+t.id+'">'+imgHtml+'</span>' +
         '</div>' +
         '<input class="ni" value="'+nt+'" placeholder="note..." onclick="event.stopPropagation()" onblur="saveNote('+t.id+',this.value)">' +
       '</td>' +
@@ -7673,17 +7673,31 @@ async function checkScreenshotQueue() {{
       statusEl.style.display = 'inline-block';
       statusEl.textContent = '📷 Capturing TV screenshots (' + d.pending + ' pending)...';
       
-      // Auto-refresh trades list to display new VIEW buttons in real-time
+      // Auto-refresh screenshot buttons in real-time without re-rendering the whole DOM table
       try {{
         var trRes = await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
         allTrades = await trRes.json();
-        var f = _filtered();
         
-        var activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
-        if (activeTag !== 'textarea' && activeTag !== 'input') {{
-          renderTrades(f);
-          putMarkers(f);
-        }}
+        allTrades.forEach(function(t) {{
+          var container = document.getElementById('img-container-' + t.id);
+          if (container) {{
+            var imgPath = t.image_path || '';
+            var imgHtml = '';
+            if (imgPath) {{
+              var imgList = imgPath.split(',').map(function(s){{return s.trim();}}).filter(Boolean);
+              var label = imgList.length > 1 ? '&#128444; VIEW (' + imgList.length + ')' : '&#128444; VIEW';
+              imgHtml = '<span class="tpill active img-pill-btn" onclick="viewTradeImage('+t.id+',\\\''+imgPath+'\\\',event)" title="View chart screenshots" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">'+label+'</span>';
+            }} else {{
+              imgHtml = '<span class="tpill img-pill-btn" onclick="triggerImageUpload('+t.id+',event)" title="Upload screenshot" style="background:rgba(100,100,100,.1);color:#888;border-color:#444;">&#128247; UPLOAD</span>';
+            }}
+            if (container.innerHTML !== imgHtml) {{
+              container.innerHTML = imgHtml;
+            }}
+          }}
+        }});
+        
+        var f = _filtered();
+        putMarkers(f);
       }} catch(trErr) {{
         console.error('Failed to reload trades during capture polling:', trErr);
       }}
@@ -7699,13 +7713,27 @@ async function checkScreenshotQueue() {{
         try {{
           var trRes = await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
           allTrades = await trRes.json();
-          var f = _filtered();
           
-          var activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
-          if (activeTag !== 'textarea' && activeTag !== 'input') {{
-            renderTrades(f);
-            putMarkers(f);
-          }}
+          allTrades.forEach(function(t) {{
+            var container = document.getElementById('img-container-' + t.id);
+            if (container) {{
+              var imgPath = t.image_path || '';
+              var imgHtml = '';
+              if (imgPath) {{
+                var imgList = imgPath.split(',').map(function(s){{return s.trim();}}).filter(Boolean);
+                var label = imgList.length > 1 ? '&#128444; VIEW (' + imgList.length + ')' : '&#128444; VIEW';
+                imgHtml = '<span class="tpill active img-pill-btn" onclick="viewTradeImage('+t.id+',\\\''+imgPath+'\\\',event)" title="View chart screenshots" style="background:rgba(124,77,255,.15);color:#7c4dff;border-color:#7c4dff;">'+label+'</span>';
+              }} else {{
+                imgHtml = '<span class="tpill img-pill-btn" onclick="triggerImageUpload('+t.id+',event)" title="Upload screenshot" style="background:rgba(100,100,100,.1);color:#888;border-color:#444;">&#128247; UPLOAD</span>';
+              }}
+              if (container.innerHTML !== imgHtml) {{
+                container.innerHTML = imgHtml;
+              }}
+            }}
+          }});
+          
+          var f = _filtered();
+          putMarkers(f);
         }} catch(trErr) {{}}
       }}
     }}
