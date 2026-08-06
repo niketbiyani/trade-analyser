@@ -7678,8 +7678,12 @@ async function checkScreenshotQueue() {{
         var trRes = await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
         allTrades = await trRes.json();
         var f = _filtered();
-        renderTrades(f);
-        putMarkers(f);
+        
+        var activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+        if (activeTag !== 'textarea' && activeTag !== 'input') {{
+          renderTrades(f);
+          putMarkers(f);
+        }}
       }} catch(trErr) {{
         console.error('Failed to reload trades during capture polling:', trErr);
       }}
@@ -7696,8 +7700,12 @@ async function checkScreenshotQueue() {{
           var trRes = await fetch(_root+'/api/trades?date='+curDate+'&underlying='+curU);
           allTrades = await trRes.json();
           var f = _filtered();
-          renderTrades(f);
-          putMarkers(f);
+          
+          var activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+          if (activeTag !== 'textarea' && activeTag !== 'input') {{
+            renderTrades(f);
+            putMarkers(f);
+          }}
         }} catch(trErr) {{}}
       }}
     }}
