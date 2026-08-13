@@ -11,7 +11,7 @@ def check_order_book():
     ctx = DhanContext(client_id, access_token)
     dhan = DhanHQ(ctx)
     
-    resp = dhan.get_order_book()
+    resp = dhan.get_order_list()
     if resp.get("status") != "success":
         print(f"Failed to fetch order book: {resp}")
         return
