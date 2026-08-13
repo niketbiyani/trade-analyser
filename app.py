@@ -1420,13 +1420,13 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                         (order_id, direction),
                     ).fetchone()
                 # Fallback: time-based dedup for CSV imports (no order ID)
-                if not existing and entry_time:
+                if not existing and not order_id and entry_time:
                     existing = db.execute(
                         "SELECT id, status, entry_time FROM trades"
                         " WHERE date=? AND security_id=? AND entry_time=? AND direction=?",
                         (trade_date, sid, entry_time, direction),
                     ).fetchone()
-                if not existing:
+                if not existing and not order_id:
                     existing = db.execute(
                         "SELECT id, status, entry_time FROM trades"
                         " WHERE date=? AND underlying=? AND option_type=? AND strike=?"
