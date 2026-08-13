@@ -76,17 +76,19 @@ def compare_memory_and_db():
     print(f"SQLite Paired P&L: {db_pnl:.2f} (Total Trades: {len(db_trades)})")
     
     # Let's find any trade in memory that is NOT in SQLite, or has a different PnL!
-    # We match by entry_time, exit_time, strike, and qty
     print("\n--- Scanning for Trade Differences: ---")
+    used_db_ids = set()
     for mt in sorted(mem_trades, key=lambda x: x['entry_time']):
         # Find match in DB
         matched = False
         for dt in db_trades:
-            # We match by entry_time, exit_time, qty
-            # Note: entry_time and exit_time are HH:MM:SS
+            if dt['id'] in used_db_ids:
+                continue
+            # Match by entry time, exit time, qty, and strike
             if dt['entry_time'] == mt['entry_time'] and dt['exit_time'] == mt['exit_time'] and dt['quantity'] == mt['qty']:
                 if abs(dt['pnl'] - mt['pnl']) > 0.01:
                     print(f"PnL MISMATCH: Entry: {mt['entry_time']}, Exit: {mt['exit_time']}, Qty: {mt['qty']}. Memory PnL={mt['pnl']}, SQLite PnL={dt['pnl']}")
+                used_db_ids.add(dt['id'])
                 matched = True
                 break
         if not matched:
