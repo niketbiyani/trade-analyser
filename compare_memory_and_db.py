@@ -9,7 +9,7 @@ from collections import defaultdict
 # Add project path to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from app import _fifo_pair, _process_raw_trades, _is_option
+from app import _fifo_pair, _process_raw_trades, _is_option, _aggregate_partial_fills
 
 db_path = "/root/trade-analyser/analyser.db"
 if not os.path.exists(db_path):
@@ -55,6 +55,8 @@ def compare_memory_and_db():
     # Pair in-memory
     mem_trades = []
     for (trade_date, sid), group in groups.items():
+        # Aggregate partial fills
+        group = _aggregate_partial_fills(group)
         # Pair
         paired = _fifo_pair(group)
         for p in paired:
