@@ -1369,6 +1369,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
 
     imported = skipped = 0
     db = get_db()
+    processed_db_ids = set()
 
     for (trade_date, sid), group in groups.items():
         group = _aggregate_partial_fills(group)
@@ -1414,25 +1415,40 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                 # Primary dedup: dhan_order_id is stable across re-imports regardless of
                 # how timestamps were parsed. Use it when available (API imports always have it).
                 if order_id:
-                    existing = db.execute(
+                    existing_rows = db.execute(
                         "SELECT id, status, entry_time FROM trades"
                         " WHERE dhan_order_id=? AND direction=?",
                         (order_id, direction),
-                    ).fetchone()
+                    ).fetchall()
+                    for row in existing_rows:
+                        if row["id"] not in processed_db_ids:
+                            existing = row
+                            processed_db_ids.add(row["id"])
+                            break
                 # Fallback: time-based dedup for CSV imports (no order ID)
                 if not existing and not order_id and entry_time:
-                    existing = db.execute(
+                    existing_rows = db.execute(
                         "SELECT id, status, entry_time FROM trades"
                         " WHERE date=? AND security_id=? AND entry_time=? AND direction=?",
                         (trade_date, sid, entry_time, direction),
-                    ).fetchone()
+                    ).fetchall()
+                    for row in existing_rows:
+                        if row["id"] not in processed_db_ids:
+                            existing = row
+                            processed_db_ids.add(row["id"])
+                            break
                 if not existing and not order_id:
-                    existing = db.execute(
+                    existing_rows = db.execute(
                         "SELECT id, status, entry_time FROM trades"
                         " WHERE date=? AND underlying=? AND option_type=? AND strike=?"
                         " AND entry_time=? AND direction=?",
                         (trade_date, underlying, opt_type, strike, entry_time, direction),
-                    ).fetchone()
+                    ).fetchall()
+                    for row in existing_rows:
+                        if row["id"] not in processed_db_ids:
+                            existing = row
+                            processed_db_ids.add(row["id"])
+                            break
                 if existing:
                     updates, vals = [], []
                     # Patch empty entry_time left by old imports (createTime="NA" bug)
@@ -1473,6 +1489,7 @@ def _process_raw_trades(raw: list[dict], extra_diag: dict | None = None) -> dict
                     ),
                 )
                 db.commit()
+                processed_db_ids.add(cur.lastrowid)
                 if status == "CLOSED":
                     trigger_tv_screenshot(cur.lastrowid)
                 # Restore any note saved before this date was last wiped
