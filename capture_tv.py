@@ -110,6 +110,33 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             
             page.wait_for_timeout(1000)
             
+            # Dismiss any visible promotional popups, overlays, or ads before interacting with the chart
+            try:
+                # 1. Press Escape to close basic overlays
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+                
+                # 2. Find and click visible close buttons for promo modals
+                close_selectors = [
+                    "div.closeButton-pqGUw0Ud",
+                    "[class*='closeButton' i]",
+                    "[class*='close-button' i]",
+                    "[data-name='close']",
+                    "[aria-label*='close' i]",
+                    "button:has-text('Close')",
+                    "button:has-text('Dismiss')"
+                ]
+                for selector in close_selectors:
+                    btn = page.locator(selector).first
+                    if btn.is_visible():
+                        btn.click(timeout=1000)
+                        logger.info("Dismissed promotional overlay using selector: %s", selector)
+                        page.wait_for_timeout(500)
+            except Exception as dismiss_err:
+                logger.error("Error dismissing promotional overlays: %s", dismiss_err)
+            
+            page.wait_for_timeout(500)
+            
             # If any pane is currently maximized (e.g. RSI), restore the split layout
             try:
                 restore_btn = page.locator("[title*='Restore' i], [aria-label*='Restore' i]").first
