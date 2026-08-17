@@ -29,7 +29,7 @@ def inspect_raw_dhan():
             
     print(f"\nFound {len(nifty_trades)} NIFTY-related raw executions:")
     for idx, t in enumerate(nifty_trades[:30]):
-        print(f"[{idx}] OrderId: {t.get('orderId')}, ExchOrderId: {t.get('exchangeOrderId')}, Symbol: {t.get('tradingSymbol')}, Side: {t.get('transactionType')}, Qty: {t.get('sharesQty') or t.get('quantity')}, Price: {t.get('price')}, Time: {t.get('createTime') or t.get('exchangeTime')}")
+        print(f"[{idx}] OrderId: {t.get('orderId')}, ExchOrderId: {t.get('exchangeOrderId')}, Symbol: {t.get('tradingSymbol')}, Side: {t.get('transactionType')}, Qty: {t.get('tradedQuantity') or t.get('quantity')}, Price: {t.get('tradedPrice') or t.get('price')}, Time: {t.get('createTime') or t.get('exchangeTime')}")
 
 if __name__ == "__main__":
     inspect_raw_dhan()
