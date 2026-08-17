@@ -36,12 +36,14 @@ def reset_and_reimport():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # Let's count them first
-    before_count = cursor.execute("SELECT COUNT(*) FROM trades WHERE date='2026-08-13'").fetchone()[0]
-    print(f"Current trades strictly dated 2026-08-13 in DB: {before_count}")
+    today_str = str(date.today())
     
-    print("Deleting today's trades to perform a clean re-import...")
-    cursor.execute("DELETE FROM trades WHERE date='2026-08-13'")
+    # Let's count them first
+    before_count = cursor.execute("SELECT COUNT(*) FROM trades WHERE date=?", (today_str,)).fetchone()[0]
+    print(f"Current trades strictly dated {today_str} in DB: {before_count}")
+    
+    print(f"Deleting today's trades ({today_str}) to perform a clean re-import...")
+    cursor.execute("DELETE FROM trades WHERE date=?", (today_str,))
     conn.commit()
     print("Deleted successfully.")
     
@@ -55,8 +57,8 @@ def reset_and_reimport():
     # Verify final count
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    after_count = cursor.execute("SELECT COUNT(*) FROM trades WHERE date='2026-08-13'").fetchone()[0]
-    print(f"Final trades strictly dated 2026-08-13 in DB: {after_count}")
+    after_count = cursor.execute("SELECT COUNT(*) FROM trades WHERE date=?", (today_str,)).fetchone()[0]
+    print(f"Final trades strictly dated {today_str} in DB: {after_count}")
     conn.close()
 
 if __name__ == "__main__":
