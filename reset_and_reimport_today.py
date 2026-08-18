@@ -51,7 +51,9 @@ def reset_and_reimport():
     
     # 3. Process and insert today's trades cleanly using the fixed app logic
     print("Processing and inserting trades into SQLite...")
-    imported, skipped = _process_raw_trades(opts)
+    res = _process_raw_trades(opts)
+    imported = res.get("imported", 0)
+    skipped = res.get("skipped", 0)
     print(f"Clean import complete: Imported: {imported}, Skipped: {skipped}")
     
     # Verify final count
