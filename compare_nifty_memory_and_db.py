@@ -74,7 +74,7 @@ def compare_nifty():
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
-    db_trades = cursor.execute("SELECT * FROM trades WHERE date='2026-08-17' AND underlying='NIFTY' AND status='CLOSED'").fetchall()
+    db_trades = cursor.execute("SELECT * FROM trades WHERE date=? AND underlying='NIFTY' AND status='CLOSED'", (today_str,)).fetchall()
     db_pnl = sum(r['pnl'] for r in db_trades if r['pnl'] is not None)
     print(f"SQLite NIFTY Paired P&L: {db_pnl:.2f} (Total Trades: {len(db_trades)})")
     
