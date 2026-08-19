@@ -72,6 +72,14 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             # Wait for base layout loading (4s is safe)
             page.wait_for_timeout(4000)
             
+            # Wait for the chart canvas to be fully rendered in the DOM before we proceed
+            try:
+                logger.info("Waiting for TradingView chart canvas to load...")
+                page.wait_for_selector(".layout__area--center .chart-container canvas", timeout=15000)
+                logger.info("TradingView chart canvas loaded successfully.")
+            except Exception as wait_err:
+                logger.warning("Timeout waiting for chart canvas to render: %s", wait_err)
+            
             # CSS snippet to hide UI Chrome headers, sidebars, panels, and cookie consent overlays
             clean_css = """
             .layout__area--left, 
