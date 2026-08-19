@@ -26,9 +26,20 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            # Create a context with desktop HD resolution
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-software-rasterizer"
+                ]
+            )
+            # Create a context with desktop HD resolution and 20s timeouts
             context = browser.new_context(viewport={"width": 1200, "height": 700})
+            context.set_default_timeout(20000)
+            context.set_default_navigation_timeout(20000)
             
             # Inject TradingView login session cookies if provided
             if session_id:
@@ -345,3 +356,29 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
     except Exception as e:
         logger.error("TV Capture failed: %s", e)
         return False
+
+if __name__ == "__main__":
+    import sys
+    # Format of args: capture_tv.py symbol interval output_path [session_id] [session_sign] [layout_id] [trade_date] [entry_time]
+    if len(sys.argv) < 4:
+        print("Usage: python3 capture_tv.py <symbol> <interval> <output_path> [session_id] [session_sign] [layout_id] [trade_date] [entry_time]")
+        sys.exit(1)
+        
+    symbol = sys.argv[1]
+    interval = sys.argv[2]
+    output_path = sys.argv[3]
+    session_id = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "None" else None
+    session_sign = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] != "None" else None
+    layout_id = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] != "None" else None
+    trade_date = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] != "None" else None
+    entry_time = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] != "None" else None
+    
+    # Configure simple logs for stdout
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    
+    success = capture_screenshot(
+        symbol, interval, output_path,
+        session_id, session_sign, layout_id,
+        trade_date, entry_time
+    )
+    sys.exit(0 if success else 1)

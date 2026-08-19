@@ -3598,8 +3598,34 @@ def _run_tv_screenshot_sync(tid: int) -> None:
         # Scroll back to exit_time if available (giving full context of trade), otherwise entry_time
         scroll_time = t["exit_time"] if (t["exit_time"] and t["exit_time"].strip()) else t["entry_time"]
         
-        from capture_tv import capture_screenshot
-        success = capture_screenshot(symbol, timeframe, output_path, TRADINGVIEW_SESSIONID, TRADINGVIEW_SESSIONID_SIGN, TRADINGVIEW_LAYOUT_ID, t["date"], scroll_time)
+        # Launch capture_tv.py as an isolated subprocess with a 75-second timeout to prevent hangs
+        import sys
+        import subprocess
+        python_executable = sys.executable or "/root/trade-analyser/venv/bin/python"
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capture_tv.py")
+        cmd = [
+            python_executable,
+            script_path,
+            symbol,
+            timeframe,
+            output_path,
+            TRADINGVIEW_SESSIONID or "None",
+            TRADINGVIEW_SESSIONID_SIGN or "None",
+            TRADINGVIEW_LAYOUT_ID or "None",
+            t["date"] or "None",
+            scroll_time or "None"
+        ]
+        
+        logger.info("TV Auto-capture: running isolated subprocess: %s", " ".join(cmd[:4]) + " ...")
+        success = False
+        try:
+            res = subprocess.run(cmd, timeout=75, capture_output=True, text=True)
+            if res.returncode == 0:
+                success = True
+            else:
+                logger.error("TV Auto-capture: Subprocess failed (exit %d). Stderr: %s", res.returncode, res.stderr)
+        except subprocess.TimeoutExpired:
+            logger.error("TV Auto-capture: Subprocess timed out after 75 seconds. Terminating...")
         
         if success:
             with _db_lock:
