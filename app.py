@@ -3964,6 +3964,7 @@ def api_close_trade(tid: int):
 def api_scan_missing_screenshots():
     target_date = request.args.get("date") or str(date.today())
     underlying = request.args.get("underlying")
+    force = request.args.get("force") == "true"
     
     db = get_db()
     query = (
@@ -3982,11 +3983,23 @@ def api_scan_missing_screenshots():
     queued_count = 0
     for r in rows:
         has_auto = False
+        images = []
         if r["image_path"]:
             images = [img.strip() for img in r["image_path"].split(",") if img.strip()]
             has_auto = any(img.startswith("tv_") for img in images)
             
-        if not has_auto:
+        if not has_auto or force:
+            if force and has_auto:
+                cleaned_images = [img for img in images if not img.startswith("tv_")]
+                new_image_path = ",".join(cleaned_images)
+                t_details = db.execute("SELECT date, underlying, option_type, strike, entry_time FROM trades WHERE id=?", (r["id"],)).fetchone()
+                if t_details:
+                    db.execute(
+                        "UPDATE trade_notes SET image_path=? WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
+                        (new_image_path, t_details["date"], t_details["underlying"], t_details["option_type"], t_details["strike"], t_details["entry_time"])
+                    )
+                    db.commit()
+            
             trigger_tv_screenshot(r["id"])
             queued_count += 1
             
@@ -7668,8 +7681,9 @@ async function wipeDate(){{
 }}
 async function scanMissingScreenshots(){{
   if(!confirm('Scan and capture missing TradingView screenshots for ' + curDate + '?')) return;
+  const force = confirm('Would you also like to force re-capture and replace trades that already have screenshots (e.g. to replace empty/spinner images)?');
   try {{
-    var res = await fetch(_root + '/api/scan-missing-screenshots?date=' + curDate + '&underlying=' + curU, {{ method: 'POST' }});
+    var res = await fetch(_root + '/api/scan-missing-screenshots?date=' + curDate + '&underlying=' + curU + '&force=' + (force ? 'true' : 'false'), {{ method: 'POST' }});
     var d = await res.json();
     if(d.ok) {{
       alert('Scanning started! Queued ' + d.queued + ' trades (out of ' + d.found + ' total trades) for background screenshot capture.');
