@@ -8551,6 +8551,25 @@ window.addEventListener('keydown', function(e) {{
       undoDrawing();
     }}
   }}
+  
+  const imgModal = document.getElementById('imgModal');
+  if (imgModal && imgModal.style.display === 'flex') {{
+    if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {{
+      if (e.key === 'd' || e.key === 'D' || e.key === 'Delete' || e.key === 'Backspace') {{
+        e.preventDefault();
+        modalDeleteCurrentImage();
+      }} else if (e.key === 'ArrowLeft') {{
+        e.preventDefault();
+        navTradeImage(-1);
+      }} else if (e.key === 'ArrowRight') {{
+        e.preventDefault();
+        navTradeImage(1);
+      }} else if (e.key === 'Escape') {{
+        e.preventDefault();
+        imgModal.style.display = 'none';
+      }}
+    }}
+  }}
 }});
 
 function setDrawingTool(tool) {{
