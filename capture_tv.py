@@ -31,9 +31,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
-                    "--disable-gpu",
-                    "--disable-dev-shm-usage",
-                    "--disable-software-rasterizer"
+                    "--disable-dev-shm-usage"
                 ]
             )
             # Create a context with desktop HD resolution and 20s timeouts
