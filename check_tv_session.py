@@ -26,7 +26,14 @@ def check_session():
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage"
+                "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--disable-component-update",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-default-apps",
+                "--js-flags=--max-old-space-size=128",
+                "--single-process"
             ]
         )
         context = browser.new_context(
