@@ -105,7 +105,11 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             [class*="drawing-toolbar" i],
             [class*="drawingToolbar" i],
             [class*="quick-tool" i],
-            [class*="favorites-bar" i] { 
+            [class*="favorites-bar" i],
+            [class*="tooltip" i]:not([class*="legend" i]),
+            [class*="callout" i],
+            [class*="toast" i],
+            [class*="popover" i]:not([class*="legend" i]) { 
                 display: none !important; 
             }
             body, html, .layout__area--center {
@@ -192,8 +196,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
-                            # Click Pane 1 again to deselect the Go To highlight anchor
-                            widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
+                            page.keyboard.press("Escape")
                             page.wait_for_timeout(300)
                         except Exception as scroll_err1:
                             logger.error("Error scrolling Pane 1: %s", scroll_err1)
@@ -239,8 +242,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
-                            # Click Pane 2 again to deselect the Go To highlight anchor
-                            widgets[1].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
+                            page.keyboard.press("Escape")
                             page.wait_for_timeout(300)
                         except Exception as scroll_err2:
                             logger.error("Error scrolling Pane 2: %s", scroll_err2)
@@ -294,8 +296,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                             page.keyboard.type(entry_time[:5])
                         page.locator("text=Go to").last.click(timeout=2000)
                         page.wait_for_timeout(3000)
-                        # Click chart canvas again to deselect highlight anchor
-                        widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
+                        page.keyboard.press("Escape")
                         page.wait_for_timeout(300)
                     except Exception as scroll_err:
                         logger.error("Error navigating single chart to trade date/time: %s", scroll_err)
@@ -321,12 +322,12 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page.wait_for_timeout(100)
             page.keyboard.press("Escape")
             
-            # Move mouse over Pane 2 canvas, then move it out to the hidden left panel zone (10, 500) to trigger mouseout events and clear crosshairs
-            page.mouse.move(1200, 500)
+            # Clear any active crosshairs or popups by pressing Escape and moving mouse completely off-canvas to top-left (0, 0)
+            page.keyboard.press("Escape")
             page.wait_for_timeout(100)
-            page.mouse.move(10, 500)
-            page.mouse.click(10, 500)
-            page.wait_for_timeout(200)
+            page.keyboard.press("Escape")
+            page.mouse.move(0, 0)
+            page.wait_for_timeout(300)
             
             # Final layout settlement wait
             page.wait_for_timeout(1000)
