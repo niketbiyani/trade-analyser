@@ -4006,51 +4006,6 @@ def api_scan_missing_screenshots():
     return jsonify({"ok": True, "queued": queued_count, "found": len(rows)})
 
 
-@app.route("/api/delete-date-screenshots", methods=["POST", "DELETE"])
-def api_delete_date_screenshots():
-    target_date = request.args.get("date") or str(date.today())
-    underlying = request.args.get("underlying")
-    
-    db = get_db()
-    query = (
-        "SELECT n.date, n.underlying, n.option_type, n.strike, n.entry_time, n.image_path "
-        "FROM trade_notes n WHERE n.date=?"
-    )
-    params = [target_date]
-    if underlying:
-        query += " AND n.underlying=?"
-        params.append(underlying)
-        
-    rows = db.execute(query, params).fetchall()
-    deleted_count = 0
-    
-    for r in rows:
-        if r["image_path"]:
-            images = [img.strip() for img in r["image_path"].split(",") if img.strip()]
-            remaining = []
-            for img in images:
-                if img.startswith("tv_"):
-                    filepath = os.path.join(UPLOAD_FOLDER, img)
-                    if os.path.exists(filepath):
-                        try:
-                            os.remove(filepath)
-                        except Exception as e:
-                            logger.warning("Failed to delete physical file %s: %s", filepath, e)
-                    deleted_count += 1
-                else:
-                    remaining.append(img)
-            
-            new_image_path = ",".join(remaining) if remaining else None
-            db.execute(
-                "UPDATE trade_notes SET image_path=? WHERE date=? AND underlying=? AND option_type=? AND strike=? AND entry_time=?",
-                (new_image_path, r["date"], r["underlying"], r["option_type"], r["strike"], r["entry_time"])
-            )
-            
-    db.commit()
-    _rebuild_cache(db)
-    return jsonify({"ok": True, "deleted": deleted_count})
-
-
 @app.route("/api/screenshot-queue-status")
 def api_screenshot_queue_status():
     return jsonify({
@@ -6586,7 +6541,6 @@ input[type=file] {{ width:100%; background:var(--s2); border:1px solid var(--bor
       <button class="hbtn" style="margin-left:auto;font-size:10px" onclick="window.open(_root+'/report?date='+curDate,'_blank')" title="Download PDF report for this date">&#128196; PDF</button>
       <button class="hbtn" style="font-size:10px" onclick="wipeDate()" title="Delete all trades for this date and reimport">&#128465; Wipe &amp; reimport</button>
       <button class="hbtn" style="font-size:10px; background:rgba(124,77,255,.15); color:#b388ff; border:1px solid #7c4dff;" onclick="scanMissingScreenshots()" title="Scan and capture missing TradingView screenshots for this date">📷 TV Screenshots</button>
-      <button class="hbtn" style="font-size:10px; background:rgba(244,67,54,.15); color:#ff8a80; border:1px solid #f44336; margin-left:4px;" onclick="deleteAllScreenshots()" title="Delete ALL TradingView screenshots for this date">🗑️ Clear Screenshots</button>
     </div>
     <div id="pbody">
       <div id="empty">No trades for this date &#8212; import from Dhan or pick another day.</div>
@@ -7598,6 +7552,8 @@ function putMarkers(trades){{
         groups[key].exits.push(t);
       }}
     }}
+  }}
+  
   var markers=[];
   
   Object.values(groups).forEach(function(g){{
