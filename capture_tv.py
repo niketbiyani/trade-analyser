@@ -26,25 +26,9 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--disable-component-update",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-default-apps",
-                    "--js-flags=--max-old-space-size=128",
-                    "--single-process"
-                ]
-            )
-            # Create a context with desktop HD resolution and 20s timeouts
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            # Create a context with desktop HD resolution
             context = browser.new_context(viewport={"width": 1200, "height": 700})
-            context.set_default_timeout(20000)
-            context.set_default_navigation_timeout(20000)
             
             # Inject TradingView login session cookies if provided
             if session_id:
@@ -77,14 +61,6 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             # Wait for base layout loading (4s is safe)
             page.wait_for_timeout(4000)
             
-            # Wait for the chart canvas to be fully rendered in the DOM before we proceed
-            try:
-                logger.info("Waiting for TradingView chart canvas to load...")
-                page.wait_for_selector(".layout__area--center .chart-container canvas", timeout=15000)
-                logger.info("TradingView chart canvas loaded successfully.")
-            except Exception as wait_err:
-                logger.warning("Timeout waiting for chart canvas to render: %s", wait_err)
-            
             # CSS snippet to hide UI Chrome headers, sidebars, panels, and cookie consent overlays
             clean_css = """
             .layout__area--left, 
@@ -105,11 +81,7 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             [class*="drawing-toolbar" i],
             [class*="drawingToolbar" i],
             [class*="quick-tool" i],
-            [class*="favorites-bar" i],
-            [class*="tooltip" i]:not([class*="legend" i]),
-            [class*="callout" i],
-            [class*="toast" i],
-            [class*="popover" i]:not([class*="legend" i]) { 
+            [class*="favorites-bar" i] { 
                 display: none !important; 
             }
             body, html, .layout__area--center {
@@ -137,8 +109,6 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                         pass
             
             page.wait_for_timeout(1000)
-            
-            page.wait_for_timeout(500)
             
             # If any pane is currently maximized (e.g. RSI), restore the split layout
             try:
@@ -196,7 +166,8 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
-                            page.keyboard.press("Escape")
+                            # Click Pane 1 again to deselect the Go To highlight anchor
+                            widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
                             page.wait_for_timeout(300)
                         except Exception as scroll_err1:
                             logger.error("Error scrolling Pane 1: %s", scroll_err1)
@@ -242,7 +213,8 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                                 page.keyboard.type(entry_time[:5])
                             page.locator("text=Go to").last.click(timeout=2000)
                             page.wait_for_timeout(2000)
-                            page.keyboard.press("Escape")
+                            # Click Pane 2 again to deselect the Go To highlight anchor
+                            widgets[1].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
                             page.wait_for_timeout(300)
                         except Exception as scroll_err2:
                             logger.error("Error scrolling Pane 2: %s", scroll_err2)
@@ -296,7 +268,8 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
                             page.keyboard.type(entry_time[:5])
                         page.locator("text=Go to").last.click(timeout=2000)
                         page.wait_for_timeout(3000)
-                        page.keyboard.press("Escape")
+                        # Click chart canvas again to deselect highlight anchor
+                        widgets[0].locator("canvas").first.click(position={"x": 100, "y": 100}, force=True)
                         page.wait_for_timeout(300)
                     except Exception as scroll_err:
                         logger.error("Error navigating single chart to trade date/time: %s", scroll_err)
@@ -322,12 +295,12 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
             page.wait_for_timeout(100)
             page.keyboard.press("Escape")
             
-            # Clear any active crosshairs or popups by pressing Escape and moving mouse completely off-canvas to top-left (0, 0)
-            page.keyboard.press("Escape")
+            # Move mouse over Pane 2 canvas, then move it out to the hidden left panel zone (10, 500) to trigger mouseout events and clear crosshairs
+            page.mouse.move(1200, 500)
             page.wait_for_timeout(100)
-            page.keyboard.press("Escape")
-            page.mouse.move(0, 0)
-            page.wait_for_timeout(300)
+            page.mouse.move(10, 500)
+            page.mouse.click(10, 500)
+            page.wait_for_timeout(200)
             
             # Final layout settlement wait
             page.wait_for_timeout(1000)
@@ -345,29 +318,3 @@ def capture_screenshot(symbol: str, interval: str, output_path: str, session_id:
     except Exception as e:
         logger.error("TV Capture failed: %s", e)
         return False
-
-if __name__ == "__main__":
-    import sys
-    # Format of args: capture_tv.py symbol interval output_path [session_id] [session_sign] [layout_id] [trade_date] [entry_time]
-    if len(sys.argv) < 4:
-        print("Usage: python3 capture_tv.py <symbol> <interval> <output_path> [session_id] [session_sign] [layout_id] [trade_date] [entry_time]")
-        sys.exit(1)
-        
-    symbol = sys.argv[1]
-    interval = sys.argv[2]
-    output_path = sys.argv[3]
-    session_id = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "None" else None
-    session_sign = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] != "None" else None
-    layout_id = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] != "None" else None
-    trade_date = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] != "None" else None
-    entry_time = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] != "None" else None
-    
-    # Configure simple logs for stdout
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    
-    success = capture_screenshot(
-        symbol, interval, output_path,
-        session_id, session_sign, layout_id,
-        trade_date, entry_time
-    )
-    sys.exit(0 if success else 1)
