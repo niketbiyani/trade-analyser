@@ -7369,7 +7369,14 @@ async function loadChart() {{
       var ctl=new AbortController(), tid=setTimeout(function(){{ctl.abort();}},20000);
       var r=await fetch(_root+'/api/chart?underlying='+curU+'&date='+curDate,{{signal:ctl.signal}});
       clearTimeout(tid);
-      _d=await r.json();
+      var text=await r.text();
+      try {{
+        _d=JSON.parse(text);
+      }} catch(x) {{
+        var cleanErr = text.replace(/<[^>]*>/g, '').trim().slice(0, 150);
+        _d={{candles:[], error: 'HTTP ' + r.status + ': ' + (cleanErr || 'Non-JSON server response')}};
+        break;
+      }}
       if((_d.candles||[]).length>=(_d.expected_min||50)) break;  // got real 1m data — stop retrying
       if(_d.error) break;                          // hard error — no point retrying
     }} catch(e) {{
@@ -7844,7 +7851,15 @@ async function doImport(){{
   try{{
     var r=await fetch(_root+'/api/import',{{method:'POST',headers:{{'Content-Type':'application/json'}},
       body:JSON.stringify({{from_date:document.getElementById('mFrom').value,to_date:document.getElementById('mTo').value}})}});
-    var d=await r.json();
+    var text=await r.text();
+    var d;
+    try {{ d=JSON.parse(text); }} catch(x) {{
+      var cleanErr = text.replace(/<[^>]*>/g, '').trim().slice(0, 150);
+      res.style.color='#ef5350';
+      res.textContent='HTTP ' + r.status + ': ' + (cleanErr || 'Non-JSON server response');
+      btn.disabled=false; btn.textContent='Import';
+      return;
+    }}
     if(d.ok){{
       res.style.color='#4caf50';
       res.textContent=d.imported+' new, '+d.skipped+' stored ('+d.total_options+' options in '+d.total_raw+' trades)';
