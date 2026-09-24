@@ -46,14 +46,24 @@ def _load_env():
 
 def _update_env_token(new_token: str):
     """Write the new access token into the local .env file."""
-    with open(ENV_FILE, "r") as f:
-        content = f.read()
-    content = re.sub(
-        r"^DHAN_ACCESS_TOKEN=.*$",
-        f"DHAN_ACCESS_TOKEN={new_token}",
-        content,
-        flags=re.MULTILINE,
-    )
+    if not os.path.exists(ENV_FILE):
+        content = ""
+    else:
+        with open(ENV_FILE, "r") as f:
+            content = f.read()
+
+    if "DHAN_ACCESS_TOKEN=" in content:
+        content = re.sub(
+            r"^DHAN_ACCESS_TOKEN=.*$",
+            f"DHAN_ACCESS_TOKEN={new_token}",
+            content,
+            flags=re.MULTILINE,
+        )
+    else:
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += f"DHAN_ACCESS_TOKEN={new_token}\n"
+
     with open(ENV_FILE, "w") as f:
         f.write(content)
     logger.info("Updated DHAN_ACCESS_TOKEN in local .env")
@@ -86,18 +96,26 @@ def sync_from_risk_management() -> bool:
 
     _update_env_token(token)
 
-    # Also sync DHAN_CLIENT_ID if local .env has it — update in case it drifted
+    # Also sync DHAN_CLIENT_ID into local .env if client_id exists in RM
     if client_id:
-        with open(ENV_FILE, "r") as f:
-            content = f.read()
+        if not os.path.exists(ENV_FILE):
+            content = ""
+        else:
+            with open(ENV_FILE, "r") as f:
+                content = f.read()
         if "DHAN_CLIENT_ID=" in content:
             content = re.sub(r"^DHAN_CLIENT_ID=.*$", f"DHAN_CLIENT_ID={client_id}",
                              content, flags=re.MULTILINE)
-            with open(ENV_FILE, "w") as f:
-                f.write(content)
+        else:
+            if content and not content.endswith("\n"):
+                content += "\n"
+            content += f"DHAN_CLIENT_ID={client_id}\n"
+        with open(ENV_FILE, "w") as f:
+            f.write(content)
 
     logger.info("Synced token from Risk-Management .env (%.20s...)", token)
     return True
+
 
 
 def _try_renew(client_id: str, current_token: str) -> str | None:
