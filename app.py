@@ -8617,6 +8617,17 @@ def _close_stale_open_trades() -> None:
         logger.warning("Stale OPEN trade check failed: %s", e)
 
 
+@app.errorhandler(500)
+def internal_error(e):
+    logger.error("Internal Server Error (500): %s", e)
+    return jsonify({"ok": False, "error": f"Internal Server Error: {e}"}), 500
+
+
+@app.errorhandler(404)
+def not_found_error(e):
+    return jsonify({"ok": False, "error": f"Not Found: {e}"}), 404
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
