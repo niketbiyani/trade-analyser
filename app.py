@@ -38,6 +38,17 @@ PORT     = int(os.getenv("PORT", "5556"))
 APP_ROOT = os.getenv("APPLICATION_ROOT", "")   # e.g. "/analyser" for reverse-proxy prefix
 DB_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyser.db")
 
+def _get_app_root() -> str:
+    """Return URL prefix dynamically based on request context (Nginx X-Forwarded-Prefix or direct port)."""
+    try:
+        from flask import request
+        if request and request.script_root:
+            return request.script_root
+    except Exception:
+        pass
+    return ""
+
+
 LOT_SIZES = {
     "NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20,
     "FINNIFTY": 65, "MIDCPNIFTY": 75,
@@ -2275,7 +2286,7 @@ def _aggregate_candles(candles: list[dict], minutes: int) -> list[dict]:
 def _option_chart_page() -> str:
     today = str(date.today())
     ver   = APP_VERSION
-    root  = APP_ROOT
+    root  = _get_app_root()
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2701,7 +2712,7 @@ loadDates().then(function(){{
 
 def _option_expiry_page() -> str:
     ver  = APP_VERSION
-    root = APP_ROOT
+    root = _get_app_root()
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4093,7 +4104,7 @@ def api_dates():
 @app.route("/report")
 def report_page():
     """Printable trade report for a date — open in new tab then Ctrl+P → Save as PDF."""
-    root = APP_ROOT
+    root = _get_app_root()
     d   = request.args.get("date") or ""
     from_date = request.args.get("from_date") or d or str(date.today())
     to_date   = request.args.get("to_date")   or d or from_date
@@ -5163,7 +5174,7 @@ def upload_seconds():
 
 def _upload_seconds_page() -> str:
     ver  = APP_VERSION
-    root = APP_ROOT
+    root = _get_app_root()
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5920,7 +5931,7 @@ def option_ladder_page():
 def _option_ladder_page() -> str:
     today = str(date.today())
     ver   = APP_VERSION
-    root  = APP_ROOT
+    root  = _get_app_root()
     # Generate time select options 09:15 → 15:30 in 15-min steps
     h, m = 9, 15
     time_opts = ""
@@ -6326,7 +6337,7 @@ loadDates().then(function(){{
 
 def _page() -> str:
     ver  = APP_VERSION
-    root = APP_ROOT
+    root = _get_app_root()
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
