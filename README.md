@@ -38,47 +38,81 @@ Since option charts aren't accessible after expiry, trades are overlaid on the *
 cd ~
 git clone https://github.com/niketbiyani/trade-analyser
 cd trade-analyser
-git checkout claude/admiring-einstein-prd40v
+git checkout gemini-branch
 
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium
+playwright install-deps
 
-cp .env.example .env
-nano .env          # fill in credentials (see Configuration below)
+# Automatically create .env and sync active Dhan token from Risk Manager
+python3 token_manager.py
 ```
 
 ---
 
-## Configuration
+## Configuration & Token Auto-Sync
 
-Edit `.env` with your Dhan credentials:
+Trade Analyser automatically borrows and syncs active Dhan API credentials directly from the sibling Risk Manager app (`../Risk-Management/.env`).
+
+### Automatic Risk Manager Token Sync
+- `token_manager.py` checks for `/root/Risk-Management/.env`.
+- If found, it automatically extracts `DHAN_ACCESS_TOKEN` and `DHAN_CLIENT_ID` and syncs them into `/root/trade-analyser/.env`.
+- If `/root/trade-analyser/.env` was lost (e.g., during disk cleanup), running `python3 token_manager.py` will **automatically create** `.env` and pull the token.
+
+### Manual `.env` configuration (Fallback)
+If running without Risk Manager, edit `.env` manually:
 
 ```env
-# Your Dhan client ID (shown on the Dhan web portal under API settings)
+# Your Dhan client ID
 DHAN_CLIENT_ID=your_client_id_here
 
-# Current Dhan access token — copy from your risk-management .env if already set up
+# Current Dhan access token
 DHAN_ACCESS_TOKEN=your_access_token_here
 
 # Your 6-digit Dhan login PIN (used for auto token regeneration)
 DHAN_PIN=123456
 
-# TOTP secret from Dhan (base32 string — NOT the 6-digit code)
-# Get it from: web.dhan.co → Profile → DhanHQ Trading APIs → Setup TOTP → "show secret"
+# TOTP secret from Dhan (base32 string)
 DHAN_TOTP_SECRET=YOUR_BASE32_SECRET
 
 # Port to run on (default 5556)
 PORT=5556
-
-# Optional: path prefix when running behind Nginx (e.g. /analyser)
-# Leave blank if accessing the app directly by IP:port
-APPLICATION_ROOT=
 ```
 
-> If you already have this configured in your risk-management project, use the same `DHAN_CLIENT_ID`, `DHAN_ACCESS_TOKEN`, `DHAN_PIN`, and `DHAN_TOTP_SECRET` values — it's the same Dhan account.
+### Dynamic URL Root Resolution
+The app automatically detects whether you are accessing it directly via port `5556` (`http://YOUR_VPS_IP:5556/`) or through Nginx at `/analyser/` (`http://YOUR_VPS_IP/analyser/`).
+- **Direct Port Access (`:5556`)**: Request routes automatically resolve to `/api/...`. Leave `APPLICATION_ROOT=` empty or omitted in `.env`.
+- **Nginx Reverse Proxy (`/analyser/`)**: When accessed via Nginx with `X-Forwarded-Prefix: /analyser`, request routes automatically resolve to `/analyser/api/...`.
 
 ---
+
+## Restoring Environment after VPS Disk Reset / Cleanup
+
+If your VPS disk ran full and the environment was reset, follow these steps to restore Trade Analyser:
+
+```bash
+cd ~/trade-analyser
+git pull origin gemini-branch
+
+# Rebuild virtual environment
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+playwright install-deps
+
+# Auto-create .env & sync Dhan token from Risk Manager
+python3 token_manager.py
+
+# Restart service
+sudo systemctl restart trade-analyser
+sudo systemctl status trade-analyser
+```
+
+---
+
 
 ## Running as a systemd service (always-on)
 
@@ -170,7 +204,7 @@ sudo journalctl -u trade-analyser -n 50 -f
 ### Restart (after pulling updates)
 ```bash
 cd ~/trade-analyser
-git pull origin claude/admiring-einstein-prd40v
+git pull origin gemini-branch
 sudo systemctl restart trade-analyser
 ```
 
@@ -190,7 +224,7 @@ sudo systemctl disable trade-analyser
 
 ```bash
 cd ~/trade-analyser
-git pull origin claude/admiring-einstein-prd40v
+git pull origin gemini-branch
 sudo systemctl restart trade-analyser
 sudo journalctl -u trade-analyser -n 30
 ```

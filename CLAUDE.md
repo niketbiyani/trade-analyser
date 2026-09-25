@@ -10,9 +10,10 @@ A post-session option trade review tool. It imports executed option trades from 
 
 Single-VPS Flask app, runs on port 5556. Companion to the risk-management platform (port 5555) on the same VPS.
 
-**Branch for all work:** `claude/admiring-einstein-prd40v`
+**Branch for all work:** `gemini-branch`
 
-**Current version:** `v154`
+**Current version:** `v155`
+
 
 ---
 
